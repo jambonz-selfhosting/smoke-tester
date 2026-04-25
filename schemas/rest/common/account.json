@@ -1,0 +1,29 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Account",
+  "description": "A jambonz Account — tenant container belonging to a Service Provider. Required fields derived from swagger; optional fields accept null per live behaviour.",
+  "type": "object",
+  "required": ["account_sid", "name", "service_provider_sid"],
+  "properties": {
+    "account_sid": { "type": "string" },
+    "name": { "type": "string" },
+    "service_provider_sid": { "type": "string" },
+    "sip_realm": { "type": ["string", "null"] },
+    "registration_hook": {
+      "anyOf": [
+        { "$ref": "webhook.json" },
+        { "type": "null" }
+      ]
+    },
+    "queue_event_hook": {
+      "anyOf": [
+        { "$ref": "webhook.json" },
+        { "type": "null" }
+      ]
+    },
+    "device_calling_application_sid": { "type": ["string", "null"] },
+    "siprec_hook_sid": { "type": ["string", "null"] },
+    "webhook_secret": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

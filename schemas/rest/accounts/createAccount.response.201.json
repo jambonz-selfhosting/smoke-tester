@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "createAccount 201 response",
+  "description": "POST /Accounts — 201 Created. Returns SuccessfulAdd.",
+  "$ref": "../common/successful_add.json"
+}

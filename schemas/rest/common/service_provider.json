@@ -1,0 +1,20 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ServiceProvider",
+  "type": "object",
+  "required": ["service_provider_sid", "name"],
+  "properties": {
+    "service_provider_sid": { "type": "string" },
+    "name": { "type": "string" },
+    "description": { "type": ["string", "null"] },
+    "root_domain": { "type": ["string", "null"] },
+    "registration_hook": {
+      "anyOf": [{ "$ref": "webhook.json" }, { "type": "null" }]
+    },
+    "ms_teams_fqdn": { "type": ["string", "null"] },
+    "test_number": { "type": ["string", "null"] },
+    "test_application_name": { "type": ["string", "null"] },
+    "test_application_sid": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

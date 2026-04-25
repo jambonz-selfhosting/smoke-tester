@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "getAccount 200 response",
+  "description": "GET /Accounts/{AccountSid} — 200 OK. Single Account object.",
+  "$ref": "../common/account.json"
+}

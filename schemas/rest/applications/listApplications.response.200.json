@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "listApplications 200 response",
+  "description": "GET /Applications — 200 OK. Array of Application objects.",
+  "type": "array",
+  "items": { "$ref": "../common/application.json" }
+}

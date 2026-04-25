@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LcrRoute",
+  "type": "object",
+  "required": ["lcr_sid", "regex", "priority"],
+  "properties": {
+    "lcr_route_sid": { "type": ["string", "null"] },
+    "lcr_sid": { "type": "string" },
+    "regex": { "type": "string" },
+    "priority": { "type": ["integer", "number"] },
+    "description": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

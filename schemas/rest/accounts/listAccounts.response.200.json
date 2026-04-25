@@ -1,0 +1,7 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "listAccounts 200 response",
+  "description": "GET /Accounts — 200 OK. Array of Account objects. Requires SP-scoped token to see all accounts under an SP.",
+  "type": "array",
+  "items": { "$ref": "../common/account.json" }
+}

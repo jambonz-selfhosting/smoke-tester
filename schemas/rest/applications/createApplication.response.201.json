@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "createApplication 201 response",
+  "description": "POST /Applications — 201 Created. Returns a SuccessfulAdd with the new application sid.",
+  "$ref": "../common/successful_add.json"
+}

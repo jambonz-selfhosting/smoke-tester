@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Paginated",
+  "description": "Common paginated envelope shared by RecentCalls + Alerts. swagger lists `batch` as required but live jambonz omits it — only total, page, data are present on the wire.",
+  "type": "object",
+  "required": ["total", "page", "data"],
+  "properties": {
+    "total": { "type": ["integer", "string"] },
+    "batch": { "type": ["integer", "string", "null"] },
+    "page": { "type": ["integer", "string"] },
+    "data": { "type": "array" }
+  },
+  "additionalProperties": true
+}

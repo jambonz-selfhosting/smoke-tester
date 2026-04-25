@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "LcrCarrierSetEntry",
+  "type": "object",
+  "required": ["lcr_route_sid", "voip_carrier_sid", "priority"],
+  "properties": {
+    "lcr_carrier_set_entry_sid": { "type": ["string", "null"] },
+    "lcr_route_sid": { "type": "string" },
+    "voip_carrier_sid": { "type": "string" },
+    "priority": { "type": ["integer", "number"] },
+    "workload": { "type": ["integer", "number", "null"] }
+  },
+  "additionalProperties": true
+}

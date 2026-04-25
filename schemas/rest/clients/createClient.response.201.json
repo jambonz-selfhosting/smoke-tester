@@ -1,0 +1,6 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "createClient 201 response",
+  "description": "POST /Clients — 201 Created. Returns a SuccessfulAdd with the new client sid.",
+  "$ref": "../common/successful_add.json"
+}

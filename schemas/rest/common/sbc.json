@@ -1,0 +1,13 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Sbc",
+  "type": "object",
+  "required": ["sbc_address_sid", "ipv4"],
+  "properties": {
+    "sbc_address_sid": { "type": "string" },
+    "ipv4": { "type": "string" },
+    "port": { "type": ["integer", "number", "null"] },
+    "service_provider_sid": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,18 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Webhook",
+  "description": "Webhook configuration embedded in Application/Account/etc. url is the only required field. Method case is mixed in live responses.",
+  "type": "object",
+  "required": ["url"],
+  "properties": {
+    "webhook_sid": { "type": ["string", "null"] },
+    "url": { "type": "string" },
+    "method": {
+      "type": ["string", "null"],
+      "enum": ["get", "post", "GET", "POST", null]
+    },
+    "username": { "type": ["string", "null"] },
+    "password": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

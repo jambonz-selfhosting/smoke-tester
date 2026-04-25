@@ -1,0 +1,42 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Application",
+  "description": "A jambonz Application binds an incoming call to a webhook that returns verbs.",
+  "type": "object",
+  "required": ["application_sid", "name", "account_sid"],
+  "properties": {
+    "application_sid": { "type": "string" },
+    "name": { "type": "string" },
+    "account_sid": { "type": "string" },
+    "call_hook": {
+      "anyOf": [
+        { "$ref": "webhook.json" },
+        { "type": "null" }
+      ]
+    },
+    "call_status_hook": {
+      "anyOf": [
+        { "$ref": "webhook.json" },
+        { "type": "null" }
+      ]
+    },
+    "messaging_hook": {
+      "anyOf": [
+        { "$ref": "webhook.json" },
+        { "type": "null" }
+      ]
+    },
+    "app_json": { "type": ["string", "null"] },
+    "speech_synthesis_vendor":   { "type": ["string", "null"] },
+    "speech_synthesis_voice":    { "type": ["string", "null"] },
+    "speech_synthesis_language": { "type": ["string", "null"] },
+    "speech_synthesis_label":    { "type": ["string", "null"] },
+    "speech_recognizer_vendor":   { "type": ["string", "null"] },
+    "speech_recognizer_language": { "type": ["string", "null"] },
+    "speech_recognizer_label":    { "type": ["string", "null"] },
+    "record_all_calls":      { "type": ["integer", "boolean", "null"] },
+    "use_for_fallback_speech": { "type": ["integer", "boolean", "null"] },
+    "env_vars_json_schema": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

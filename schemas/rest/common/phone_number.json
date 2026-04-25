@@ -1,0 +1,15 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "PhoneNumber",
+  "type": "object",
+  "required": ["phone_number_sid", "number", "voip_carrier_sid"],
+  "properties": {
+    "phone_number_sid": { "type": "string" },
+    "number": { "type": "string" },
+    "voip_carrier_sid": { "type": "string" },
+    "account_sid": { "type": ["string", "null"] },
+    "application_sid": { "type": ["string", "null"] },
+    "service_provider_sid": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

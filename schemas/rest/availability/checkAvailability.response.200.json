@@ -1,0 +1,10 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "checkAvailability 200 response",
+  "type": "object",
+  "required": ["available"],
+  "properties": {
+    "available": { "type": "boolean" }
+  },
+  "additionalProperties": true
+}

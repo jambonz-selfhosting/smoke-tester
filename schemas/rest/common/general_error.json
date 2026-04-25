@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GeneralError",
+  "description": "Response body for 4xx/5xx errors — jambonz returns a single 'msg' field with a human-readable reason.",
+  "type": "object",
+  "required": ["msg"],
+  "properties": {
+    "msg": { "type": "string" }
+  },
+  "additionalProperties": true
+}

@@ -1,0 +1,40 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "VoipCarrier",
+  "description": "A SIP trunk provider definition. Required fields per swagger; optional fields accept null.",
+  "type": "object",
+  "required": ["voip_carrier_sid", "name"],
+  "properties": {
+    "voip_carrier_sid": { "type": "string" },
+    "name": { "type": "string" },
+    "description": { "type": ["string", "null"] },
+    "account_sid": { "type": ["string", "null"] },
+    "application_sid": { "type": ["string", "null"] },
+    "service_provider_sid": { "type": ["string", "null"] },
+    "e164_leading_plus": { "type": ["boolean", "integer", "null"] },
+    "requires_register": { "type": ["boolean", "integer", "null"] },
+    "register_use_tls": { "type": ["boolean", "integer", "null"] },
+    "register_username": { "type": ["string", "null"] },
+    "register_sip_realm": { "type": ["string", "null"] },
+    "register_password": { "type": ["string", "null"] },
+    "register_from_user": { "type": ["string", "null"] },
+    "register_from_domain": { "type": ["string", "null"] },
+    "register_public_ip_in_contact": { "type": ["boolean", "integer", "null"] },
+    "register_status": {
+      "description": "Live returns a structured object (e.g. {status, reason, last_update}) though swagger typed it as string. Accept any.",
+      "type": ["string", "object", "null"],
+      "additionalProperties": true
+    },
+    "tech_prefix": { "type": ["string", "null"] },
+    "inbound_auth_username": { "type": ["string", "null"] },
+    "inbound_auth_password": { "type": ["string", "null"] },
+    "diversion": { "type": ["string", "null"] },
+    "is_active": { "type": ["boolean", "integer", "null"] },
+    "smpp_system_id": { "type": ["string", "null"] },
+    "smpp_password": { "type": ["string", "null"] },
+    "smpp_inbound_system_id": { "type": ["string", "null"] },
+    "smpp_inbound_password": { "type": ["string", "null"] },
+    "smpp_enquire_link_interval": { "type": ["integer", "number", "null"] }
+  },
+  "additionalProperties": true
+}

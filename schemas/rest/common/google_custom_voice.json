@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "GoogleCustomVoice",
+  "type": "object",
+  "required": ["speech_credential_sid", "name", "reported_usage", "model"],
+  "properties": {
+    "google_custom_voice_sid": { "type": ["string", "null"] },
+    "speech_credential_sid": { "type": "string" },
+    "name": { "type": "string" },
+    "reported_usage": { "type": "string" },
+    "model": { "type": "string" }
+  },
+  "additionalProperties": true
+}

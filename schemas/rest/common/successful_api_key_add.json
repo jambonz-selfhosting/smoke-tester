@@ -1,0 +1,12 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SuccessfulApiKeyAdd",
+  "description": "Response body for POST /ApiKeys — returns sid + one-time token.",
+  "type": "object",
+  "required": ["sid", "token"],
+  "properties": {
+    "sid": { "type": "string" },
+    "token": { "type": "string" }
+  },
+  "additionalProperties": true
+}

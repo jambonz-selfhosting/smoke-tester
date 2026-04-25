@@ -1,0 +1,14 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "MsTeamsTenant",
+  "type": "object",
+  "required": ["ms_teams_tenant_sid", "tenant_fqdn"],
+  "properties": {
+    "ms_teams_tenant_sid": { "type": "string" },
+    "service_provider_sid": { "type": ["string", "null"] },
+    "account_sid": { "type": ["string", "null"] },
+    "application_sid": { "type": ["string", "null"] },
+    "tenant_fqdn": { "type": "string" }
+  },
+  "additionalProperties": true
+}

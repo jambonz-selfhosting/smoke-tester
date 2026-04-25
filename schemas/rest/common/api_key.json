@@ -1,0 +1,16 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "ApiKey",
+  "type": "object",
+  "required": ["api_key_sid", "token"],
+  "properties": {
+    "api_key_sid": { "type": "string" },
+    "token": { "type": "string" },
+    "account_sid": { "type": ["string", "null"] },
+    "service_provider_sid": { "type": ["string", "null"] },
+    "expires_at": { "type": ["string", "null"] },
+    "created_at": { "type": ["string", "null"] },
+    "last_used": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

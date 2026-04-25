@@ -1,0 +1,21 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SipGateway",
+  "type": "object",
+  "required": ["sip_gateway_sid", "voip_carrier_sid", "ipv4"],
+  "properties": {
+    "sip_gateway_sid": { "type": "string" },
+    "voip_carrier_sid": { "type": "string" },
+    "ipv4": { "type": "string" },
+    "port": { "type": ["integer", "number", "null"] },
+    "netmask": { "type": ["integer", "number", "null"] },
+    "inbound": { "type": ["boolean", "integer", "null"] },
+    "outbound": { "type": ["boolean", "integer", "null"] },
+    "is_active": { "type": ["boolean", "integer", "null"] },
+    "protocol": { "type": ["string", "null"] },
+    "pad_crypto": { "type": ["boolean", "integer", "null"] },
+    "use_sips_scheme": { "type": ["boolean", "integer", "null"] },
+    "send_options_ping": { "type": ["boolean", "integer", "null"] }
+  },
+  "additionalProperties": true
+}

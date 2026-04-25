@@ -1,0 +1,18 @@
+.env
+.env.local
+bin/
+*.wav
+!tests/verbs/testdata/*.wav
+*.pcap
+.DS_Store
+coverage.out
+report.xml
+report.html
+
+# generated binaries
+testreport
+
+# editor / agent noise
+.vscode/
+.idea/
+.claude/

@@ -1,0 +1,17 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "Lcr",
+  "description": "Least-cost routing table. swagger omits lcr_sid but live returns it.",
+  "type": "object",
+  "required": ["name"],
+  "properties": {
+    "lcr_sid": { "type": ["string", "null"] },
+    "name": { "type": "string" },
+    "description": { "type": ["string", "null"] },
+    "is_active": { "type": ["boolean", "integer", "null"] },
+    "account_sid": { "type": ["string", "null"] },
+    "service_provider_sid": { "type": ["string", "null"] },
+    "default_carrier_set_entry_sid": { "type": ["string", "null"] }
+  },
+  "additionalProperties": true
+}

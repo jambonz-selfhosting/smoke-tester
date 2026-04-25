@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "createCall 201 response",
+  "description": "POST /Accounts/{AccountSid}/Calls — 201 returns {sid}. Matches SuccessfulAdd shape.",
+  "type": "object",
+  "required": ["sid"],
+  "properties": {
+    "sid": { "type": "string" }
+  },
+  "additionalProperties": true
+}

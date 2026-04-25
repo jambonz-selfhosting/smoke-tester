@@ -1,0 +1,11 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "title": "SuccessfulAdd",
+  "description": "Response body for 201 Created on every resource POST. Must carry the new resource SID.",
+  "type": "object",
+  "required": ["sid"],
+  "properties": {
+    "sid": { "type": "string" }
+  },
+  "additionalProperties": true
+}
