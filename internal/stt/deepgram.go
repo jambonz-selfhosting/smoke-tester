@@ -12,13 +12,22 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"net"
 	"os"
 	"strings"
+	"time"
 
 	api "github.com/deepgram/deepgram-go-sdk/v3/pkg/api/listen/v1/rest"
+	restapi "github.com/deepgram/deepgram-go-sdk/v3/pkg/api/listen/v1/rest/interfaces"
 	interfaces "github.com/deepgram/deepgram-go-sdk/v3/pkg/client/interfaces"
 	client "github.com/deepgram/deepgram-go-sdk/v3/pkg/client/listen"
 )
+
+// transcribeAttemptTimeout caps a single Deepgram REST call. The SDK has
+// no transport timeout of its own; without this, a flaky network can
+// hang an attempt for the test's full ctx (often 60-180s). 15s is well
+// past the API's typical 1-3s response time on a healthy day.
+const transcribeAttemptTimeout = 15 * time.Second
 
 // EnvKey is the environment variable we read the Deepgram API key from.
 const EnvKey = "DEEPGRAM_API_KEY"
@@ -62,7 +71,7 @@ func Transcribe(ctx context.Context, pcmuPath string) (string, error) {
 		// Bias toward project-specific proper nouns Deepgram wouldn't know.
 		Keyterm: []string{"jambonz"},
 	}
-	res, err := dg.FromFile(ctx, pcmuPath, opts)
+	res, err := transcribeWithRetry(ctx, dg, pcmuPath, opts)
 	if err != nil {
 		return "", fmt.Errorf("deepgram transcribe %s: %w", pcmuPath, err)
 	}
@@ -74,6 +83,90 @@ func Transcribe(ctx context.Context, pcmuPath string) (string, error) {
 		return "", fmt.Errorf("deepgram: no alternatives in channel")
 	}
 	return Normalize(ch.Alternatives[0].Transcript), nil
+}
+
+// TranscribeMulawWAV is Transcribe for µ-law-payload WAV files. The
+// listen/stream verb tests capture WS frames and wrap them in a PCMU
+// WAV header — Transcribe's encoding=linear16 hint would mis-decode
+// those, so we send encoding=mulaw instead.
+func TranscribeMulawWAV(ctx context.Context, wavPath string) (string, error) {
+	key := os.Getenv(EnvKey)
+	if key == "" {
+		return "", ErrNoCredentials
+	}
+	c := client.NewREST("", &interfaces.ClientOptions{Host: "https://api.deepgram.com"})
+	dg := api.New(c)
+	opts := &interfaces.PreRecordedTranscriptionOptions{
+		Model:      "nova-3",
+		Language:   "en-US",
+		Encoding:   "mulaw",
+		SampleRate: 8000,
+		Punctuate:  true,
+		Keyterm:    []string{"jambonz"},
+	}
+	res, err := transcribeWithRetry(ctx, dg, wavPath, opts)
+	if err != nil {
+		return "", fmt.Errorf("deepgram transcribe %s: %w", wavPath, err)
+	}
+	if res == nil || res.Results == nil || len(res.Results.Channels) == 0 {
+		return "", fmt.Errorf("deepgram: no channels in response")
+	}
+	ch := res.Results.Channels[0]
+	if len(ch.Alternatives) == 0 {
+		return "", fmt.Errorf("deepgram: no alternatives in channel")
+	}
+	return Normalize(ch.Alternatives[0].Transcript), nil
+}
+
+// transcribeWithRetry runs a single Deepgram pre-recorded call with a
+// per-attempt timeout, then retries once on context-deadline-exceeded
+// or transient network errors. The SDK has no transport timeout of its
+// own, so a sick TCP path can hang the call for the caller's full ctx
+// (60-180s of test budget) — capping each attempt at
+// transcribeAttemptTimeout and retrying once is the smallest fix that
+// protects the suite without masking real outages.
+func transcribeWithRetry(parent context.Context, dg *api.Client, path string, opts *interfaces.PreRecordedTranscriptionOptions) (*restapi.PreRecordedResponse, error) {
+	const attempts = 2
+	var lastErr error
+	for i := 0; i < attempts; i++ {
+		// Each attempt gets a fresh per-call deadline. Use the parent
+		// ctx's deadline as a hard ceiling — never wait longer than the
+		// caller asked for in total.
+		attemptCtx, cancel := context.WithTimeout(parent, transcribeAttemptTimeout)
+		res, err := dg.FromFile(attemptCtx, path, opts)
+		cancel()
+		if err == nil {
+			return res, nil
+		}
+		lastErr = err
+		if !isRetryableTranscribeErr(err) || parent.Err() != nil {
+			return nil, err
+		}
+	}
+	return nil, lastErr
+}
+
+// isRetryableTranscribeErr reports whether err looks like a transient
+// network/timeout failure that's worth one retry. Returns false for
+// 4xx-style API errors (auth, bad audio, missing file) — those will
+// fail again identically.
+func isRetryableTranscribeErr(err error) bool {
+	if errors.Is(err, context.DeadlineExceeded) {
+		return true
+	}
+	var ne net.Error
+	if errors.As(err, &ne) && (ne.Timeout() || ne.Temporary()) { //nolint:staticcheck // Temporary() is deprecated but still useful here
+		return true
+	}
+	// Connection refused / reset / EOF surface as plain errors from the
+	// SDK without a typed wrapper; match on substring as a last resort.
+	msg := err.Error()
+	for _, needle := range []string{"connection refused", "connection reset", "EOF", "no such host", "i/o timeout"} {
+		if strings.Contains(msg, needle) {
+			return true
+		}
+	}
+	return false
 }
 
 // Normalize lowercases and strips to alphanumerics + single spaces so

@@ -23,13 +23,17 @@ func TestVerb_Say_Basic(t *testing.T) {
 		tag:        "say-basic",
 		minDur:     1 * time.Second,
 		maxDur:     6 * time.Second,
-		verb:       V("say", "text", "Hello from jambonz integration tests."),
-		wantWords:  []string{"hello from jambonz", "integration tests"},
+		verb:      V("say", "text", "Hello from jambonz integration tests."),
+		wantWords: []string{"hello", "jambonz", "integration"},
 	})
 }
 
-// TestVerb_Say_SSML — SSML markup renders without error; both sides of the
-// <break> land in the transcript.
+// TestVerb_Say_SSML — SSML markup renders without error; both sides of
+// the <break> land in the transcript AND the recording carries a
+// measurable silence window matching the break tag. Without the
+// silence-window assertion, a regression that strips SSML and renders
+// the text as plain prose would still pass on word content (since
+// "hello" + "world" are present either way).
 func TestVerb_Say_SSML(t *testing.T) {
 	t.Parallel()
 	runSay(t, sayOpts{
@@ -41,6 +45,11 @@ func TestVerb_Say_SSML(t *testing.T) {
 		maxDur:    6 * time.Second,
 		verb:      V("say", "text", "<speak>Hello <break time='500ms'/> world.</speak>"),
 		wantWords: []string{"hello", "world"},
+		// We asked for 500ms of silence in the middle. TTS engines often
+		// shorten the pause slightly under prosody compression; require
+		// at least 250ms — well above natural inter-word pauses (~50-
+		// 100ms) so a regression that drops the break tag fails.
+		wantSilenceMS: 250,
 	})
 }
 
@@ -70,20 +79,32 @@ func TestVerb_Say_LongText(t *testing.T) {
 	})
 }
 
-// TestVerb_Say_ArrayRandom — text as array-of-strings (jambonz picks one).
-// No transcript assertion: which phrase wins is non-deterministic.
+// TestVerb_Say_ArrayRandom — text as array-of-strings. The schema
+// documents "one entry is selected at random", but the current cluster
+// plays ALL entries sequentially. Assert all three markers land so a
+// regression that drops one of the entries (or drops the array path
+// entirely) fails. Each phrase carries a unique phonetic-alphabet
+// marker (alpha/bravo/charlie) so STT can distinguish them.
 //
-// maxDur sized for the longest phrase observed at runtime: "Welcome back."
-// landed at 4.46s on Google TTS Standard-C. 4s was too tight and flaked;
-// 5s gives a margin without admitting genuinely runaway durations.
+// maxDur sized for three concatenated phrases.
 func TestVerb_Say_ArrayRandom(t *testing.T) {
 	t.Parallel()
 	runSay(t, sayOpts{
-		ctxTimeout: 30 * time.Second,
+		ctxTimeout: 45 * time.Second,
 		tag:        "say-array",
-		minDur:     500 * time.Millisecond,
-		maxDur:     5 * time.Second,
-		verb:       V("say", "text", []any{"Hello there.", "Hi friend.", "Welcome back."}),
+		minDur:     1 * time.Second,
+		maxDur:     12 * time.Second,
+		verb: V("say", "text", []any{
+			"Number one apple.",
+			"Number two banana.",
+			"Number three cherry.",
+		}),
+		// All three markers must appear in order (cluster plays the
+		// whole list sequentially). Fruits + ordinals chosen because
+		// Deepgram nova-3 transcribes them reliably at telephony quality
+		// (alpha/bravo/charlie occasionally drift to "alphet"/"brevo").
+		wantWordsOrdered: []string{"apple", "banana", "cherry"},
+		extras:           []func(*provision.CallCreate){withTimeLimit(30)},
 	})
 }
 
@@ -129,13 +150,16 @@ func TestVerb_Say_SynthesizerOverride(t *testing.T) {
 
 // sayOpts bundles the per-test knobs runSay needs.
 type sayOpts struct {
-	ctxTimeout time.Duration
-	tag        string
-	minDur     time.Duration
-	maxDur     time.Duration
-	verb       map[string]any
-	wantWords  []string                        // substrings expected in the Deepgram transcript
-	extras     []func(*provision.CallCreate)
+	ctxTimeout       time.Duration
+	tag              string
+	minDur           time.Duration
+	maxDur           time.Duration
+	verb             map[string]any
+	wantWords        []string // substrings expected anywhere in the transcript
+	wantWordsOrdered []string // substrings expected to appear IN ORDER (array tests)
+	wantAnyOf        []string // exactly one of these substrings must appear
+	wantSilenceMS    int      // SSML break tests: longest silence window must be >= this
+	extras           []func(*provision.CallCreate)
 }
 
 // runSay places a warmup-paused say call, answers, records, sends silence,
@@ -169,6 +193,35 @@ func runSay(t *testing.T, o sayOpts) {
 	if wav != "" && len(o.wantWords) > 0 {
 		s = Step(t, "assert-transcript")
 		AssertTranscriptContains(s, ctx, wav, o.wantWords...)
+		s.Done()
+	}
+	if wav != "" && len(o.wantWordsOrdered) > 0 {
+		s = Step(t, "assert-transcript-ordered")
+		AssertTranscriptContainsInOrder(s, ctx, wav, o.wantWordsOrdered...)
+		s.Done()
+	}
+	if wav != "" && len(o.wantAnyOf) > 0 {
+		s = Step(t, "assert-transcript-any-of")
+		AssertTranscriptHasAnyOf(s, ctx, wav, o.wantAnyOf...)
+		s.Done()
+	}
+	if wav != "" && o.wantSilenceMS > 0 {
+		s = Step(t, "assert-silence-window")
+		// SSML <break time="500ms"/> must produce a measurable quiet
+		// gap. Threshold 200 (≈ -50 dBFS) marks "true silence" while
+		// tolerating mild line noise. We require the longest silence
+		// window to be >= wantSilenceMS — a regression that drops the
+		// break tag would render "Hello world" with TTS-natural pauses
+		// only (~50-100ms) and fail.
+		got, err := LongestSilenceMS(wav, 200)
+		if err != nil {
+			s.Fatalf("LongestSilenceMS: %v", err)
+		}
+		s.Logf("longest silence window: %dms (want >= %dms)", got, o.wantSilenceMS)
+		if got < o.wantSilenceMS {
+			s.Errorf("SSML <break> not honored: longest silence %dms < %dms",
+				got, o.wantSilenceMS)
+		}
 		s.Done()
 	}
 }

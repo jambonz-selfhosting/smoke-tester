@@ -67,8 +67,7 @@ func TestVerb_Dial_User_Bridge(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
 	ctx := WithTimeout(t, 120*time.Second)
-	callerUAS := claimUAS(t, ctx)
-	calleeUAS := claimUAS(t, ctx)
+	callerUAS, calleeUAS := claimUAS2(t, ctx)
 
 	_, sess := claimSession(t)
 
@@ -157,7 +156,6 @@ func TestVerb_Dial_User_Bridge(t *testing.T) {
 				GoroutineFailf(t, "callee:silence-trail", "SendSilence: %v", err)
 				return
 			}
-			time.Sleep(500 * time.Millisecond)
 			t.Logf("[callee:hangup] start")
 			if err := c.Hangup(); err != nil {
 				GoroutineFailf(t, "callee:hangup", "Hangup: %v", err)

@@ -36,9 +36,10 @@ func runPauseTest(t *testing.T, seconds int) {
 	s = Step(t, "assert-duration-and-silence")
 	want := time.Duration(seconds) * time.Second
 	d := call.Duration()
-	// Tolerance: ±1.5s for network jitter + verb teardown.
-	if d < want-500*time.Millisecond || d > want+3*time.Second {
-		s.Errorf("duration out of window: got %s want ~%s", d, want)
+	// Tighter window: -500ms / +1.5s. Old +3s tolerated a 4s pause for a
+	// 1s ask, which a `length`-ignoring regression would have passed.
+	if d < want-500*time.Millisecond || d > want+1500*time.Millisecond {
+		s.Errorf("duration out of window: got %s want ~%s (±tolerance)", d, want)
 	}
 	if call.RMS() > 200 {
 		s.Errorf("pause audio not silent: rms=%.1f", call.RMS())

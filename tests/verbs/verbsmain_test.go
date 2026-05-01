@@ -29,6 +29,7 @@ import (
 	"fmt"
 	"log"
 	"os"
+	"path/filepath"
 	"testing"
 	"time"
 
@@ -198,6 +199,14 @@ func setupWebhook(v *contract.Validator) error {
 		return fmt.Errorf("webhook.New: %w", err)
 	}
 	webhookSrv = srv
+	// Expose tests/verbs/testdata as /static/ on the tunnel so play/dub
+	// tests can drive jambonz at a fixture WAV with a pinned transcript
+	// (testdata/test_audio.wav → "The sun is shining."). Without this,
+	// those tests would have to rely on a third-party-hosted sample
+	// whose content they can't verify.
+	if abs, err := filepath.Abs("testdata"); err == nil {
+		srv.SetStaticDir(abs)
+	}
 	go func() { _ = srv.Serve() }()
 
 	tun, err := webhook.StartNgrok(context.Background(), srv)

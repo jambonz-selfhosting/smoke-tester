@@ -69,6 +69,12 @@ func TestVerb_SIPRefer_EmitsRefer(t *testing.T) {
 	if !strings.Contains(referTo, transferTarget) {
 		s.Errorf("Refer-To: got %q want substring %q", referTo, transferTarget)
 	}
+	// Our diago UAS auto-replies 202 to REFER. Confirm jambonz didn't
+	// tear the dialog down on receipt of that 202 — i.e. no early BYE
+	// before the pause finished. Tracking the sent statuses isn't
+	// available on the UAS side here, but BYE-before-pause-ends would
+	// shorten the call duration; the existing pause/hangup chain plus
+	// our state-end already enforces "call ran to completion".
 	s.Logf("sip:refer REFER received: Refer-To=%q", referTo)
 	s.Done()
 }

@@ -58,8 +58,11 @@ func TestVerb_Hangup_Basic(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "assert-duration-and-end-reason")
-	if d := call.Duration(); d > 3*time.Second {
-		s.Errorf("duration too long: got %s want <3s", d)
+	// hangup should be near-instant. Warmup pause (1s) + a small RTT
+	// puts a real upper bound around 1.5s; 2s catches the regression
+	// where jambonz delays BYE noticeably without flaking on cold-start.
+	if d := call.Duration(); d > 2*time.Second {
+		s.Errorf("duration too long: got %s want <2s", d)
 	}
 	if reason := call.EndReason(); reason != "remote-bye" {
 		s.Errorf("expected end reason 'remote-bye', got %q", reason)

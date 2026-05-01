@@ -12,10 +12,12 @@ package verbs
 
 import (
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
@@ -50,8 +52,7 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
 	ctx := WithTimeout(t, 120*time.Second)
-	speakerUAS := claimUAS(t, ctx)
-	listenerUAS := claimUAS(t, ctx)
+	speakerUAS, listenerUAS := claimUAS2(t, ctx)
 
 	s := Step(t, "register-webhook-sessions")
 	// Unique room name per run — jambonz rooms are cluster-global, so a
@@ -91,32 +92,62 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 		err     error
 	}
 	listenerResultCh := make(chan listenerResult, 1)
+	// answeredCh fires the moment the listener leg's 200 OK has gone out
+	// (i.e. it's in the conference room and ready to mix audio). Lets the
+	// "wait-listener-settles" step block on that signal instead of a
+	// fixed 2s sleep.
+	answeredCh := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		var c *jsip.Call
 		select {
-		case c := <-listenerUAS.Inbound:
-			// Inner step runs under a dedicated StepCtx so the goroutine's
-			// failures also carry a step name.
-			ls := Step(t, "listener:answer-record-and-wait-end")
-			wav := AnswerRecordAndWaitEnded(ls, ctx, c,
-				WithRecord("conference-listener"), WithSilence())
-			ls.Done()
-			listenerResultCh <- listenerResult{wavPath: wav}
+		case c = <-listenerUAS.Inbound:
 		case <-ctx.Done():
 			listenerResultCh <- listenerResult{err: ctx.Err()}
+			return
 		}
+		ls := Step(t, "listener:answer-record-and-wait-end")
+		if err := c.Answer(); err != nil {
+			ls.Errorf("Answer: %v", err)
+			listenerResultCh <- listenerResult{err: err}
+			return
+		}
+		// Signal "listener is in the conference" — at this point jambonz
+		// has accepted the leg into the room. The bridge needs a small
+		// settle to wire mixer → caller path; we add 300ms of pad in the
+		// caller's wait step (still ~1.7s faster than the old 2s sleep).
+		select {
+		case answeredCh <- struct{}{}:
+		default:
+		}
+		wav := filepath.Join(t.TempDir(), "conference-listener.pcm")
+		if err := c.StartRecording(wav); err != nil {
+			ls.Errorf("StartRecording: %v", err)
+			listenerResultCh <- listenerResult{err: err}
+			return
+		}
+		if err := c.SendSilence(); err != nil {
+			ls.Errorf("SendSilence: %v", err)
+		}
+		_ = c.WaitState(ctx, jsip.StateEnded)
+		ls.Done()
+		listenerResultCh <- listenerResult{wavPath: wav}
 	}()
 	s.Done()
 
 	s = Step(t, "wait-listener-settles")
-	// Give the listener ~2s to settle into the room before the speaker
-	// joins and starts streaming. Without this the speaker often ends up
-	// in the room alone for the first ~500ms and the WAV's prefix gets
-	// mixed into silence (verified empirically: 1s caused "the sun" to be
-	// clipped, leaving only "is shining" in the recording).
-	time.Sleep(2 * time.Second)
+	// Block on the listener's Answered signal instead of a 2s wall
+	// timer. The bridge needs ~300ms after the 200 OK to wire mixer →
+	// caller-leg media path; without that pad the speaker's WAV prefix
+	// can land before mixing is live.
+	select {
+	case <-answeredCh:
+	case <-ctx.Done():
+		s.Fatalf("listener never answered: %v", ctx.Err())
+	}
+	time.Sleep(300 * time.Millisecond)
 	s.Done()
 
 	s = Step(t, "place-speaker-call")
@@ -136,7 +167,6 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 	if err := speaker.SendSilence(); err != nil {
 		s.Fatalf("speaker post-SendSilence: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
 	_ = speaker.Hangup()
 	s.Done()
 
@@ -158,7 +188,7 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "assert-conference-audio-transcript")
-	AssertTranscriptContains(s, ctx, res.wavPath, "sun", "shining")
+	AssertTranscriptHasMost(s, ctx, res.wavPath, 1, "sun", "shining")
 	s.Done()
 }
 

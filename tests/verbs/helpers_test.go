@@ -132,6 +132,24 @@ func claimUAS(t *testing.T, ctx context.Context) *UAS {
 	}
 }
 
+// claimUAS2 provisions two independent SIP UAs concurrently. Used by
+// multi-leg tests (dial, conference, enqueue) that need a caller +
+// callee. Each `claimUAS` call costs ~1s for /Clients POST + REGISTER;
+// running them in parallel saves ~1s per multi-leg test on the
+// critical path.
+func claimUAS2(t *testing.T, ctx context.Context) (*UAS, *UAS) {
+	t.Helper()
+	type result struct {
+		ua *UAS
+	}
+	a := make(chan result, 1)
+	b := make(chan result, 1)
+	go func() { a <- result{claimUAS(t, ctx)} }()
+	go func() { b <- result{claimUAS(t, ctx)} }()
+	ra, rb := <-a, <-b
+	return ra.ua, rb.ua
+}
+
 // placeCallTo (Phase 1) — POSTs /Calls with inline app_json and returns
 // the inbound Call that jambonz routes to uas.
 //
@@ -425,14 +443,16 @@ func SessionAckEmpty(sess *webhook.Session, verbs ...string) {
 
 // RecognizerArmDelay is the silence we pad after Answer + SendSilence
 // before user audio starts, to let the cluster's STT recognizer fully
-// arm. Empirically: 500ms loses the first word of a 4-word phrase;
-// 1500ms reliably captures the full phrase.
-const RecognizerArmDelay = 1500 * time.Millisecond
+// arm. Empirically: 500ms loses the first word of a 4-word phrase.
+// 700ms is the smallest pad that reliably captures the full phrase
+// while shaving ~800ms per arm site (used 11+ times across the suite).
+const RecognizerArmDelay = 700 * time.Millisecond
 
 // LLMReplyWindow is how long we wait after sending the user prompt for
 // the LLM round-trip + TTS streaming to complete and the recording to
-// capture the full reply. The agent verb's actionHook only fires at
-// call-end, not at LLM-reply-end, so the wait is upper-bound by us.
+// capture the full reply. 12s gives ~2s of end-of-utterance + ~3s LLM
+// + ~5s TTS + 2s slack — earlier shaving to 8/10s caused turn-1
+// echoes to drop "hello"/"how" because the recording cut off mid-stream.
 const LLMReplyWindow = 12 * time.Second
 
 // BridgeSettleDelay is the delay between caller answer and the callee
@@ -696,6 +716,186 @@ func AssertTranscriptContains(s *StepCtx, ctx context.Context, recording string,
 		if !strings.Contains(transcript, n) {
 			s.Errorf("transcript missing %q (normalized %q)", want, n)
 		}
+	}
+}
+
+// LongestSilenceMS scans a linear-16 little-endian 8 kHz mono PCM file
+// and returns the longest contiguous window where the per-sample
+// absolute amplitude stayed below `thresh`. Used for SSML break-tag
+// tests: a `<break time="500ms"/>` should produce a measurable silence
+// gap in the recording.
+//
+// Implementation note: walks samples in 10ms frames (80 samples each)
+// and treats a frame as "silent" if its peak absolute amplitude is
+// below thresh. Frame-based smoothing avoids false splits from a
+// single noisy sample mid-silence.
+func LongestSilenceMS(pcmPath string, thresh int16) (int, error) {
+	data, err := os.ReadFile(pcmPath)
+	if err != nil {
+		return 0, fmt.Errorf("read pcm: %w", err)
+	}
+	const frameSamples = 80 // 10ms @ 8kHz
+	const frameBytes = frameSamples * 2
+	if len(data) < frameBytes {
+		return 0, nil
+	}
+	maxRun, cur := 0, 0
+	for off := 0; off+frameBytes <= len(data); off += frameBytes {
+		var peak int16
+		for i := 0; i < frameBytes; i += 2 {
+			s := int16(data[off+i]) | int16(data[off+i+1])<<8
+			if s < 0 {
+				s = -s
+			}
+			if s > peak {
+				peak = s
+			}
+		}
+		if peak < thresh {
+			cur++
+			if cur > maxRun {
+				maxRun = cur
+			}
+		} else {
+			cur = 0
+		}
+	}
+	return maxRun * 10, nil // each frame = 10ms
+}
+
+// AssertTranscriptContainsInOrder runs Deepgram STT and asserts each
+// `wants` substring appears in the transcript AND in the given order
+// (each next match must start AFTER the previous match ends). Used by
+// `say` array tests where jambonz plays the entries sequentially.
+func AssertTranscriptContainsInOrder(s *StepCtx, ctx context.Context, recording string, wants ...string) {
+	s.t.Helper()
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		return
+	}
+	transcript, err := stt.Transcribe(ctx, recording)
+	if err != nil {
+		s.Fatalf("stt.Transcribe(%s): %v", recording, err)
+	}
+	s.Logf("transcript: %q", transcript)
+	cursor := 0
+	for _, want := range wants {
+		n := stt.Normalize(want)
+		i := strings.Index(transcript[cursor:], n)
+		if i < 0 {
+			s.Errorf("transcript %q missing %q (or out of order; cursor at offset %d)",
+				transcript, want, cursor)
+			return
+		}
+		cursor += i + len(n)
+	}
+}
+
+// AssertMulawTranscriptHasMost is AssertTranscriptHasMost but uses
+// stt.TranscribeMulawWAV (encoding=mulaw).
+func AssertMulawTranscriptHasMost(s *StepCtx, ctx context.Context, recording string, minHits int, wants ...string) {
+	s.t.Helper()
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		return
+	}
+	transcript, err := stt.TranscribeMulawWAV(ctx, recording)
+	if err != nil {
+		s.Fatalf("stt.TranscribeMulawWAV(%s): %v", recording, err)
+	}
+	s.Logf("transcript: %q", transcript)
+	hits := 0
+	var missing []string
+	for _, want := range wants {
+		if strings.Contains(transcript, stt.Normalize(want)) {
+			hits++
+		} else {
+			missing = append(missing, want)
+		}
+	}
+	if hits < minHits {
+		s.Errorf("transcript %q matched only %d/%d (need %d). missing=%v",
+			transcript, hits, len(wants), minHits, missing)
+	}
+}
+
+// AssertMulawTranscriptContains is AssertTranscriptContains but uses
+// stt.TranscribeMulawWAV (encoding=mulaw) for files captured from the
+// listen/stream verb's WS audio path.
+func AssertMulawTranscriptContains(s *StepCtx, ctx context.Context, recording string, wants ...string) {
+	s.t.Helper()
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		return
+	}
+	transcript, err := stt.TranscribeMulawWAV(ctx, recording)
+	if err != nil {
+		s.Fatalf("stt.TranscribeMulawWAV(%s): %v", recording, err)
+	}
+	s.Logf("transcript: %q", transcript)
+	for _, want := range wants {
+		n := stt.Normalize(want)
+		if !strings.Contains(transcript, n) {
+			s.Errorf("transcript missing %q (normalized %q)", want, n)
+		}
+	}
+}
+
+// AssertTranscriptHasAnyOf runs Deepgram STT on the recording and
+// asserts the transcript contains EXACTLY ONE of the candidate
+// substrings. Used by `say` array-random and similar one-of-N tests:
+// zero matches → jambonz didn't say any of the alternatives; multiple
+// matches → it said more than one (regression). Both fail.
+func AssertTranscriptHasAnyOf(s *StepCtx, ctx context.Context, recording string, candidates ...string) {
+	s.t.Helper()
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		return
+	}
+	transcript, err := stt.Transcribe(ctx, recording)
+	if err != nil {
+		s.Fatalf("stt.Transcribe(%s): %v", recording, err)
+	}
+	s.Logf("transcript: %q", transcript)
+	hits := 0
+	var matched []string
+	for _, c := range candidates {
+		if strings.Contains(transcript, stt.Normalize(c)) {
+			hits++
+			matched = append(matched, c)
+		}
+	}
+	switch hits {
+	case 0:
+		s.Errorf("transcript %q matched none of %v", transcript, candidates)
+	case 1:
+		// expected case
+	default:
+		s.Errorf("transcript %q matched multiple candidates %v (want exactly one)",
+			transcript, matched)
+	}
+}
+
+// AssertTranscriptKeywordCount runs Deepgram STT on the recording and
+// asserts that `keyword` appears at least `min` times in the transcript.
+// Used by play loop/array tests to prove a playback actually ran N
+// times rather than once: a regression that ignores `loop` would still
+// pass a "contains the keyword" assertion but fail this one.
+func AssertTranscriptKeywordCount(s *StepCtx, ctx context.Context, recording, keyword string, min int) {
+	s.t.Helper()
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		return
+	}
+	transcript, err := stt.Transcribe(ctx, recording)
+	if err != nil {
+		s.Fatalf("stt.Transcribe(%s): %v", recording, err)
+	}
+	s.Logf("transcript: %q", transcript)
+	n := strings.Count(transcript, stt.Normalize(keyword))
+	if n < min {
+		s.Errorf("transcript %q contained %q %d time(s); want >= %d",
+			transcript, keyword, n, min)
 	}
 }
 

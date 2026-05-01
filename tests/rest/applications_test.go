@@ -27,8 +27,12 @@ func TestApplication_CRUD(t *testing.T) {
 		},
 		CallStatusHook: provision.Webhook{
 			URL:    "https://example.invalid/status",
-			Method: "POST",
+			Method: "GET",
 		},
+		SpeechSynthesisVendor:    "deepgram",
+		SpeechSynthesisVoice:     "aura-asteria-en",
+		SpeechRecognizerVendor:   "deepgram",
+		SpeechRecognizerLanguage: "en-US",
 	}
 
 	s := Step(t, "create-application")
@@ -55,6 +59,27 @@ func TestApplication_CRUD(t *testing.T) {
 	}
 	if app.CallHook.URL != body.CallHook.URL {
 		s.Errorf("call_hook.url mismatch: got %q want %q", app.CallHook.URL, body.CallHook.URL)
+	}
+	if app.CallHook.Method != body.CallHook.Method {
+		s.Errorf("call_hook.method mismatch: got %q want %q", app.CallHook.Method, body.CallHook.Method)
+	}
+	if app.CallStatusHook.URL != body.CallStatusHook.URL {
+		s.Errorf("call_status_hook.url mismatch: got %q want %q", app.CallStatusHook.URL, body.CallStatusHook.URL)
+	}
+	if app.CallStatusHook.Method != body.CallStatusHook.Method {
+		s.Errorf("call_status_hook.method mismatch: got %q want %q", app.CallStatusHook.Method, body.CallStatusHook.Method)
+	}
+	if app.SpeechSynthesisVendor != body.SpeechSynthesisVendor {
+		s.Errorf("speech_synthesis_vendor mismatch: got %q want %q", app.SpeechSynthesisVendor, body.SpeechSynthesisVendor)
+	}
+	if app.SpeechSynthesisVoice != body.SpeechSynthesisVoice {
+		s.Errorf("speech_synthesis_voice mismatch: got %q want %q", app.SpeechSynthesisVoice, body.SpeechSynthesisVoice)
+	}
+	if app.SpeechRecognizerVendor != body.SpeechRecognizerVendor {
+		s.Errorf("speech_recognizer_vendor mismatch: got %q want %q", app.SpeechRecognizerVendor, body.SpeechRecognizerVendor)
+	}
+	if app.SpeechRecognizerLanguage != body.SpeechRecognizerLanguage {
+		s.Errorf("speech_recognizer_language mismatch: got %q want %q", app.SpeechRecognizerLanguage, body.SpeechRecognizerLanguage)
 	}
 	s.Done()
 

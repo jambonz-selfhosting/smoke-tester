@@ -34,6 +34,23 @@ func TestRecentCalls_List(t *testing.T) {
 		s.Errorf("page mismatch: got %d want 1", page.Page.Int())
 	}
 	s.Done()
+
+	s = Step(t, "assert-pagination-respected")
+	// Re-query with Count=1 and assert the data slice is bounded by the
+	// requested count. Catches a regression where jambonz silently
+	// ignores Count and returns the default-sized page.
+	page2, err := client.ListRecentCalls(ctx, provision.RecentCallsQuery{
+		Page:  1,
+		Count: 1,
+		Days:  7,
+	})
+	if err != nil {
+		s.Fatalf("list recent_calls (count=1): %v", err)
+	}
+	if len(page2.Data) > 1 {
+		s.Errorf("Count=1 ignored: got %d rows", len(page2.Data))
+	}
+	s.Done()
 }
 
 // TestRecentCalls_List_SP exercises the SP-scoped variant
@@ -84,6 +101,20 @@ func TestAlerts_List(t *testing.T) {
 	s = Step(t, "assert-page-is-one")
 	if page.Page.Int() != 1 {
 		s.Errorf("page mismatch: got %d want 1", page.Page.Int())
+	}
+	s.Done()
+
+	s = Step(t, "assert-pagination-respected")
+	page2, err := client.ListAlerts(ctx, provision.AlertsQuery{
+		Page:  1,
+		Count: 1,
+		Days:  7,
+	})
+	if err != nil {
+		s.Fatalf("list alerts (count=1): %v", err)
+	}
+	if len(page2.Data) > 1 {
+		s.Errorf("Count=1 ignored: got %d rows", len(page2.Data))
 	}
 	s.Done()
 }

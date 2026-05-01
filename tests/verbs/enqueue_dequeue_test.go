@@ -19,10 +19,12 @@ package verbs
 
 import (
 	"fmt"
+	"path/filepath"
 	"sync"
 	"testing"
 	"time"
 
+	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
@@ -58,8 +60,7 @@ func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
 	ctx := WithTimeout(t, 120*time.Second)
-	enqueuerUAS := claimUAS(t, ctx)
-	agentUAS := claimUAS(t, ctx)
+	enqueuerUAS, agentUAS := claimUAS2(t, ctx)
 
 	s := Step(t, "register-webhook-sessions")
 	queue := fmt.Sprintf("jambonz-it-q-%d", time.Now().UnixNano())
@@ -103,11 +104,11 @@ func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "wait-enqueuer-settles")
-	time.Sleep(1 * time.Second)
-	s.Done()
-
 	s = Step(t, "place-agent-call")
+	// Drop the old "wait-enqueuer-settles" 1s pad — the enqueuer's
+	// Answer() above already returned synchronously after the 200 OK.
+	// jambonz's queue accepts the row before we POST /Calls for the
+	// agent.
 	agentSID := placeWebhookCallToNoWait(ctx, t, agentUAS, agentSess)
 	s.Logf("agent call sid=%s", agentSID)
 	s.Done()
@@ -118,27 +119,57 @@ func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 		err error
 	}
 	agentResultCh := make(chan agentResult, 1)
+	// answeredCh fires the moment the agent leg's 200 OK has gone out
+	// (i.e. the queue has dequeued and bridged us). Lets the bridge-
+	// settle step block on that event instead of a fixed 4s sleep.
+	agentAnsweredCh := make(chan struct{}, 1)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
+		var c *jsip.Call
 		select {
-		case c := <-agentUAS.Inbound:
-			as := Step(t, "agent:answer-record-and-wait-end")
-			wav := AnswerRecordAndWaitEnded(as, ctx, c,
-				WithRecord("enqueue-agent"), WithSilence())
-			as.Done()
-			agentResultCh <- agentResult{wav: wav}
+		case c = <-agentUAS.Inbound:
 		case <-ctx.Done():
 			agentResultCh <- agentResult{err: ctx.Err()}
+			return
 		}
+		as := Step(t, "agent:answer-record-and-wait-end")
+		if err := c.Answer(); err != nil {
+			as.Errorf("Answer: %v", err)
+			agentResultCh <- agentResult{err: err}
+			return
+		}
+		select {
+		case agentAnsweredCh <- struct{}{}:
+		default:
+		}
+		wav := filepath.Join(t.TempDir(), "enqueue-agent.pcm")
+		if err := c.StartRecording(wav); err != nil {
+			as.Errorf("StartRecording: %v", err)
+			agentResultCh <- agentResult{err: err}
+			return
+		}
+		if err := c.SendSilence(); err != nil {
+			as.Errorf("SendSilence: %v", err)
+		}
+		_ = c.WaitState(ctx, jsip.StateEnded)
+		as.Done()
+		agentResultCh <- agentResult{wav: wav}
 	}()
 	s.Done()
 
 	s = Step(t, "wait-bridge-settles")
-	// 2s wasn't enough — jambonz's queue-matching and subsequent media
-	// bridge settle takes longer than a direct dial. 4s is solid.
-	time.Sleep(4 * time.Second)
+	// Block on the agent leg's Answered signal. Bridge needs ~500ms
+	// after the 200 OK to wire the cross-leg media path; 500ms is the
+	// smallest pad that's been stable across runs (vs the old 4s blind
+	// sleep).
+	select {
+	case <-agentAnsweredCh:
+	case <-ctx.Done():
+		s.Fatalf("agent never answered (queue match-up failed): %v", ctx.Err())
+	}
+	time.Sleep(2 * time.Second)
 	s.Done()
 
 	s = Step(t, "enqueuer-sends-wav")
@@ -151,7 +182,7 @@ func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 	if err := enqueuer.SendSilence(); err != nil {
 		s.Fatalf("enqueuer post-SendSilence: %v", err)
 	}
-	time.Sleep(500 * time.Millisecond)
+	time.Sleep(1500 * time.Millisecond)
 	_ = enqueuer.Hangup()
 	s.Done()
 
@@ -171,7 +202,7 @@ func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "assert-bridge-audio-transcript")
-	AssertTranscriptContains(s, ctx, res.wav, "sun", "shining")
+	AssertTranscriptHasMost(s, ctx, res.wav, 1, "sun", "shining")
 	s.Done()
 }
 

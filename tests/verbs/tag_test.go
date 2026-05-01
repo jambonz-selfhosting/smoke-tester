@@ -73,24 +73,53 @@ func TestVerb_Tag_DataInCallbacks(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "assert-customer-data-foo-bar")
-	var found bool
+	s = Step(t, "assert-customer-data-on-post-tag-callbacks")
+	// Every "completed"-status status callback (fired AFTER the tag
+	// verb ran) must carry the merged customerData. Pre-tag statuses
+	// (trying / ringing / in-progress) fire before the tag verb
+	// executes — those legitimately don't carry it. The values must
+	// also round-trip with the right types (foo string, n int 7).
+	postTagWithTag := 0
+	postTagWithout := 0
+	var postTagDetails []string
 	for _, cb := range cbs {
-		if cb.NestedString("customerData.foo") != "bar" {
+		if cb.Hook != "call_status_hook" {
 			continue
 		}
-		found = true
-		if got := int(toFloat(cb.NestedAny("customerData.n"))); got != 7 {
-			s.Errorf("customerData.n: got %v want 7", cb.NestedAny("customerData.n"))
+		status := cb.NestedString("call_status")
+		// "completed" + "failed" + "no-answer" all fire AFTER the verb
+		// chain executed (and thus AFTER tag); pre-answer statuses do
+		// not. Filter to post-verb-chain statuses.
+		if status != "completed" && status != "failed" && status != "no-answer" {
+			continue
 		}
-		break
+		if cb.NestedString("customerData.foo") == "bar" {
+			postTagWithTag++
+			if got := int(toFloat(cb.NestedAny("customerData.n"))); got != 7 {
+				s.Errorf("customerData.n: got %v want 7", cb.NestedAny("customerData.n"))
+			}
+		} else {
+			postTagWithout++
+			postTagDetails = append(postTagDetails, cb.Hook+"="+status)
+		}
 	}
-	if !found {
-		s.Errorf("no callback carried customerData with foo=bar; saw %d callbacks", len(cbs))
+	if postTagWithTag == 0 {
+		s.Errorf("no post-tag callback carried customerData.foo=bar; saw %d callbacks", len(cbs))
 		for _, cb := range cbs {
-			s.Logf("  hook=%s customerData=%v", cb.Hook, cb.CustomerData())
+			s.Logf("  hook=%s status=%s customerData=%v",
+				cb.Hook, cb.NestedString("call_status"), cb.CustomerData())
 		}
 	}
+	// We tolerate at most ONE post-verb-chain status missing the tag —
+	// jambonz's "completed" final hook can race with session teardown
+	// and lose customerData on the very last frame. More than one miss
+	// is a real regression.
+	if postTagWithout > 1 {
+		s.Errorf("%d post-verb-chain status callbacks missing customerData.foo=bar: %v",
+			postTagWithout, postTagDetails)
+	}
+	s.Logf("post-tag status callbacks: %d with tag, %d without",
+		postTagWithTag, postTagWithout)
 	s.Done()
 }
 

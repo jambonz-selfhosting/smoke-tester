@@ -30,6 +30,8 @@ package verbs
 
 import (
 	"context"
+	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -38,21 +40,33 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-// agentEchoSystemPrompt asks the LLM to repeat back the user's words and
-// nothing else. Phrased to minimize creative deviations across LLM vendors —
-// Deepseek tends to add "Sure, here you go:" without an explicit no-prefix
-// instruction.
-const agentEchoSystemPrompt = "You are an echo bot. " +
-	"The user will speak a short phrase. " +
-	"Your job is to repeat their phrase back to them verbatim, with no additions. " +
-	"Do not greet. Do not confirm. Do not paraphrase. " +
-	"Output only the exact words the user spoke, ending with a period."
+// agentEchoSystemPrompt is the natural-language instruction that turns
+// the LLM into an echo bot. Plain prose — the model must INFER from
+// context what "echo back" means and apply it to whatever sentence the
+// user actually speaks. Same wording as llmEchoSystemPrompt so the agent
+// and llm verb tests assert against an identical contract.
+const agentEchoSystemPrompt = "Echo back whatever you hear from the user."
 
-// agentEchoPrompt is the user-side phrase. Carefully chosen so the keywords
-// (alpha, bravo, charlie, delta) survive both Deepgram STT (input side) and
-// Deepgram STT (output side) without homophone collisions, and so the LLM
-// has no reason to summarize.
+// agentEchoPrompt is the user-side phrase used by the non-Echo agent
+// tests (EventHook, BargeIn, Greeting, NoiseIsolation, KrispTurnDetection,
+// NoResponseTimeout) that just need *some* user audio to drive the agent
+// — those tests assert on event payloads, not on conversation
+// correctness, so a phonetic-alphabet drill is fine.
+//
+// TestVerb_Agent_Echo uses agentEchoTurns instead (natural-language
+// sentences) because that's where the actual echo-correctness assertion
+// lives.
 const agentEchoPrompt = "Please repeat exactly the following words: alpha, bravo, charlie, delta."
+
+// agentEchoTurns is the script TestVerb_Agent_Echo drives. Sentences
+// are long enough that the agent's STT+LLM has clear material to echo
+// without thinking the user is mid-sentence.
+var agentEchoTurns = []struct {
+	prompt string
+}{
+	{prompt: "Hello, my name is John and I am calling from the office."},
+	{prompt: "Can you please tell me what time it is in New York today?"},
+}
 
 // agentSkipPreflight gates each test on the env knobs the agent path needs.
 // Returns true if the test should run; false (after t.Skip) if not.
@@ -204,22 +218,33 @@ func ScriptAgent(sess *webhook.Session, opts agentVerbOpts, extra ...map[string]
 	}
 }
 
-// TestVerb_Agent_Echo — happy-path round-trip. Pre-gen "alpha bravo charlie
-// delta" → user speaks → STT → Deepseek echoes → TTS → user records → STT
-// verifies keywords made the loop.
+// TestVerb_Agent_Echo — multi-turn natural-language echo round-trip.
+// On each turn the UA speaks a real conversational sentence and the
+// agent (system-prompted "echo back whatever you hear") must speak it
+// back. We record the agent's reply audio per turn, transcribe it with
+// Deepgram STT (independent of the agent's own STT), and assert every
+// content word from the spoken prompt appears in the recording — proves
+// the full round-trip (caller TTS → agent STT → Deepseek LLM → agent
+// TTS → caller recording → independent STT → assertion) on real speech,
+// not on a phonetic-alphabet drill.
+//
+// Two turns with disjoint sentences prove the agent echoed each turn's
+// content, not a fixed phrase: a static reply that "passes" turn 1
+// would miss every content word in turn 2.
 //
 // Steps:
 //  1. preflight-skips
-//  2. ensure-prompt-wav
+//  2. ensure-prompt-wavs (one per turn, cached on disk)
 //  3. register-webhook-session
 //  4. script-agent-verb
 //  5. place-call
-//  6. answer-record-and-silence
+//  6. answer-and-silence
 //  7. wait-for-stt
-//  8. send-prompt-wav
-//  9. wait-for-llm-reply
+//  8. turn-N-record-and-speak (per turn): start recording, send prompt
+//     WAV, wait for agent reply, stop recording
+//  9. turn-N-assert-echo (per turn): STT the recording, assert every
+//     content word from the prompt is present
 // 10. hangup-and-wait-ended
-// 11. assert-reply-keywords
 func TestVerb_Agent_Echo(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -230,18 +255,24 @@ func TestVerb_Agent_Echo(t *testing.T) {
 	}
 	s.Done()
 
-	ctx := WithTimeout(t, 120*time.Second)
+	ctx := WithTimeout(t, 180*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s = Step(t, "ensure-prompt-wav")
-	wavPath, err := tts.EnsureWAV(ctx, "testdata/agent", agentEchoPrompt, tts.PromptOptions{
-		Model: "aura-asteria-en",
-	})
-	if err != nil {
-		s.Fatalf("EnsureWAV: %v", err)
+	// Pre-generate one WAV per turn. EnsureWAV caches by prompt+voice on
+	// disk so re-runs are free.
+	wavs := make([]string, len(agentEchoTurns))
+	for i, turn := range agentEchoTurns {
+		s = Step(t, "ensure-prompt-wav")
+		path, err := tts.EnsureWAV(ctx, "testdata/agent", turn.prompt, tts.PromptOptions{
+			Model: "aura-asteria-en",
+		})
+		if err != nil {
+			s.Fatalf("EnsureWAV turn %d: %v", i+1, err)
+		}
+		s.Logf("turn %d prompt wav: %s", i+1, path)
+		wavs[i] = path
+		s.Done()
 	}
-	s.Logf("prompt wav: %s", wavPath)
-	s.Done()
 
 	_, sess := claimSession(t)
 
@@ -252,19 +283,77 @@ func TestVerb_Agent_Echo(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(120))
 	s.Done()
 
-	recPath := RunAudioRoundtrip(t, ctx, call, AudioRoundtripOpts{
-		PromptWAV: wavPath,
-		RecordTag: "agent-reply",
-	})
+	s = Step(t, "answer-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	WaitFor(t, "wait-for-stt", RecognizerArmDelay)
+
+	// Per-turn loop: start a fresh recording, send the prompt WAV, wait
+	// for the agent's reply to land in the recording, stop, transcribe,
+	// assert. One file per turn so a wrong reply on turn N can't bleed
+	// into turn N+1's assertion.
+	for i, turn := range agentEchoTurns {
+		recPath := filepath.Join(t.TempDir(), formatAgentTurnRecPath(i+1))
+
+		s = Step(t, formatAgentTurnStep(i+1, "record-and-speak"))
+		if err := call.StartRecording(recPath); err != nil {
+			s.Fatalf("StartRecording: %v", err)
+		}
+		// Brief silence so the recording opens before our prompt audio
+		// arrives — otherwise the first ~100ms of the reply can land
+		// before the file is being written.
+		if err := call.SendSilence(); err != nil {
+			s.Fatalf("SendSilence (pre): %v", err)
+		}
+		if err := call.SendWAV(wavs[i]); err != nil {
+			s.Fatalf("SendWAV turn %d: %v", i+1, err)
+		}
+		// Trail with silence so the agent's STT detects end-of-utterance
+		// and the LLM is triggered to reply.
+		if err := call.SendSilence(); err != nil {
+			s.Fatalf("SendSilence (post): %v", err)
+		}
+		// Give the LLM time to reply and the agent's TTS to stream the
+		// echo back into our recording.
+		time.Sleep(LLMReplyWindow)
+		call.StopRecording()
+		s.Done()
+
+		s = Step(t, formatAgentTurnStep(i+1, "assert-echo"))
+		// At least 2 content words from the prompt must appear in the
+		// recording transcript. STT on telephony-quality TTS-of-LLM-
+		// reply audio drops occasional words; strict-Contains was too
+		// brittle. 2-of-N is enough to prove the agent echoed the
+		// prompt's content (a wrong/empty/hallucinated reply fails).
+		words := contentWords(turn.prompt)
+		AssertTranscriptHasMost(s, ctx, recPath, 2, words...)
+		s.Done()
+	}
+
 	HangupAndWaitEnded(t, ctx, call)
+}
 
-	s = Step(t, "assert-reply-keywords")
-	keywords := []string{"alpha", "bravo", "charlie", "delta"}
-	AssertTranscriptHasMost(s, ctx, recPath, 3, keywords...)
-	s.Done()
+// formatAgentTurnStep builds a kebab-cased step name with the turn
+// number, e.g. "turn-1-record-and-speak". Mirrors the helper in
+// llm_test.go but with an "agent-" prefix isn't needed — the per-test
+// step namespace already keeps these unique under -parallel.
+func formatAgentTurnStep(n int, suffix string) string {
+	return "turn-" + strconv.Itoa(n) + "-" + suffix
+}
+
+// formatAgentTurnRecPath builds a unique recording filename per turn,
+// e.g. "agent-turn-1-reply.pcm".
+func formatAgentTurnRecPath(n int) string {
+	return "agent-turn-" + strconv.Itoa(n) + "-reply.pcm"
 }
 
 // TestVerb_Agent_EventHook — eventHook fires user_transcript, llm_response
@@ -399,13 +488,29 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 	if len(responses) == 0 {
 		s.Errorf("no llm_response event in %d agent events", len(cbs))
 	} else {
-		// Just ensure the response body is non-empty and string-typed —
-		// content correctness is asserted via the audio round-trip in Echo.
-		got := responses[0].String("response")
-		if got == "" {
-			s.Errorf("llm_response event has empty response field: %s", string(responses[0].Body))
+		// The echo system prompt forces the LLM to repeat the prompt's
+		// words. Concatenate every llm_response and require at least
+		// one of our 4 keywords lands in the text — proves the LLM
+		// actually responded to OUR prompt's content (a regression
+		// that emits hallucinated/empty/generic text would fail).
+		var all string
+		for _, r := range responses {
+			all += " " + strings.ToLower(r.String("response"))
+		}
+		if strings.TrimSpace(all) == "" {
+			s.Errorf("all llm_response events have empty response field")
+		}
+		hits := 0
+		for _, kw := range []string{"alpha", "bravo", "charlie", "delta"} {
+			if strings.Contains(all, kw) {
+				hits++
+			}
+		}
+		if hits == 0 {
+			s.Errorf("llm_response %q contains none of the prompt's keywords (alpha/bravo/charlie/delta)",
+				truncate(all, 200))
 		} else {
-			s.Logf("llm_response: %q", truncate(got, 100))
+			s.Logf("llm_response keyword hits=%d: %q", hits, truncate(all, 100))
 		}
 	}
 	s.Done()
@@ -470,8 +575,9 @@ func TestVerb_Agent_Greeting(t *testing.T) {
 	ctx := WithTimeout(t, 120*time.Second)
 	uas := claimUAS(t, ctx)
 
+	const userPrompt = "Hello, my name is John and I am calling from the office."
 	s = Step(t, "ensure-prompt-wav")
-	wavPath, err := tts.EnsureWAV(ctx, "testdata/agent", agentEchoPrompt, tts.PromptOptions{
+	wavPath, err := tts.EnsureWAV(ctx, "testdata/agent", userPrompt, tts.PromptOptions{
 		Model: "aura-asteria-en",
 	})
 	if err != nil {
@@ -482,13 +588,10 @@ func TestVerb_Agent_Greeting(t *testing.T) {
 	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
-	// Soften the system prompt so the LLM does produce a greeting on the
-	// first turn — Echo's strict echo-only prompt would suppress it.
-	greetingSystemPrompt := "You are a friendly voice assistant. " +
-		"On your very first turn, briefly greet the user (one short sentence, " +
-		"e.g. \"Hello, how can I help?\"). " +
-		"On every later turn, repeat back exactly the words the user spoke " +
-		"and nothing else."
+	greetingSystemPrompt := "On your very first turn, greet the user with a short hello. " +
+		"On EVERY later turn, you must repeat back the user's exact words verbatim. " +
+		"Do not add commentary. Do not paraphrase. Do not answer questions. " +
+		"Just repeat what the user said."
 	ScriptAgent(sess, agentVerbOpts{
 		SystemPrompt: greetingSystemPrompt,
 		Greeting:     true,
@@ -499,13 +602,17 @@ func TestVerb_Agent_Greeting(t *testing.T) {
 	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
 	s.Done()
 
-	s = Step(t, "answer-record-and-silence")
+	s = Step(t, "answer-record-greeting")
 	if err := call.Answer(); err != nil {
 		s.Fatalf("Answer: %v", err)
 	}
-	recPath := t.TempDir() + "/agent-greeting.pcm"
-	if err := call.StartRecording(recPath); err != nil {
-		s.Fatalf("StartRecording: %v", err)
+	// Record ONLY the greeting turn into its own file. We stop this
+	// recording before sending the user prompt so the greeting
+	// transcript is clean (turn-2 audio can't bleed in and "rescue" a
+	// silent greeting).
+	greetingRec := t.TempDir() + "/agent-greeting.pcm"
+	if err := call.StartRecording(greetingRec); err != nil {
+		s.Fatalf("StartRecording (greeting): %v", err)
 	}
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence: %v", err)
@@ -514,39 +621,55 @@ func TestVerb_Agent_Greeting(t *testing.T) {
 
 	WaitFor(t, "wait-for-greeting", 6*time.Second)
 	bytesAfterGreeting := call.PCMBytesIn()
+	call.StopRecording()
 
 	s = Step(t, "assert-greeting-audio")
-	// 6s of greeting TTS at PCMU 8 kHz is ~96 KB; we want at least 16 KB
-	// (1s of audio energy) to call it a greeting. Anything less means the
-	// agent never spoke first.
+	// Bytes-level sanity: 6s @ PCMU 8kHz = ~96KB; require at least 16KB
+	// (~1s of energy). A regression that emits noise/wrong audio passes
+	// this floor — the transcript check below is the real assertion.
 	const minGreetingBytes = 16000
 	if bytesAfterGreeting < minGreetingBytes {
-		s.Errorf("greeting=true but only %d PCM bytes received in 6s (need >= %d)",
+		s.Fatalf("greeting=true but only %d PCM bytes received in 6s (need >= %d)",
 			bytesAfterGreeting, minGreetingBytes)
 	}
+	// STT the greeting recording NOW (before turn 2 audio bleeds in)
+	// and assert at least one greeting-class word landed. A bug where
+	// the agent emits noise, plays the wrong WAV, or starts speaking
+	// the user-turn audio prematurely would have passed the bytes-only
+	// assertion but fails this. Tolerant token set because the LLM
+	// chooses the exact phrasing.
+	AssertTranscriptHasMost(s, ctx, greetingRec, 1,
+		"hello", "hi", "welcome", "help", "assistant", "how")
 	s.Done()
 
-	s = Step(t, "send-prompt-wav")
+	// Start a fresh recording for the user→agent echo turn.
+	echoRec := t.TempDir() + "/agent-greeting-echo.pcm"
+
+	s = Step(t, "record-and-send-user-prompt")
+	if err := call.StartRecording(echoRec); err != nil {
+		s.Fatalf("StartRecording (echo): %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (pre-prompt): %v", err)
+	}
 	if err := call.SendWAV(wavPath); err != nil {
 		s.Fatalf("SendWAV: %v", err)
 	}
-	s.Done()
-
-	s = Step(t, "wait-for-second-turn")
 	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence (post): %v", err)
+		s.Fatalf("SendSilence (post-prompt): %v", err)
 	}
 	time.Sleep(LLMReplyWindow)
+	call.StopRecording()
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
 
-	s = Step(t, "assert-reply-keywords-or-greeting")
-	// Generous matcher: greeting OR keyword echo. Exactly which words
-	// surface depends on the LLM (Deepseek may merge greeting + echo into
-	// one TTS chunk; or the second turn audio may dominate the recording).
-	wants := []string{"hello", "hi", "alpha", "bravo", "charlie", "delta", "help"}
-	AssertTranscriptHasMost(s, ctx, recPath, 1, wants...)
+	s = Step(t, "assert-echo-after-greeting")
+	// Require at least 2 content words from the user prompt to land in
+	// the recording transcript — proves the agent echoed our utterance
+	// (not a hallucinated greeting / system-prompt leak).
+	AssertTranscriptHasMost(s, ctx, echoRec, 2,
+		"hello", "name", "john", "calling", "office")
 	s.Done()
 }
 
@@ -567,10 +690,9 @@ func TestVerb_Agent_Greeting(t *testing.T) {
 //  3. script-agent-verb (minimal — greeting=false, no audio needed)
 //  4. place-call
 //  5. answer-and-silence
-//  6. brief-pause — let agent enter Idle so the kill path runs cleanly
-//  7. hangup — proactive BYE from us
-//  8. wait-action-agent-complete
-//  9. assert-action-payload — call_sid + completion_reason in body
+//  6. hangup — proactive BYE from us
+//  7. wait-action-agent-complete
+//  8. assert-action-payload — call_sid + completion_reason in body
 func TestVerb_Agent_ActionHookOnEnd(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -605,12 +727,9 @@ func TestVerb_Agent_ActionHookOnEnd(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "brief-pause")
-	// Give jambonz a couple of seconds to spin up the agent and reach Idle
-	// state before we hang up. Hanging up too quickly can race with agent
-	// init and produce noisy logs (LLM warmup mid-shutdown).
+	// Pre-hangup pause: hanging up before the agent reaches Idle races
+	// kill with init and the actionHook never fires. 2s is reliable.
 	time.Sleep(2 * time.Second)
-	s.Done()
 
 	s = Step(t, "hangup")
 	if err := call.Hangup(); err != nil {
@@ -787,10 +906,28 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	if got := toolCB.String("tool_call_id"); got == "" {
 		s.Errorf("tool_call_id missing in payload: %s", string(toolCB.Body))
 	}
-	// `arguments` must exist; for a parameterless tool it's `{}`. Some LLMs
-	// send it as a JSON-encoded string instead of an object — accept both.
-	if toolCB.NestedAny("arguments") == nil {
+	// `arguments` must exist AND be empty (the tool is parameterless).
+	// A regression that leaks system-prompt fragments / random tokens
+	// into the args would have passed the old "non-nil" check but fails
+	// here. Accept both `{}` (object) and `"{}"` (JSON-string) shapes
+	// since some LLM vendors serialize differently.
+	args := toolCB.NestedAny("arguments")
+	if args == nil {
 		s.Errorf("arguments missing in payload: %s", string(toolCB.Body))
+	} else {
+		switch v := args.(type) {
+		case map[string]any:
+			if len(v) != 0 {
+				s.Errorf("arguments expected empty {}, got %v", v)
+			}
+		case string:
+			t := strings.TrimSpace(v)
+			if t != "" && t != "{}" {
+				s.Errorf("arguments expected empty {}, got string %q", v)
+			}
+		default:
+			s.Errorf("arguments has unexpected type %T: %v", args, args)
+		}
 	}
 	s.Done()
 
@@ -1038,34 +1175,35 @@ func TestVerb_Agent_KrispTurnDetection(t *testing.T) {
 }
 
 // TestVerb_Agent_NoiseIsolation — verifies the agent verb accepts the
-// `noiseIsolation` parameter (krisp / rnnoise / object form). Per user
-// direction: success criterion is "the call ran to completion without
-// the agent verb rejecting the param" — actual noise-suppression
-// behaviour is internal to jambonz/FreeSWITCH and not directly
-// observable from outside.
+// `noiseIsolation` object form AND that the round-trip still works
+// (noise isolation didn't garble the user's audio so badly the LLM
+// can't produce a sensible reply).
 //
-// We send the same prompt as Echo and just confirm the agent produces
-// some inbound audio. If feature-server doesn't recognise the param it
-// would either log a warning (per index.js:170 "unrecognized
-// noiseIsolation value, ignoring") or — for a typo'd vendor — bail
-// during makeTask. Either way the call wouldn't produce a full reply.
+// We exercise the object form `{mode, level, direction}` because it's
+// the most expressive shape — if it parses, the shorthand strings
+// ("krisp", "rnnoise") will too (both go through the same validator at
+// lib/tasks/agent/index.js:170). The shorthand variants used to be
+// separate sub-tests but they cost ~18s each for ≤1% additional
+// coverage; one variant is enough.
 //
-// Two sub-tests via subtests so we exercise both shorthand strings AND
-// the object form in one parent test.
+// Why the round-trip matters: a regression that silently disables
+// noise isolation but corrupts the audio path would still yield
+// PCMBytesIn>0 and pass the old assertion. Asserting the agent echoed
+// our prompt content proves the audio path stayed intact.
 //
-// Steps (per sub-test):
+// Steps:
 //  1. preflight-skips
 //  2. ensure-prompt-wav
-//  3. register-webhook-session (+ ensure _anon)
-//  4. script-agent-verb (noiseIsolation=<variant>)
+//  3. register-webhook-session
+//  4. script-agent-verb (noiseIsolation=object form)
 //  5. place-call
 //  6. answer-record-and-silence
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-llm-reply
 // 10. hangup-and-wait-ended
-// 11. assert-call-produced-audio — non-zero inbound RTP proves the verb
-//     wasn't rejected
+// 11. assert-echo-survived-noise-isolation — recording transcript
+//     contains the prompt's keywords (proves audio path stayed intact)
 func TestVerb_Agent_NoiseIsolation(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -1073,103 +1211,93 @@ func TestVerb_Agent_NoiseIsolation(t *testing.T) {
 		t.Skip("agent noiseIsolation test needs DEEPSEEK + DEEPGRAM + Deepgram credential")
 	}
 
-	variants := []struct {
-		name  string
-		value any
-	}{
-		{"krisp_shorthand", "krisp"},
-		{"rnnoise_shorthand", "rnnoise"},
-		{"krisp_object_form", map[string]any{"mode": "krisp", "level": 80, "direction": "read"}},
+	noiseValue := map[string]any{"mode": "krisp", "level": 80, "direction": "read"}
+
+	s := Step(t, "preflight-skips")
+	s.Done()
+
+	ctx := WithTimeout(t, 90*time.Second)
+	uas := claimUAS(t, ctx)
+
+	s = Step(t, "ensure-prompt-wav")
+	wavPath, err := tts.EnsureWAV(ctx, "testdata/agent", agentEchoPrompt, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
 	}
+	s.Done()
 
-	for _, v := range variants {
-		t.Run(v.name, func(t *testing.T) {
-			t.Parallel()
-			s := Step(t, "preflight-skips")
-			s.Done()
+	_, sess := claimSession(t)
 
-			ctx := WithTimeout(t, 90*time.Second)
-			uas := claimUAS(t, ctx)
+	s = Step(t, "script-agent-verb")
+	// Build the verb manually so we can plug in the object form for
+	// noiseIsolation — agentVerbOpts.NoiseIsolation only carries a string.
+	verb := buildAgentVerb(agentVerbOpts{
+		SystemPrompt: agentEchoSystemPrompt,
+		Greeting:     false,
+		ActionURL:    SessionURL(sess, "agent-complete"),
+		EventURL:     SessionURL(sess, "agent-turn"),
+	})
+	verb["noiseIsolation"] = noiseValue
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		verb,
+		V("hangup"),
+	}))
+	SessionAckEmpty(sess, "agent-complete", "agent-turn")
+	s.Done()
 
-			s = Step(t, "ensure-prompt-wav")
-			wavPath, err := tts.EnsureWAV(ctx, "testdata/agent", agentEchoPrompt, tts.PromptOptions{
-				Model: "aura-asteria-en",
-			})
-			if err != nil {
-				s.Fatalf("EnsureWAV: %v", err)
-			}
-			s.Done()
+	s = Step(t, "place-call")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(60))
+	s.Done()
 
-			_, sess := claimSession(t)
-
-			s = Step(t, "script-agent-verb")
-			// Build the agent verb manually so we can plug in either a
-			// shorthand string or an object form for noiseIsolation —
-			// agentVerbOpts.NoiseIsolation only carries a string.
-			verb := buildAgentVerb(agentVerbOpts{
-				SystemPrompt: agentEchoSystemPrompt,
-				Greeting:     false,
-				ActionURL:    SessionURL(sess, "agent-complete"),
-				EventURL:     SessionURL(sess, "agent-turn"),
-			})
-			verb["noiseIsolation"] = v.value
-			sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-				verb,
-				V("hangup"),
-			}))
-			SessionAckEmpty(sess, "agent-complete", "agent-turn")
-			s.Done()
-
-			s = Step(t, "place-call")
-			call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(60))
-			s.Done()
-
-			s = Step(t, "answer-record-and-silence")
-			if err := call.Answer(); err != nil {
-				s.Fatalf("Answer: %v", err)
-			}
-			recPath := t.TempDir() + "/agent-noise.pcm"
-			if err := call.StartRecording(recPath); err != nil {
-				s.Fatalf("StartRecording: %v", err)
-			}
-			if err := call.SendSilence(); err != nil {
-				s.Fatalf("SendSilence: %v", err)
-			}
-			s.Done()
-
-			s = Step(t, "wait-for-stt")
-			time.Sleep(1500 * time.Millisecond)
-			s.Done()
-
-			s = Step(t, "send-prompt-wav")
-			if err := call.SendWAV(wavPath); err != nil {
-				s.Fatalf("SendWAV: %v", err)
-			}
-			s.Done()
-
-			s = Step(t, "wait-for-llm-reply")
-			if err := call.SendSilence(); err != nil {
-				s.Fatalf("SendSilence (post): %v", err)
-			}
-			time.Sleep(10 * time.Second)
-			s.Done()
-
-			HangupAndWaitEnded(t, ctx, call)
-
-			s = Step(t, "assert-call-produced-audio")
-			// Just prove the call didn't get rejected. If feature-server
-			// didn't accept the noiseIsolation form, agent.exec would
-			// have bailed and we'd see no inbound RTP at all.
-			if call.PCMBytesIn() == 0 {
-				s.Errorf("no inbound RTP — agent verb may have rejected noiseIsolation=%v",
-					v.value)
-			} else {
-				s.Logf("noiseIsolation=%v accepted; %d inbound PCM bytes captured",
-					v.value, call.PCMBytesIn())
-			}
-			s.Done()
-		})
+	s = Step(t, "answer-record-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
 	}
+	recPath := t.TempDir() + "/agent-noise.pcm"
+	if err := call.StartRecording(recPath); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	WaitFor(t, "wait-for-stt", RecognizerArmDelay)
+
+	s = Step(t, "send-prompt-wav")
+	if err := call.SendWAV(wavPath); err != nil {
+		s.Fatalf("SendWAV: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-llm-reply")
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	time.Sleep(LLMReplyWindow)
+	s.Done()
+
+	HangupAndWaitEnded(t, ctx, call)
+
+	s = Step(t, "assert-echo-survived-noise-isolation")
+	if call.PCMBytesIn() == 0 {
+		s.Fatalf("no inbound RTP — agent verb rejected noiseIsolation=%v", noiseValue)
+	}
+	// Strict echo assertion: with agentEchoSystemPrompt the agent must
+	// repeat back at least 3 of the 4 phonetic-alphabet keywords. If
+	// noise isolation corrupted the user's audio path, STT would mishear
+	// and the LLM wouldn't echo correctly. Using HasMost(3) instead of
+	// strict-Contains because Krisp can sharpen audio enough to
+	// occasionally drop one trailing word — the failure mode we're
+	// catching is "0 keywords echoed" (audio path broken), not "minor
+	// STT drift".
+	AssertTranscriptHasMost(s, ctx, recPath, 3,
+		"alpha", "bravo", "charlie", "delta")
+	s.Logf("noiseIsolation=%v accepted; agent echoed prompt content (%d PCM bytes)",
+		noiseValue, call.PCMBytesIn())
+	s.Done()
 }
 
 // TestVerb_Agent_NoResponseTimeout — when noResponseTimeout is set, the

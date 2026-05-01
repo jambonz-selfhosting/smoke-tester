@@ -92,6 +92,15 @@ func TestVerb_Answer_Basic(t *testing.T) {
 	if got := call.AnsweredStatus(); got != 200 {
 		s.Errorf("answered status: got %d want 200", got)
 	}
+	// Check the wire: the only final status jambonz sent must be 200.
+	// A regression that emitted an error before answering (e.g. 5xx
+	// then a recovery 200) would still pass AnsweredStatus() == 200 but
+	// would fail this. Allow provisional 100/180/183 — they're normal.
+	for _, code := range StatusesOf(call.Sent()) {
+		if code >= 200 && code != 200 {
+			s.Errorf("jambonz sent unexpected non-200 final status: %d", code)
+		}
+	}
 	s.Done()
 
 	s = Step(t, "wait-for-bye")

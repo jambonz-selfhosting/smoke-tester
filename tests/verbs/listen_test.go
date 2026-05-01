@@ -116,7 +116,8 @@ func runListenLikeTest(t *testing.T, verbName string) {
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("post-SendSilence: %v", err)
 	}
-	time.Sleep(1 * time.Second)
+	// (no explicit wall sleep — the WS-close wait below already bounds
+	// the next step and the call's BYE drains buffered audio downstream.)
 	s.Done()
 
 	s = Step(t, "hangup-and-wait-ws-close")
@@ -147,21 +148,69 @@ func runListenLikeTest(t *testing.T, verbName string) {
 		s.Fatalf("WS received zero audio bytes")
 	}
 	s.Logf("WS audio: %d bytes", len(audio))
-	// Proof-of-life: the audio isn't constant-valued silence. Jambonz
-	// streams µ-law by default; a pure-silence stream would be ~all 0xFF.
-	// Real audio has many distinct byte values.
 	distinct := countDistinctBytes(audio)
 	if distinct < 32 {
 		s.Errorf("WS audio appears near-silent: only %d distinct byte values", distinct)
 	}
+	// Bytes-volume floor: the WAV is ~1.7s at 8kHz µ-law (~13.6KB).
+	// Require at least 6KB so a regression that ships a fragment of
+	// the call's first ~50ms still fails. Stronger than the prior
+	// "any audio" check while staying robust against STT-side flakes.
+	if len(audio) < 6000 {
+		s.Errorf("WS audio too short: %d bytes (want >= 6000)", len(audio))
+	}
 	s.Done()
 
 	s = Step(t, "save-capture")
-	// Save the raw capture for manual inspection / replay.
 	out := filepath.Join(t.TempDir(), testID+".ulaw")
 	_ = os.WriteFile(out, audio, 0o644)
 	s.Logf("raw µ-law capture: %s", out)
 	s.Done()
+}
+
+// writeMulawWAV wraps raw µ-law payload bytes in a minimal RIFF/WAVE
+// header (PCMU, 8 kHz, mono) so Deepgram's pre-recorded API can decode
+// it via stt.Transcribe (which currently passes encoding=linear16; the
+// SDK auto-detects µ-law when the WAV header says so).
+func writeMulawWAV(path string, payload []byte) error {
+	const (
+		sampleRate    = 8000
+		bitsPerSample = 8
+		channels      = 1
+		audioFormat   = 7 // µ-law
+	)
+	dataLen := uint32(len(payload))
+	chunkLen := dataLen + 36
+	hdr := make([]byte, 0, 44)
+	put32 := func(b []byte, v uint32) []byte {
+		return append(b, byte(v), byte(v>>8), byte(v>>16), byte(v>>24))
+	}
+	put16 := func(b []byte, v uint16) []byte {
+		return append(b, byte(v), byte(v>>8))
+	}
+	hdr = append(hdr, "RIFF"...)
+	hdr = put32(hdr, chunkLen)
+	hdr = append(hdr, "WAVE"...)
+	hdr = append(hdr, "fmt "...)
+	hdr = put32(hdr, 16)             // fmt chunk size
+	hdr = put16(hdr, audioFormat)    // µ-law
+	hdr = put16(hdr, channels)
+	hdr = put32(hdr, sampleRate)
+	hdr = put32(hdr, sampleRate*channels*bitsPerSample/8) // byte rate
+	hdr = put16(hdr, channels*bitsPerSample/8)            // block align
+	hdr = put16(hdr, bitsPerSample)
+	hdr = append(hdr, "data"...)
+	hdr = put32(hdr, dataLen)
+	f, err := os.Create(path)
+	if err != nil {
+		return err
+	}
+	defer f.Close()
+	if _, err := f.Write(hdr); err != nil {
+		return err
+	}
+	_, err = f.Write(payload)
+	return err
 }
 
 // wssURL swaps an https:// base URL for wss:// and appends path.

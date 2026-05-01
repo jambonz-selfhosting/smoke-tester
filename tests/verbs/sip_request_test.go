@@ -8,6 +8,7 @@
 package verbs
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -67,6 +68,28 @@ func TestVerb_SIPRequest_INFO(t *testing.T) {
 	if got := info.Headers["X-Test"]; got != "hi" {
 		s.Errorf("INFO X-Test: got %q want %q", got, "hi")
 	}
-	s.Logf("sip:request INFO received: headers=%v body-len=%d", info.Headers, len(info.RawRequest.Body()))
+	// Body round-trip: jambonz must forward our literal "ping" payload.
+	// A regression that drops the body or truncates it (e.g. forgets
+	// Content-Length on the outgoing INFO) would have passed the old
+	// test which only logged body-len.
+	// jambonz appends a trailing CRLF/newline to forwarded SIP bodies;
+	// trim before comparing so we catch real corruption (drop / mangle)
+	// without flapping on a normal terminator.
+	if got := strings.TrimSpace(string(info.RawRequest.Body())); got != "ping" {
+		s.Errorf("INFO body: got %q want %q", got, "ping")
+	}
+	// Content-Type round-trip: we set application/x-test; if jambonz
+	// silently rewrites Content-Type (or drops it), downstream parsers
+	// would mis-handle the body. SIP header lookup is case-insensitive
+	// in normal stacks but we stored both keys; check the headers map
+	// for either case.
+	gotCT := info.Headers["Content-Type"]
+	if gotCT == "" {
+		gotCT = info.Headers["content-type"]
+	}
+	if gotCT != "application/x-test" {
+		s.Errorf("INFO Content-Type: got %q want %q", gotCT, "application/x-test")
+	}
+	s.Logf("sip:request INFO received: headers=%v body=%q", info.Headers, string(info.RawRequest.Body()))
 	s.Done()
 }

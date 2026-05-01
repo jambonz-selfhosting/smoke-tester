@@ -13,7 +13,6 @@
 package verbs
 
 import (
-	"strings"
 	"testing"
 	"time"
 )
@@ -72,8 +71,20 @@ func expectDTMF(t *testing.T, sent, wantSeq, tag string, tailSecs int) {
 	if got == "" {
 		s.Fatalf("%s: no DTMF digits received (expected %q)", tag, wantSeq)
 	}
-	if !strings.Contains(got, wantSeq) {
-		s.Errorf("%s: received %q does not contain expected sequence %q", tag, got, wantSeq)
+	// Strict equality (was Contains): RFC 2833 decode is deterministic,
+	// so jambonz emitting EXTRA digits ("125 1234 999") would have
+	// passed the old Contains check and is exactly the regression we
+	// want to catch.
+	if got != wantSeq {
+		s.Errorf("%s: received %q != expected %q", tag, got, wantSeq)
+	}
+	// Length check: same number of events as digits — a regression that
+	// doubles every event (re-emits the off-event as on, or splits a
+	// tone across two events) would still satisfy the equality check
+	// after de-duplication but would have len(events) == 2*len(wantSeq).
+	if len(events) != len(wantSeq) {
+		s.Errorf("%s: %d DTMF events received for %d-digit sequence %q",
+			tag, len(events), len(wantSeq), wantSeq)
 	}
 	s.Done()
 }

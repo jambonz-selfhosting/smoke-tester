@@ -54,6 +54,9 @@ func TestPhoneNumber_CRUD(t *testing.T) {
 	if got.VoipCarrierSID != carrierSID {
 		s.Errorf("voip_carrier_sid mismatch: got %q want %q", got.VoipCarrierSID, carrierSID)
 	}
+	if got.AccountSID != suite.AccountSID {
+		s.Errorf("account_sid mismatch: got %q want %q", got.AccountSID, suite.AccountSID)
+	}
 	s.Done()
 
 	s = Step(t, "list-and-find")

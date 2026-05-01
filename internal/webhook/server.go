@@ -27,10 +27,37 @@ type Server struct {
 
 	mu        sync.RWMutex
 	publicURL string
+	staticDir string
 
 	httpSrv  *http.Server
 	listener net.Listener
 	logger   *slog.Logger
+}
+
+// staticHandler serves files from Server.staticDir. Bound to /static/.
+// Used so play/dub tests can host their own fixture WAV at the public
+// tunnel URL with a known/pinned transcript instead of relying on a
+// third-party hosted sample.
+type staticHandler struct{ srv *Server }
+
+func (h staticHandler) ServeHTTP(w http.ResponseWriter, r *http.Request) {
+	h.srv.mu.RLock()
+	dir := h.srv.staticDir
+	h.srv.mu.RUnlock()
+	if dir == "" {
+		http.Error(w, "static dir not configured", http.StatusNotFound)
+		return
+	}
+	http.FileServer(http.Dir(dir)).ServeHTTP(w, r)
+}
+
+// SetStaticDir registers an absolute filesystem path whose contents are
+// exposed under the public URL at /static/<file>. Set this once at
+// suite startup if any test needs to host a fixture.
+func (s *Server) SetStaticDir(dir string) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.staticDir = dir
 }
 
 // New constructs a Server bound to a local ephemeral port. Call Serve in a
@@ -54,6 +81,11 @@ func New(registry *Registry, v *contract.Validator) (*Server, error) {
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})
+	// /static/<file> serves files from staticDir (set via SetStaticDir).
+	// Used by play/dub tests to host fixtures with a pinned transcript at
+	// a public URL — without this, jambonz would have to fetch from a
+	// third-party server with unknown content.
+	mux.Handle("/static/", http.StripPrefix("/static/", staticHandler{srv: s}))
 	s.httpSrv = &http.Server{
 		Handler:           mux,
 		ReadHeaderTimeout: 10 * time.Second,

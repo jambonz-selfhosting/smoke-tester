@@ -112,5 +112,43 @@ func TestVerb_SIPDecline_Basic(t *testing.T) {
 	if got := rej.RejectedHeader("X-Custom-A"); got != "decline-verb-works" {
 		s.Errorf("X-Custom-A: got %q want %q", got, "decline-verb-works")
 	}
+	// CSeq round-trip: the response must reference an INVITE CSeq.
+	// Catches a class of regressions where a stale response from a
+	// different transaction leaks back; without this check, a misrouted
+	// 486 from any other call would have masqueraded as our rejection.
+	if got := rej.RejectedHeader("CSeq"); got != "" && !containsToken(got, "INVITE") {
+		s.Errorf("CSeq header on rejection lacks INVITE: %q", got)
+	}
 	s.Done()
+}
+
+// containsToken reports whether s contains tok as a whitespace-bounded
+// token (avoids false positives like "INVITED" matching "INVITE").
+func containsToken(s, tok string) bool {
+	for _, f := range splitWS(s) {
+		if f == tok {
+			return true
+		}
+	}
+	return false
+}
+
+// splitWS splits on ASCII whitespace (no regexp dependency).
+func splitWS(s string) []string {
+	var out []string
+	cur := ""
+	for _, r := range s {
+		if r == ' ' || r == '\t' || r == '\n' || r == '\r' {
+			if cur != "" {
+				out = append(out, cur)
+				cur = ""
+			}
+		} else {
+			cur += string(r)
+		}
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
 }

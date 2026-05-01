@@ -39,6 +39,13 @@ func TestVoipCarrier_CRUD(t *testing.T) {
 	if got.Name != name {
 		s.Errorf("name mismatch: got %q want %q", got.Name, name)
 	}
+	if got.Description != "smoke-tester test carrier" {
+		s.Errorf("description round-trip mismatch: got %q want %q",
+			got.Description, "smoke-tester test carrier")
+	}
+	if got.AccountSID != suite.AccountSID {
+		s.Errorf("account_sid mismatch: got %q want %q", got.AccountSID, suite.AccountSID)
+	}
 	s.Done()
 
 	s = Step(t, "list-and-find")

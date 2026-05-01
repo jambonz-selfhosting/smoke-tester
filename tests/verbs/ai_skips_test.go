@@ -9,12 +9,9 @@ package verbs
 
 import "testing"
 
-// llm — connects caller to a large language model for a real-time voice
-// conversation. Requires a configured LLM credential on the account
-// (OpenAI, Anthropic, etc.).
-func TestVerb_LLM_Basic(t *testing.T) {
-	t.Skip("llm needs a vendor LLM credential provisioned on the account (Tier 5)")
-}
+// llm — covered by TestVerb_LLM_Deepgram in llm_test.go (uses Deepgram
+// Voice Agent via inline auth, the same DEEPGRAM_API_KEY the suite already
+// requires).
 
 // s2s — synonym for llm. Same credential gating.
 func TestVerb_S2S_Basic(t *testing.T) {

@@ -69,20 +69,29 @@ func TestVerb_Redirect_FetchesNewHook(t *testing.T) {
 	}()
 	s.Done()
 
-	s = Step(t, "answer-and-wait-end")
-	AnswerRecordAndWaitEnded(s, ctx, call, WithSilence())
+	s = Step(t, "answer-record-and-wait-end")
+	// Record so the assert step below can prove the redirect's verb
+	// chain (say "Redirect landed.") actually executed — not just that
+	// jambonz hit the hook URL. A regression that fetches the hook but
+	// fails to run the returned verbs would have passed the old test.
+	wav := AnswerRecordAndWaitEnded(s, ctx, call, WithRecord("redirect"), WithSilence())
 	s.Done()
 
 	s = Step(t, "assert-redirect-hook-fired")
-	// Give the async WaitCallbackFor a moment to land.
 	deadline := time.Now().Add(5 * time.Second)
 	for atomic.LoadInt32(&redirectHits) == 0 && time.Now().Before(deadline) {
 		time.Sleep(50 * time.Millisecond)
 	}
 	if atomic.LoadInt32(&redirectHits) == 0 {
-		s.Errorf("action/redirect callback never arrived at %s", redirectURL)
-	} else {
-		s.Logf("redirect: action/redirect fired at %s", redirectURL)
+		s.Fatalf("action/redirect callback never arrived at %s", redirectURL)
 	}
+	s.Logf("redirect: action/redirect fired at %s", redirectURL)
+	s.Done()
+
+	s = Step(t, "assert-redirect-verb-chain-ran")
+	// The redirect's verb chain is `say "Redirect landed."` — STT the
+	// recording and assert the words landed in audio. Proves the second
+	// hook's verbs were actually executed, not just fetched.
+	AssertTranscriptContains(s, ctx, wav, "redirect", "landed")
 	s.Done()
 }
