@@ -48,17 +48,13 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 	ctx := WithTimeout(t, 90*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-transcribe-pause-hangup")
+	s := Step(t, "script-transcribe-pause-hangup")
 	// jambonz posts to actionHook but the transcribe verb writes to
 	// transcriptionHook. Our webhook server routes /action/<verb> for
 	// both; we register "transcription" as the hook suffix.
-	transcriptionURL := webhookSrv.PublicURL() + "/action/transcription"
+	transcriptionURL := SessionURL(sess, "transcription")
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("transcribe",
 			"transcriptionHook", transcriptionURL,
@@ -72,7 +68,7 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 		V("pause", "length", 15),
 		V("hangup"),
 	}))
-	sess.ScriptActionHook("transcription", webhook.Script{})
+	SessionAckEmpty(sess, "transcription")
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -91,7 +87,7 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 	s = Step(t, "wait-for-recognizer")
 	// Same pattern as gather_speech — leading silence lets the recognizer
 	// arm before the WAV starts.
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(RecognizerArmDelay)
 	s.Done()
 
 	s = Step(t, "send-wav")
@@ -123,7 +119,7 @@ Collect:
 					continue
 				}
 				s.Logf("action/transcription body: %s", string(cb.Body))
-				transcript = strings.ToLower(extractTranscript(cb.JSON))
+				transcript = strings.ToLower(extractTranscript(cb))
 				if transcript != "" {
 					break Collect
 				}

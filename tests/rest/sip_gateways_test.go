@@ -21,7 +21,7 @@ func TestSipGateway_CRUD(t *testing.T) {
 	s := Step(t, "create-voip-carrier")
 	carrierSID := client.ManagedVoipCarrier(t, ctx, provision.VoipCarrierCreate{
 		Name:       provision.Name("carrier-for-gw"),
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 	})
 	s.Done()
 

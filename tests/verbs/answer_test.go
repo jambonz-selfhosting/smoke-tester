@@ -24,7 +24,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/jambonz-selfhosting/smoke-tester/internal/provision"
 	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
@@ -55,13 +54,9 @@ func TestVerb_Answer_Basic(t *testing.T) {
 	ctx := WithTimeout(t, 30*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	testID, sess := claimSession(t)
 
-	s = Step(t, "script-answer-pause-hangup")
+	s := Step(t, "script-answer-pause-hangup")
 	sess.ScriptCallHook(webhook.Script{
 		V("answer"),
 		V("pause", "length", 1),
@@ -70,24 +65,7 @@ func TestVerb_Answer_Basic(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "provision-application")
-	appSID := client.ManagedApplication(t, ctx, provision.ApplicationCreate{
-		Name:       provision.Name("answer-app"),
-		AccountSID: cfg.AccountSID,
-		CallHook: provision.Webhook{
-			URL:    webhookSrv.PublicURL() + "/hook",
-			Method: "POST",
-		},
-		CallStatusHook: provision.Webhook{
-			URL:    webhookSrv.PublicURL() + "/status",
-			Method: "POST",
-		},
-		SpeechSynthesisVendor:    "deepgram",
-		SpeechSynthesisLabel:     deepgramLabel,
-		SpeechSynthesisVoice:     deepgramVoice,
-		SpeechRecognizerVendor:   "deepgram",
-		SpeechRecognizerLabel:    deepgramLabel,
-		SpeechRecognizerLanguage: "en-US",
-	})
+	appSID := provisionWebhookApp(t, ctx, "answer-app")
 	s.Logf("provisioned Application sid=%s", appSID)
 	s.Done()
 
@@ -95,7 +73,7 @@ func TestVerb_Answer_Basic(t *testing.T) {
 	// UAC INVITE to app-<sid>@<domain>. jambonz's SBC routes this URI to
 	// the bound Application's call_hook. Carry the correlation ID as an
 	// X-Test-Id SIP header so the hook payload lands in our session.
-	dest := fmt.Sprintf("sip:app-%s@%s", appSID, cfg.SIPDomain)
+	dest := fmt.Sprintf("sip:app-%s@%s", appSID, suite.SIPRealm)
 	call, err := uas.Stack.Invite(ctx, dest, jsip.InviteOptions{
 		Transport: "tcp",
 		FromUser:  uas.Username,

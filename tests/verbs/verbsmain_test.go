@@ -8,8 +8,14 @@
 // point at an ngrok tunnel to our internal/webhook server. jambonz fetches
 // verbs from the tunnel, runs them, and (for action-hook verbs like
 // `gather`) calls back to our server with payloads the test reads via the
-// webhook.Registry. Phase 2 tests skip cleanly when NGROK_AUTHTOKEN isn't
-// set.
+// webhook.Registry.
+//
+// Per-suite ephemeral account:
+// TestMain provisions a fresh account under the SP, mints an account-scope
+// API key for it, sets a synthetic sip_realm (`<account-name>.smoke.test`),
+// and provisions the Deepgram credential + webhook Application under that
+// account. Every verb test creates Clients / places calls under this
+// account; the whole tree is deleted at suite end.
 //
 // Per-test SIP isolation:
 // Each test calls claimUAS(t, ctx) (helpers_test.go) to provision its own
@@ -29,31 +35,39 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/config"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/contract"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/provision"
+	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
 var (
-	cfg    *config.Settings
-	client *provision.Client
+	cfg *config.Settings
 
-	// Deepgram speech credential provisioned at TestMain. Verb tests
-	// reference this label as `synthesizer.label` / `recognizer.label` so
-	// jambonz uses our managed Deepgram key rather than whatever defaults
-	// the account happens to have. Empty string when DEEPGRAM_API_KEY is
-	// unset — tests fall back to the cluster's default vendor.
+	// suite holds the ephemeral account + account-scope client + synthetic
+	// sip_realm provisioned at TestMain. Every verb test reaches through
+	// `client` (which is suite.AccountClient) to provision sub-resources.
+	suite  *provision.SuiteAccount
+	client *provision.Client // == suite.AccountClient
+
+	// SIP transport's static DNS resolver. Maps the suite's synthetic
+	// sip_realm to the SBC public IP so sipgo's transport can reach the
+	// cluster without real DNS for the realm. Closed at TestMain teardown.
+	sipResolver *jsip.StaticResolver
+
+	// Deepgram speech credential provisioned at TestMain under the suite
+	// account. Verb tests reference `synthesizer.label` /
+	// `recognizer.label` to use this credential.
 	deepgramLabel string
-	deepgramSID   string // SpeechCredential SID, used for teardown
-	// Default TTS voice when speaking through Deepgram. Aura voices are
-	// the only TTS option on Deepgram. Override per-test by passing an
-	// explicit synthesizer.voice.
+	deepgramSID   string
+	// Default TTS voice when speaking through Deepgram.
 	deepgramVoice = "aura-asteria-en"
 
-	// Webhook-tier globals. Populated only if NGROK_AUTHTOKEN is present;
-	// otherwise webhook-dependent tests must t.Skip.
+	// Webhook server + ngrok tunnel + Application bound to the suite
+	// account. The webhook always runs (NGROK_AUTHTOKEN is mandatory in
+	// the new model).
 	webhookReg *webhook.Registry
 	webhookSrv *webhook.Server
 	webhookTun *webhook.Tunnel
-	webhookApp string // application_sid of the Application bound to the tunnel
+	webhookApp string // application_sid of the webhook-bound Application
 	webhookOn  bool
 )
 
@@ -68,89 +82,89 @@ func TestMain(m *testing.M) {
 	if err != nil {
 		log.Fatalf("contract new: %v", err)
 	}
-	client = provision.New(cfg.APIBaseURL, cfg.APIKey, cfg.AccountSID, v,
-		provision.WithLabel("account"))
 
-	// Sweep stale SIP Clients from crashed prior runs before any test runs.
-	// claimUAS dynamically provisions a fresh /Clients user per test; without
-	// the sweep, escapees from crashed runs would accumulate and eventually
-	// collide on the username uniqueness constraint (it's hashed, so collisions
-	// are unlikely, but the sweep keeps the account tidy regardless).
-	swept, err := (&provision.SIPClientSweeper{C: client}).Sweep(provision.RunID())
+	sp := provision.New(cfg.APIBaseURL, cfg.SPAPIKey, "", v,
+		provision.WithLabel("sp"))
+
+	// Sweep stale ephemeral accounts from previous (crashed) runs. Only
+	// accounts whose name starts with `it-` (and not the current run's
+	// prefix) are considered. Sweeper has the post-incident hardening:
+	// double-checks every account's name before delete and cleans up its
+	// clients first to avoid the upstream FK constraint failure.
+	swept, err := (&provision.AccountSweeper{C: sp}).Sweep(provision.RunID())
 	if err != nil {
-		log.Printf("tests/verbs: SIP-client sweep failed: %v", err)
+		log.Printf("tests/verbs: account sweep failed: %v", err)
 	} else if swept > 0 {
-		log.Printf("tests/verbs: swept %d stale SIP clients from prior runs", swept)
+		log.Printf("tests/verbs: swept %d stale ephemeral accounts", swept)
 	}
 
-	// REST credentials are mandatory (claimUAS requires /Clients access).
-	if cfg.APIKey == "" || cfg.AccountSID == "" {
-		log.Printf("tests/verbs: SKIP (JAMBONZ_API_KEY / JAMBONZ_ACCOUNT_SID unset — needed for /Clients)")
-		os.Exit(0)
+	// 1. Provision the per-suite account.
+	setupCtx, setupCancel := context.WithTimeout(context.Background(), 90*time.Second)
+	suite, err = provision.SetupSuiteAccount(setupCtx, sp, cfg.SPSID, cfg.APIBaseURL,
+		"verbs", cfg.SIPRealmZone)
+	setupCancel()
+	if err != nil {
+		log.Fatalf("tests/verbs: suite setup failed: %v", err)
+	}
+	client = suite.AccountClient
+	log.Printf("tests/verbs: suite account=%s sid=%s realm=%s",
+		suite.AccountName, suite.AccountSID, suite.SIPRealm)
+
+	// 2. Static DNS resolver pointing the synthetic realm at the SBC IP.
+	sipResolver, err = jsip.NewStaticResolver(suite.SBCResolverHosts(cfg.SBCPublicIP))
+	if err != nil {
+		log.Fatalf("tests/verbs: resolver: %v", err)
 	}
 
-	// Provision the suite-wide Deepgram credential. Every verb test that
-	// emits TTS or runs STT references this label. Skipping with a clear
-	// log keeps the suite honest if DEEPGRAM_API_KEY is missing —
-	// transcript assertions log-skip via stt.HasKey() and
-	// `synthesizer:{vendor:"deepgram", label}` references will fail at
-	// jambonz-side credential lookup, which surfaces as test failures
-	// (not silent fallback to whatever default vendor the account has).
-	if cfg.HasDeepgram() {
-		if err := provisionDeepgramCredential(); err != nil {
-			log.Fatalf("tests/verbs: Deepgram credential provisioning failed: %v", err)
-		}
-		log.Printf("tests/verbs: Deepgram credential provisioned label=%s sid=%s",
-			deepgramLabel, deepgramSID)
-	} else {
-		log.Printf("tests/verbs: DEEPGRAM_API_KEY unset; verb tests using deepgram label will fail")
+	// 3. Deepgram speech credential under the suite account.
+	if err := provisionDeepgramCredential(); err != nil {
+		log.Fatalf("tests/verbs: Deepgram credential provisioning failed: %v", err)
 	}
+	log.Printf("tests/verbs: Deepgram credential label=%s sid=%s",
+		deepgramLabel, deepgramSID)
 
-	// Webhook (Phase 2) — optional. Fails the tests that need it via
-	// requireWebhook() rather than aborting the whole run.
-	if tok := os.Getenv("NGROK_AUTHTOKEN"); tok != "" {
-		if err := setupWebhook(v); err != nil {
-			log.Printf("tests/verbs: webhook setup failed (phase-2 tests will skip): %v", err)
-		} else {
-			webhookOn = true
-			log.Printf("tests/verbs: webhook ready app_sid=%s tunnel=%s", webhookApp, webhookTun.URL())
-		}
-	} else {
-		log.Printf("tests/verbs: NGROK_AUTHTOKEN unset; phase-2 (webhook) tests will skip")
+	// 4. Webhook server + ngrok tunnel + Application bound to the suite.
+	if err := setupWebhook(v); err != nil {
+		log.Fatalf("tests/verbs: webhook setup failed: %v", err)
 	}
+	webhookOn = true
+	log.Printf("tests/verbs: webhook ready app_sid=%s tunnel=%s",
+		webhookApp, webhookTun.URL())
 
-	// Heartbeat: prints a one-line status to stderr every 5s so operators
-	// running the suite without -v see progress instead of a 60-90 second
-	// silence. Quiet enough to not spam, loud enough to prove the suite
-	// is alive — and the "now: <test>[step:X]@Ns" suffix instantly
-	// surfaces stuck tests.
+	// Heartbeat (see helpers_test.go for full rationale).
 	stopHeartbeat := StartHeartbeat(5 * time.Second)
 
 	code := m.Run()
 
 	stopHeartbeat()
-
-	// One-line-per-failure summary, written AFTER m.Run() so it lands at
-	// the bottom of the output where operators expect to look. Without
-	// this, under -parallel and without -v, failure details get buried in
-	// interleaved log noise from concurrent tests.
 	PrintFailureSummary()
 
-	// Teardown — best-effort; tests are allowed to continue even if cleanup fails.
+	// Teardown — best-effort. Order matters: tear down the webhook
+	// Application + tunnel BEFORE deleting the account so the account's
+	// cascade doesn't have to fight FK constraints.
 	teardownWebhook()
 	teardownDeepgramCredential()
+	if sipResolver != nil {
+		_ = sipResolver.Close()
+	}
+	if suite != nil {
+		teardownCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		errs := suite.Teardown(teardownCtx)
+		cancel()
+		for _, e := range errs {
+			log.Printf("tests/verbs: teardown: %v", e)
+		}
+	}
 	os.Exit(code)
 }
 
 // provisionDeepgramCredential creates a Deepgram speech credential under
-// the test account, labelled `it-deepgram-<runID>`. The label is per-run
-// because jambonz enforces uniqueness on (account, vendor, label) — two
-// concurrent CI invocations sharing a label would 422.
+// the suite account, labelled `it-deepgram-<runID>`.
 func provisionDeepgramCredential() error {
 	deepgramLabel = "it-deepgram-" + provision.RunID()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	sid, err := client.CreateAccountSpeechCredential(ctx, cfg.AccountSID, provision.SpeechCredentialCreate{
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
 		Vendor:    "deepgram",
 		Label:     deepgramLabel,
 		APIKey:    cfg.DeepgramAPIKey,
@@ -170,13 +184,13 @@ func teardownDeepgramCredential() {
 	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := client.DeleteAccountSpeechCredential(ctx, cfg.AccountSID, deepgramSID); err != nil {
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, deepgramSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete Deepgram credential %s: %v", deepgramSID, err)
 	}
 }
 
-// setupWebhook starts the local server, opens an ngrok tunnel, and provisions
-// the Application that routes verb fetches to the tunnel.
+// setupWebhook starts the local server, opens an ngrok tunnel, and
+// provisions an Application bound to the tunnel under the suite account.
 func setupWebhook(v *contract.Validator) error {
 	webhookReg = webhook.NewRegistry()
 	srv, err := webhook.New(webhookReg, v)
@@ -184,11 +198,7 @@ func setupWebhook(v *contract.Validator) error {
 		return fmt.Errorf("webhook.New: %w", err)
 	}
 	webhookSrv = srv
-	go func() {
-		// Local listener for loopback access (debugging, health checks).
-		// Ignored errors are expected on shutdown.
-		_ = srv.Serve()
-	}()
+	go func() { _ = srv.Serve() }()
 
 	tun, err := webhook.StartNgrok(context.Background(), srv)
 	if err != nil {
@@ -200,7 +210,7 @@ func setupWebhook(v *contract.Validator) error {
 	defer cancel()
 	sid, err := client.CreateApplication(ctx, provision.ApplicationCreate{
 		Name:       provision.Name("webhook-app"),
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 		CallHook: provision.Webhook{
 			URL:    tun.URL() + "/hook",
 			Method: "POST",
@@ -240,11 +250,13 @@ func teardownWebhook() {
 	}
 }
 
-// requireWebhook skips the test if Phase-2 setup didn't succeed.
+// requireWebhook is kept for source compatibility with existing tests but
+// is now a no-op — the webhook always runs in the new model. (Kept the
+// helper so we don't have to edit every Phase-2 test.)
 func requireWebhook(t *testing.T) {
 	t.Helper()
 	if !webhookOn {
-		t.Skip("webhook not configured (NGROK_AUTHTOKEN missing or setup failed)")
+		t.Skip("webhook setup failed at TestMain")
 	}
 }
 

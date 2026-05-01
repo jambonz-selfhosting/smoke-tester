@@ -72,13 +72,9 @@ func runListenLikeTest(t *testing.T, verbName string) {
 	ctx := WithTimeout(t, 90*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	testID, sess := claimSession(t)
 
-	s = Step(t, "script-listen-pause-hangup")
+	s := Step(t, "script-listen-pause-hangup")
 	// ngrok forwards both https and wss over the same host. Swap scheme.
 	wsURL := wssURL(webhookSrv.PublicURL(), "/ws/"+testID)
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
@@ -106,7 +102,7 @@ func runListenLikeTest(t *testing.T, verbName string) {
 	s.Done()
 
 	s = Step(t, "wait-for-ws-connect")
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(RecognizerArmDelay)
 	s.Done()
 
 	s = Step(t, "send-wav")

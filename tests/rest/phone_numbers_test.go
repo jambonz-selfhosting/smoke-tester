@@ -23,7 +23,7 @@ func TestPhoneNumber_CRUD(t *testing.T) {
 	s := Step(t, "create-voip-carrier")
 	carrierSID := client.ManagedVoipCarrier(t, ctx, provision.VoipCarrierCreate{
 		Name:       provision.Name("carrier-for-pn"),
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 	})
 	s.Done()
 
@@ -34,7 +34,7 @@ func TestPhoneNumber_CRUD(t *testing.T) {
 	sid := client.ManagedPhoneNumber(t, ctx, provision.PhoneNumberCreate{
 		Number:         number,
 		VoipCarrierSID: carrierSID,
-		AccountSID:     cfg.AccountSID,
+		AccountSID:     suite.AccountSID,
 	})
 	s.Logf("provisioned phone_number sid=%s number=%s", sid, number)
 	s.Done()

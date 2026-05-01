@@ -23,7 +23,7 @@ func TestMsTeamsTenant_CRUD(t *testing.T) {
 	fqdn := fmt.Sprintf("jambonz-it-%s.example.invalid", provision.RunID())
 	sid := client.ManagedMsTeamsTenant(t, ctx, provision.MsTeamsTenantCreate{
 		ServiceProviderSID: cfg.SPSID,
-		AccountSID:         cfg.AccountSID,
+		AccountSID:         suite.AccountSID,
 		TenantFQDN:         fqdn,
 	})
 	s.Logf("created ms_teams_tenant sid=%s fqdn=%s", sid, fqdn)

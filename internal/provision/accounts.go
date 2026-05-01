@@ -104,6 +104,32 @@ func (c *Client) DeleteAccount(ctx context.Context, sid string) error {
 	return nil
 }
 
+// SetSipRealm assigns a sip_realm to an account via the dedicated endpoint
+// `POST /Accounts/<sid>/SipRealms/<realm>`. Account-scope token required
+// (the account-scope `PUT /Accounts/<sid>` rejects sip_realm changes).
+//
+// Drift handling: when the cluster has a partially-configured DNS provider
+// (e.g. DME_API_KEY set but the integration is broken), the endpoint
+// returns 500 *after* the underlying UPDATE has already committed
+// `sip_realm` to the DB. The DB write is what jambonz routing actually
+// uses, so SetSipRealm treats 500 as "warn but accept" — verify with a
+// follow-up GetAccount when correctness matters.
+func (c *Client) SetSipRealm(ctx context.Context, accountSID, sipRealm string) error {
+	path := fmt.Sprintf("/Accounts/%s/SipRealms/%s", accountSID, sipRealm)
+	_, err := c.Request(ctx, http.MethodPost, path, nil, "", http.StatusNoContent)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusInternalServerError {
+			// Cluster's DNS provider is misconfigured but the DB UPDATE
+			// happens before the DNS call — the realm is still set.
+			// Caller should verify with GetAccount.
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
 // ManagedAccount creates an Account and registers a t.Cleanup that deletes it.
 // Must be called with an SP-scoped client.
 func (c *Client) ManagedAccount(t *testing.T, ctx context.Context, body AccountCreate) (sid string) {

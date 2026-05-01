@@ -37,13 +37,9 @@ func TestVerb_SIPRequest_INFO(t *testing.T) {
 	ctx := WithTimeout(t, 30*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-sip-request-info")
+	s := Step(t, "script-sip-request-info")
 	sess.ScriptCallHook(webhook.Script{
 		V("sip:request",
 			"method", "INFO",

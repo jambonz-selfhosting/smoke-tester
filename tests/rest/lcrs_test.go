@@ -21,7 +21,7 @@ func TestLcr_CRUD(t *testing.T) {
 	name := provision.Name("lcr")
 	sid := client.ManagedLcr(t, ctx, provision.LcrCreate{
 		Name:       name,
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 	})
 	s.Logf("created lcr sid=%s", sid)
 	s.Done()

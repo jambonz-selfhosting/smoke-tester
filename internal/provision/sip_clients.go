@@ -21,7 +21,10 @@ type SIPClient struct {
 	ClientSID  string `json:"client_sid"`
 	AccountSID string `json:"account_sid"`
 	Username   string `json:"username"`
-	IsActive   bool   `json:"is_active,omitempty"`
+	// IsActive is `0`/`1` on the wire (drift: the swagger declares bool;
+	// the running api-server emits integer). Use IntField so unmarshal
+	// works regardless.
+	IsActive IntField `json:"is_active,omitempty"`
 }
 
 // SIPClientCreate is the POST /Clients body. Required: account_sid,
@@ -55,9 +58,17 @@ func (c *Client) CreateSIPClient(ctx context.Context, body SIPClientCreate) (str
 }
 
 // ListSIPClients fetches every Client visible to the current scope. Used
-// by the orphan sweeper at TestMain. No contract validation right now —
-// the live server's response shape isn't covered by a vendored schema; if
-// it drifts the sweeper is best-effort and won't break the suite.
+// by account-teardown to enumerate-then-delete clients of THIS account
+// before deleting the account itself (the upstream `DELETE /Accounts/<sid>`
+// handler doesn't cascade `clients` and otherwise fails with an FK
+// constraint error).
+//
+// IMPORTANT: the upstream `GET /Clients` endpoint ignores any `account_sid`
+// query parameter — it returns every client visible to the bearer token,
+// across all accounts under the same SP. Callers MUST filter the returned
+// slice by AccountSID client-side; relying on the query string risks
+// deleting clients that belong to siblings under the same SP. (See
+// HANDOFF for the post-mortem of the run that learned this the hard way.)
 func (c *Client) ListSIPClients(ctx context.Context) ([]SIPClient, error) {
 	raw, err := c.Request(ctx, http.MethodGet, "/Clients", nil, "", http.StatusOK)
 	if err != nil {
@@ -68,6 +79,23 @@ func (c *Client) ListSIPClients(ctx context.Context) ([]SIPClient, error) {
 		return nil, fmt.Errorf("decode clients: %w", err)
 	}
 	return clients, nil
+}
+
+// ListSIPClientsForAccount lists clients server-side then filters by
+// AccountSID client-side. This is the safe wrapper to use whenever the
+// caller plans to mutate the returned set — see ListSIPClients for why.
+func (c *Client) ListSIPClientsForAccount(ctx context.Context, accountSID string) ([]SIPClient, error) {
+	all, err := c.ListSIPClients(ctx)
+	if err != nil {
+		return nil, err
+	}
+	out := make([]SIPClient, 0, len(all))
+	for _, cl := range all {
+		if cl.AccountSID == accountSID {
+			out = append(out, cl)
+		}
+	}
+	return out, nil
 }
 
 // DeleteSIPClient removes a Client. 404 is treated as success so cleanup

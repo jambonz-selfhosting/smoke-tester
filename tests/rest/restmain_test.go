@@ -1,6 +1,7 @@
 package rest
 
 import (
+	"context"
 	"log"
 	"os"
 	"testing"
@@ -14,8 +15,9 @@ import (
 var (
 	cfg      *config.Settings
 	valid    *contract.Validator
-	client   *provision.Client // account-scope
-	spClient *provision.Client // service-provider-scope; nil if SP creds unset
+	suite    *provision.SuiteAccount
+	client   *provision.Client // == suite.AccountClient
+	spClient *provision.Client // service-provider scope, used by SP-only tests
 )
 
 func TestMain(m *testing.M) {
@@ -31,20 +33,35 @@ func TestMain(m *testing.M) {
 	}
 	valid = v
 
-	client = provision.New(cfg.APIBaseURL, cfg.APIKey, cfg.AccountSID, valid,
-		provision.WithLabel("account"))
-	log.Printf("tests/rest: runID=%s schemas=%s", provision.RunID(), schemasRoot)
-	log.Printf("  account-scope: account_sid=%s", cfg.AccountSID)
+	spClient = provision.New(cfg.APIBaseURL, cfg.SPAPIKey, "", valid,
+		provision.WithLabel("sp"))
 
-	if cfg.HasSPScope() {
-		spClient = provision.New(cfg.APIBaseURL, cfg.SPAPIKey, "", valid,
-			provision.WithLabel("sp"))
-		log.Printf("  sp-scope: service_provider_sid=%s", cfg.SPSID)
-	} else {
-		log.Printf("  sp-scope: DISABLED (set JAMBONZ_SP_API_KEY + JAMBONZ_SP_SID to enable)")
+	// Sweep stale ephemeral accounts from previous runs (only `it-` prefix
+	// AND not the current run's prefix). Hardened: re-checks each account
+	// name client-side and deletes its clients first to dodge the upstream
+	// FK constraint.
+	swept, err := (&provision.AccountSweeper{C: spClient}).Sweep(provision.RunID())
+	if err != nil {
+		log.Printf("tests/rest: account sweep failed: %v", err)
+	} else if swept > 0 {
+		log.Printf("tests/rest: swept %d stale ephemeral accounts", swept)
 	}
 
-	orphanSweep()
+	// Per-suite ephemeral account so account-scope rest tests have a
+	// place to provision sub-resources without touching any pre-existing
+	// account on the cluster. The account is deleted at suite end.
+	setupCtx, cancel := context.WithTimeout(context.Background(), 90*time.Second)
+	suite, err = provision.SetupSuiteAccount(setupCtx, spClient, cfg.SPSID, cfg.APIBaseURL,
+		"rest", cfg.SIPRealmZone)
+	cancel()
+	if err != nil {
+		log.Fatalf("tests/rest: suite setup failed: %v", err)
+	}
+	client = suite.AccountClient
+	log.Printf("tests/rest: runID=%s schemas=%s", provision.RunID(), schemasRoot)
+	log.Printf("  suite account=%s sid=%s realm=%s",
+		suite.AccountName, suite.AccountSID, suite.SIPRealm)
+	log.Printf("  sp-scope: service_provider_sid=%s", cfg.SPSID)
 
 	// Heartbeat: prints a status line every 5s to /dev/tty so operators
 	// see progress even without -v. See helpers_test.go for the full
@@ -55,37 +72,16 @@ func TestMain(m *testing.M) {
 
 	stopHeartbeat()
 
-	// One-line-per-failure summary. Without this, under -parallel and
-	// without -v, failure details get buried in interleaved log noise.
+	// One-line-per-failure summary.
 	PrintFailureSummary()
-	os.Exit(code)
-}
 
-// orphanSweep runs every registered Sweeper and logs results. Failures are
-// best-effort — a crashed prior run shouldn't block new runs.
-func orphanSweep() {
-	sweepers := []provision.Sweeper{
-		&provision.ApplicationSweeper{C: client},
-		&provision.VoipCarrierSweeper{C: client},
-		// SIP Clients are created per-test by the verbs suite (see
-		// provision.ManagedSIPClient). If a verbs run crashed mid-test,
-		// the it-<oldRunID>-* row leaks. Sweep here so any account-scope
-		// run cleans up before the next verbs run tries to recreate the
-		// same usernames.
-		&provision.SIPClientSweeper{C: client},
-	}
-	if spClient != nil {
-		// Accounts can only be swept with SP scope.
-		sweepers = append(sweepers, &provision.AccountSweeper{C: spClient})
-	}
-	for _, s := range sweepers {
-		n, err := s.Sweep(provision.RunID())
-		if err != nil {
-			log.Printf("orphan sweep %s: %v", s.Name(), err)
-			continue
-		}
-		if n > 0 {
-			log.Printf("orphan sweep: deleted %d stale %s", n, s.Name())
+	if suite != nil {
+		teardownCtx, cancel := context.WithTimeout(context.Background(), 60*time.Second)
+		errs := suite.Teardown(teardownCtx)
+		cancel()
+		for _, e := range errs {
+			log.Printf("tests/rest: teardown: %v", e)
 		}
 	}
+	os.Exit(code)
 }

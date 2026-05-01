@@ -44,13 +44,9 @@ func TestVerb_Dub_PlayOnTrack(t *testing.T) {
 	ctx := WithTimeout(t, 30*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-dub-play-on-track")
+	s := Step(t, "script-dub-play-on-track")
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("dub", "action", "addTrack", "track", "bgm"),
 		V("dub", "action", "playOnTrack", "track", "bgm", "play", dubSample),

@@ -40,13 +40,9 @@ func TestVerb_Config_SessionSynthesizer(t *testing.T) {
 	ctx := WithTimeout(t, 60*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-config-say-hangup")
+	s := Step(t, "script-config-say-hangup")
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("config", "synthesizer", map[string]any{
 			"vendor":   "deepgram",

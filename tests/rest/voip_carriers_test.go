@@ -23,7 +23,7 @@ func TestVoipCarrier_CRUD(t *testing.T) {
 	sid := client.ManagedVoipCarrier(t, ctx, provision.VoipCarrierCreate{
 		Name:        name,
 		Description: "smoke-tester test carrier",
-		AccountSID:  cfg.AccountSID,
+		AccountSID:  suite.AccountSID,
 	})
 	s.Logf("created voip_carrier sid=%s", sid)
 	s.Done()
@@ -118,7 +118,7 @@ func TestVoipCarrier_PUT(t *testing.T) {
 	s := Step(t, "create-voip-carrier")
 	sid := client.ManagedVoipCarrier(t, ctx, provision.VoipCarrierCreate{
 		Name:       provision.Name("carrier-put"),
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 	})
 	s.Done()
 

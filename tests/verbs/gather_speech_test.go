@@ -16,7 +16,6 @@ package verbs
 
 import (
 	"context"
-	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -60,13 +59,9 @@ func TestVerb_Gather_Speech(t *testing.T) {
 	ctx := WithTimeout(t, 90*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "load-ground-truth")
+	s := Step(t, "load-ground-truth")
 	wavPath, truthPath := resolveFixture(t, speechWAV), resolveFixture(t, speechTranscriptTxt)
 	truthBytes, err := os.ReadFile(truthPath)
 	if err != nil {
@@ -77,7 +72,7 @@ func TestVerb_Gather_Speech(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "script-gather-speech")
-	actionURL := webhookSrv.PublicURL() + "/action/gather"
+	actionURL := SessionURL(sess, "gather")
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("gather",
 			"input", []any{"speech"},
@@ -85,7 +80,7 @@ func TestVerb_Gather_Speech(t *testing.T) {
 			"actionHook", actionURL),
 		V("hangup"),
 	}))
-	sess.ScriptActionHook("gather", webhook.Script{})
+	SessionAckEmpty(sess, "gather")
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -107,7 +102,7 @@ func TestVerb_Gather_Speech(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "wait-for-recognizer")
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(RecognizerArmDelay)
 	s.Done()
 
 	s = Step(t, "send-wav")
@@ -140,7 +135,7 @@ func TestVerb_Gather_Speech(t *testing.T) {
 	// Payload shape (jambonz):
 	//   { speech: { is_final: true, alternatives: [{transcript: "...", confidence: ...}] }, reason: "speechDetected" }
 	// or under some configs the transcript is at the top level.
-	transcript := extractTranscript(cb.JSON)
+	transcript := extractTranscript(cb)
 	if transcript == "" {
 		s.Fatalf("no transcript in action/gather payload: %s", string(cb.Body))
 	}
@@ -162,34 +157,17 @@ func TestVerb_Gather_Speech(t *testing.T) {
 }
 
 // extractTranscript pulls the recognized string from a gather actionHook
-// payload, tolerating the two shapes jambonz emits (top-level `speech`
-// object with alternatives[], or a flat top-level `speech` string).
-func extractTranscript(m map[string]any) string {
-	if m == nil {
-		return ""
-	}
-	if s, ok := m["speech"].(string); ok && s != "" {
+// payload, tolerating the two shapes jambonz emits: top-level `speech`
+// can be a flat string OR a nested object with `transcript` /
+// `alternatives[0].transcript`. Built on Callback's NestedString accessor.
+func extractTranscript(cb webhook.Callback) string {
+	if s := cb.NestedString("speech"); s != "" {
 		return s
 	}
-	sp, ok := m["speech"].(map[string]any)
-	if !ok {
-		return ""
+	if s := cb.NestedString("speech.transcript"); s != "" {
+		return s
 	}
-	if t, ok := sp["transcript"].(string); ok && t != "" {
-		return t
-	}
-	alts, ok := sp["alternatives"].([]any)
-	if !ok || len(alts) == 0 {
-		return ""
-	}
-	a0, ok := alts[0].(map[string]any)
-	if !ok {
-		return ""
-	}
-	if t, ok := a0["transcript"].(string); ok {
-		return t
-	}
-	return ""
+	return cb.NestedString("speech.alternatives.0.transcript")
 }
 
 // resolveFixture returns the absolute path of a file under tests/testdata/.
@@ -199,12 +177,10 @@ func resolveFixture(t *testing.T, rel string) string {
 	t.Helper()
 	abs, err := filepath.Abs(rel)
 	if err != nil {
-		recordFailure(t, "resolve-fixture", fmt.Sprintf("abs(%s): %v", rel, err))
-		t.Fatalf("abs(%s): %v", rel, err)
+		helperFatalf(t, "resolve-fixture", "abs(%s): %v", rel, err)
 	}
 	if _, err := os.Stat(abs); err != nil {
-		recordFailure(t, "resolve-fixture", fmt.Sprintf("fixture %s: %v", rel, err))
-		t.Fatalf("fixture %s: %v", rel, err)
+		helperFatalf(t, "resolve-fixture", "fixture %s: %v", rel, err)
 	}
 	return abs
 }

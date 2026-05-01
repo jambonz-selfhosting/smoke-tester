@@ -1,5 +1,11 @@
 // Package config loads harness settings from .env + process environment into a
 // typed Settings struct. Loaded once per process in TestMain — see ADR-0009.
+//
+// The harness is fully self-provisioning: TestMain creates an ephemeral
+// account under the configured Service Provider, mints an API key for it,
+// and provisions a synthetic sip_realm whose DNS is mapped locally to the
+// SBC public IP via a custom *net.Resolver. There are no long-lived
+// account-scope credentials in env any more.
 package config
 
 import (
@@ -19,41 +25,49 @@ import (
 type Settings struct {
 	// Required — jambonz target
 	APIBaseURL string
-	APIKey     string
-	AccountSID string
-	SIPDomain  string
-	SIPProxy   string // falls back to SIPDomain if empty
 
-	// Optional — Service-provider-scoped credentials. When set, tests that
-	// require SP scope (ServiceProviders, Accounts create/delete, SP-scoped
-	// carriers) run; when unset, they skip with a clear reason.
+	// Required — Service-provider scope. Every test resource is created
+	// under an ephemeral account beneath this SP. Both fields are
+	// mandatory; the long-lived JAMBONZ_API_KEY / JAMBONZ_ACCOUNT_SID env
+	// vars from older revisions of the harness are gone.
 	SPAPIKey string
 	SPSID    string
 
-	// Optional — Deepgram API key. Used for two distinct purposes:
-	//   1. Provisioning the in-jambonz Deepgram SpeechCredential at TestMain
-	//      (label: "it-deepgram"). Verb tests reference this label as
-	//      `synthesizer.label` / `recognizer.label`.
+	// Required — SBC public IP. Verb tests dial this IP for all SIP
+	// traffic regardless of the Request-URI domain. The harness installs
+	// a custom DNS resolver in the SIP transport so the synthetic
+	// `<account>.<SIPRealmZone>` domain resolves to this IP locally
+	// without needing real DNS records.
+	SBCPublicIP net.IP
+
+	// Optional — SIP realm zone suffix appended to the per-suite account
+	// name to form the account's sip_realm. Default "smoke.test" — must
+	// have at least one dot so the upstream `(.*)\.(.*\..*)$` regex on
+	// POST /SipRealms accepts the full realm.
+	SIPRealmZone string
+
+	// Required — Deepgram API key. Used for two purposes:
+	//   1. Provisioning a SpeechCredential under the test's ephemeral
+	//      account at TestMain (label `it-deepgram-<runID>`). Verb tests
+	//      reference this label as `synthesizer.label` / `recognizer.label`.
 	//   2. Offline transcript verification — internal/stt/ uploads PCM
 	//      recordings to Deepgram and asserts the transcript matches.
-	// When unset, verb tests fall back to the cluster's default speech
-	// vendor (whatever the account has provisioned out-of-band) and
-	// transcript assertions log-skip.
 	DeepgramAPIKey string
 
-	// Optional — Deepseek LLM API key. Passed inline as `agent.llm.auth.apiKey`
-	// in the agent verb test, bypassing jambonz's database credential lookup
-	// (feature-server/lib/tasks/agent/index.js:446 honors inline auth). When
-	// unset, the agent test skips.
+	// Required — Deepseek LLM API key. Passed inline as
+	// `agent.llm.auth.apiKey` in the agent verb test, bypassing
+	// /LlmCredentials provisioning (feature-server honors inline auth via
+	// lib/tasks/agent/index.js:446).
 	DeepseekAPIKey string
 
-	// Environment capability (ADR-0007, ADR-0014)
-	BehindNAT bool
-	PublicIP  net.IP // empty unless set; only required for Carrier/Inbound modes
-
-	// Tier 3+ — ngrok
+	// Required — ngrok auth token. Phase-2 verb tests + Phase-1 status
+	// callbacks both need a public URL forwarded to the local webhook
+	// server. The whole verb suite gates on this.
 	NgrokAuthToken string
-	NgrokDomain    string
+
+	// Optional — reserved ngrok subdomain (paid tier). When set the
+	// public URL is stable across runs.
+	NgrokDomain string
 
 	// Test-run knobs
 	RunID          string
@@ -62,11 +76,10 @@ type Settings struct {
 	ContractStrict bool // ADR-0015: schema violations fail tests
 }
 
-// HasSPScope reports whether SP-scoped tests can run.
-func (s *Settings) HasSPScope() bool { return s.SPAPIKey != "" && s.SPSID != "" }
-
-// HasDeepgram reports whether Deepgram-backed flows can run (provisioned
-// SpeechCredential at TestMain, plus offline transcript verification).
+// HasDeepgram reports whether Deepgram-backed flows can run. With the
+// new self-provisioning model both keys are mandatory at TestMain, so
+// these helpers are kept only for the rare callers that still want to
+// guard for diagnostic logs.
 func (s *Settings) HasDeepgram() bool { return s.DeepgramAPIKey != "" }
 
 // HasDeepseek reports whether the Deepseek-backed agent verb test can run.
@@ -123,12 +136,9 @@ func MustLoad() *Settings {
 func parse() (*Settings, error) {
 	s := &Settings{
 		APIBaseURL:     strings.TrimRight(os.Getenv("JAMBONZ_API_URL"), "/"),
-		APIKey:         os.Getenv("JAMBONZ_API_KEY"),
-		AccountSID:     os.Getenv("JAMBONZ_ACCOUNT_SID"),
 		SPAPIKey:       os.Getenv("JAMBONZ_SP_API_KEY"),
 		SPSID:          os.Getenv("JAMBONZ_SP_SID"),
-		SIPDomain:      os.Getenv("JAMBONZ_SIP_DOMAIN"),
-		SIPProxy:       os.Getenv("JAMBONZ_SIP_PROXY"),
+		SIPRealmZone:   firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
 		DeepgramAPIKey: os.Getenv("DEEPGRAM_API_KEY"),
 		DeepseekAPIKey: os.Getenv("DEEPSEEK_API_KEY"),
 		NgrokAuthToken: os.Getenv("NGROK_AUTHTOKEN"),
@@ -144,39 +154,38 @@ func parse() (*Settings, error) {
 	} else if _, err := url.Parse(s.APIBaseURL); err != nil {
 		return nil, fmt.Errorf("JAMBONZ_API_URL is not a valid URL: %w", err)
 	}
-	if s.APIKey == "" {
-		missing = append(missing, "JAMBONZ_API_KEY")
+	if s.SPAPIKey == "" {
+		missing = append(missing, "JAMBONZ_SP_API_KEY")
 	}
-	if s.AccountSID == "" {
-		missing = append(missing, "JAMBONZ_ACCOUNT_SID")
+	if s.SPSID == "" {
+		missing = append(missing, "JAMBONZ_SP_SID")
 	}
-	if s.SIPDomain == "" {
-		missing = append(missing, "JAMBONZ_SIP_DOMAIN")
+	if v := os.Getenv("JAMBONZ_SBC_PUBLIC_IP"); v == "" {
+		missing = append(missing, "JAMBONZ_SBC_PUBLIC_IP")
+	} else {
+		ip := net.ParseIP(v)
+		if ip == nil {
+			return nil, fmt.Errorf("JAMBONZ_SBC_PUBLIC_IP is not a valid IP: %q", v)
+		}
+		s.SBCPublicIP = ip
+	}
+	if s.DeepgramAPIKey == "" {
+		missing = append(missing, "DEEPGRAM_API_KEY")
+	}
+	if s.DeepseekAPIKey == "" {
+		missing = append(missing, "DEEPSEEK_API_KEY")
+	}
+	if s.NgrokAuthToken == "" {
+		missing = append(missing, "NGROK_AUTHTOKEN")
 	}
 	if len(missing) > 0 {
 		return nil, fmt.Errorf("required env vars missing: %s", strings.Join(missing, ", "))
 	}
-	if s.SIPProxy == "" {
-		s.SIPProxy = s.SIPDomain
-	}
-
-	// capability
-	if v := os.Getenv("BEHIND_NAT"); v != "" {
-		b, err := strconv.ParseBool(v)
-		if err != nil {
-			return nil, fmt.Errorf("BEHIND_NAT must be true/false: %w", err)
-		}
-		s.BehindNAT = b
-	} else {
-		// default to true (laptop) — safest, gates Inbound mode off unless opted in
-		s.BehindNAT = true
-	}
-	if v := os.Getenv("PUBLIC_IP"); v != "" {
-		ip := net.ParseIP(v)
-		if ip == nil {
-			return nil, fmt.Errorf("PUBLIC_IP is not a valid IP: %q", v)
-		}
-		s.PublicIP = ip
+	// SIPRealmZone must be a multi-label domain so the upstream
+	// `(.*)\.(.*\..*)$` regex on POST /SipRealms accepts our full
+	// `<account>.<zone>` realm.
+	if !strings.Contains(s.SIPRealmZone, ".") {
+		return nil, fmt.Errorf("JAMBONZ_SIP_REALM_ZONE must contain at least one dot (got %q)", s.SIPRealmZone)
 	}
 
 	// ttl

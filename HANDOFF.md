@@ -18,12 +18,82 @@
 
 ### Now (in progress)
 
-- **Tier 5 `agent` verb green: 11 tests parallel ~28s wall-clock.** Self-hosted webhook + ngrok serves the `agent` verb response (no external deploy needed). Inline LLM auth (`agent.llm.auth.apiKey`) bypasses /LlmCredentials provisioning — bring DEEPSEEK_API_KEY in `.env`. STT + TTS use the in-jambonz Deepgram credential we provision at TestMain; offline reply transcripts verified by re-uploading to Deepgram. Per-test eventHook/toolHook routing via `?X-Test-Id=<testID>` query param (server's `extractTestID` was already wired) — no `_anon` contention under parallel.
+- **Self-provisioning ephemeral suite accounts (2026-05-01).** TestMain
+  no longer touches any pre-existing account on the cluster. It uses
+  the SP key to (a) sweep stale `it-*` accounts from prior runs, (b)
+  create `it-<runID>-{verbs,rest}` under our SP, (c) mint an
+  account-scope token for it via POST /ApiKeys, (d) set a synthetic
+  sip_realm `<account-name>.smoke.test` via POST /SipRealms, (e)
+  provision a Deepgram credential under that account, (f) bring up a
+  webhook Application bound to the ngrok tunnel. Suite teardown
+  deletes the clients of that account first (upstream FK constraint
+  workaround), then the account. **There is no long-lived
+  account-scope identity in env any more** — `JAMBONZ_API_KEY` and
+  `JAMBONZ_ACCOUNT_SID` are gone. Required env: `JAMBONZ_API_URL`,
+  `JAMBONZ_SP_API_KEY`, `JAMBONZ_SP_SID`, `JAMBONZ_SBC_PUBLIC_IP`,
+  `NGROK_AUTHTOKEN`, `DEEPGRAM_API_KEY`, `DEEPSEEK_API_KEY`. See
+  `internal/provision/suite.go`.
+- **Synthetic SIP realm + custom DNS resolver.** The synthetic
+  `*.smoke.test` realm has no real DNS; sipgo's transport layer would
+  NXDOMAIN. We install a `*net.Resolver` driven by a tiny in-process
+  UDP DNS server that answers queries for the realm with
+  `JAMBONZ_SBC_PUBLIC_IP` and forwards everything else to the system
+  resolver. See `internal/sip/resolver.go`. The `Stack.Config.Resolver`
+  field plumbs it into sipgo via `WithUserAgentDNSResolver`.
+- **`anchorMedia: true` on `dial` (2026-05-01).** Without it the
+  cluster sometimes negotiates a peer-to-peer SDP between the two
+  legs using each leg's private NAT'd RTP address (10.x.x.x), which
+  neither side can reach — bridge "completes" SIP-wise but no audio
+  crosses. Anchored media keeps every packet inside the cluster's
+  data plane, reachable via the SBC public IP. Documented inline in
+  `tests/verbs/dial_test.go`.
+- **Test ergonomics overhaul (2026-05-01).** Major helper landings to
+  cut per-test boilerplate ~50% on audio-roundtrip tests:
+  - `claimSession(t)` collapses the 5-line "register-webhook-session"
+    boilerplate to one line. Used by ~25 tests.
+  - `SessionURL(sess, verbSlug)` builds an action-hook URL pre-baked
+    with the `?X-Test-Id=<sessionID>` query param so callbacks
+    without customerData (eventHook, toolHook, transcribe's
+    transcriptionHook, tag verb) route to the per-test session
+    automatically. No more manual `q := "?" + ... +
+    url.QueryEscape(testID)` footgun.
+  - `SessionAckEmpty(sess, verbs...)` variadic empty-action-hook ack.
+  - `RunAudioRoundtrip(t, ctx, call, opts)` collapses the 7-step
+    answer/record/silence/wait-stt/wav/wait-reply sequence into one
+    call. Used by 9 audio tests.
+  - `WaitFor(t, name, dur)` for "wait-for-stt" / "wait-for-llm-reply"
+    style steps; logs a Step + sleeps + closes.
+  - `HangupAndWaitEnded(t, ctx, call)` for the 5-line tail every
+    recording-bearing test had.
+  - Named timing constants: `RecognizerArmDelay` (1500ms),
+    `LLMReplyWindow` (12s), `BridgeSettleDelay` (1500ms),
+    `EndedDrainTimeout` (5s), and the existing `WarmupPause` (1s).
+  - `ScriptAgent(sess, opts, extra...)` — full agent-verb script
+    registration + ack hooks + correlation-aware URLs in one call.
+    9 agent tests collapsed.
+  - `provisionWebhookApp(t, ctx, suffix)` — the 14-field Application
+    builder used by UAC tests (`answer`, `sip:decline`).
+  - `helperFatalf(t, step, fmt, args)` — the canonical "setup helper
+    fatal" entry point. All `t.Fatalf` from helpers (claimUAS,
+    submitAndAwaitOn, resolveFixture, RunAudioRoundtrip, etc) now go
+    through it so failures land in the FAILURE SUMMARY block under
+    `-parallel`.
+  - `Callback.{String,Int,Bool,NestedString,NestedAny,CustomerData}`
+    payload accessors on `webhook.Callback` — eliminate 3 hand-rolled
+    `extractTranscript`-style functions and tightens diagnostics
+    (`cb.NestedString("speech.alternatives.0.transcript")`).
+  - `Call.MethodsReceived()` shortcut for the "did we see BYE / INFO?"
+    pattern.
+- **Suite numbers (2026-05-01):** verbs 47 tests pass parallel
+  ~85s; rest 23 tests pass ~27s. Together ~112s for the full release
+  gate.
+
+- **Tier 5 `agent` verb green (2026-05-01): 11 tests parallel ~28s wall-clock when run alone.** Self-hosted webhook + ngrok serves the `agent` verb response (no external deploy needed). Inline LLM auth (`agent.llm.auth.apiKey`) bypasses /LlmCredentials provisioning — bring DEEPSEEK_API_KEY in `.env`. STT + TTS use the in-jambonz Deepgram credential we provision at TestMain; offline reply transcripts verified by re-uploading to Deepgram. Per-test eventHook/toolHook routing via `?X-Test-Id=<testID>` query param (server's `extractTestID` was already wired) — no `_anon` contention under parallel.
 - Coverage: round-trip echo, eventHook (`user_transcript` / `llm_response` / `turn_end`), `greeting:true`, `actionHook` on end (callInfo + completion_reason + customerData correlation round-trip), `toolHook` round-trip (LLM function call → server replies JSON body → LLM speaks the secret word), `bargeIn` + `user_interruption`, `noResponseTimeout` re-prompt, `turnDetection:"krisp"`, `noiseIsolation` 3 variants. See `tests/verbs/agent_test.go`.
 - New infra: `internal/tts/deepgram.go` (cached Deepgram /v1/speak helper for pre-generated user-side WAVs), `webhook.Session.ScriptActionHookBody` (raw JSON body responder, needed for toolHook).
 - Drift in `schemas/callbacks/agent-turn.schema.json`: feature-server emits `latency.{stt_ms, eot_ms, llm_ms, tts_ms, tool_ms}` (upstream uses `*_latency` names) and adds `turn_end.{confidence, tool_calls}` not declared upstream. Both kept in the local schema with `DRIFT (TODO upstream)` markers — file a PR upstream when convenient.
 
-- **Tier 3 verb coverage: 23/34 verbs tested, 34 passing + 13 skip-stubs, parallel runtime ~80s (down from 252s sequential).** Audio-bearing tests all verified content-level via Deepgram. Multi-leg tests (`dial`, `conference`, `enqueue/dequeue/leave`) provision two dynamic UASes per test and assert bridged audio passes through. `listen`/`stream` exercised via a generic WS endpoint in `internal/webhook/ws.go`.
+- **Tier 3 verb coverage: 23/34 verbs tested, 47 passing + 13 skip-stubs, parallel runtime ~85s.** Audio-bearing tests all verified content-level via Deepgram. Multi-leg tests (`dial`, `conference`, `enqueue/dequeue/leave`) provision two dynamic UASes per test and assert bridged audio passes through. `listen`/`stream` exercised via a generic WS endpoint in `internal/webhook/ws.go`.
 - **Per-test SIP isolation via dynamic /Clients provisioning.** Every test now calls `claimUAS(t, ctx)` which: (1) POSTs `/Clients` to provision a fresh `it-<runID>-uas-<hash>` SIP user, (2) brings up a private sipgo+diago stack registered with those credentials, (3) returns a `*UAS{SID, Username, Password, Stack, Inbound}` whose Inbound channel is private to the test. No more shared `currentCall` / `currentCalleeCall` singletons → tests run safely in parallel.
 - **`t.Parallel()` everywhere + `-parallel 8`.** Stable across 3+ consecutive runs at ~77-84s. JAMBONZ_SIP_USER / JAMBONZ_SIP_CALLEE_USER env vars no longer required (still consulted for legacy compat but unused in practice).
 - **All Phase-1 calls now route through the ngrok webhook** for `call_status_hook` delivery — no more `getaddrinfo ENOTFOUND example.invalid` noise on feature-server side. Tests can opt into asserting on call-lifecycle events via `statusCallbacks(t, within)`.
@@ -65,9 +135,34 @@
   7. MsTeamsTenant swagger has typo `account` (should be `account_sid`).
   8. `LcrRoutes` POST endpoint inconsistent between swagger and live — deferred to Tier 2.
 
+### Critical safety rule (post-mortem 2026-05-01)
+
+A previous session destroyed user data by client-side-filtering a
+`GET /Clients` response that the upstream cluster does NOT actually
+filter server-side. The harness now treats the whole jambonz
+`/Clients` endpoint as **list-all-cross-account, even with an
+account-scope or SP-scope token**. Hard rule baked into
+`internal/provision/sip_clients.go`: never iterate `ListSIPClients`
+result and DELETE — only `ListSIPClientsForAccount(ctx, sid)` filters
+by AccountSID client-side, AND every delete site re-checks
+`cl.AccountSID == ourSID` before issuing DELETE. The
+`AccountSweeper` documents the same rule.
+
+The harness will only ever delete:
+1. Resources whose name starts with `it-` (verified by reading the
+   `name` field in the response body — never trusting the server-side
+   filter).
+2. Resources whose `account_sid` matches an ephemeral suite account
+   we just created.
+
+If you add a new sweeper, follow this pattern. If something looks
+broken in the cluster after a test run, the first hypothesis to rule
+out is "did the sweeper hit something it didn't own". Audit the
+incident before assuming flake.
+
 ### Known issues
 
-0. **`SIPClient.is_active` drift.** Live `GET /Clients` returns `is_active` as a number (0/1), not a bool. `provision.SIPClient.IsActive bool` panics on decode → the orphan sweeper logs `cannot unmarshal number into Go struct field SIPClient.is_active of type bool` at every TestMain. Sweep is non-fatal so tests continue, but stale `it-*` Clients accumulate over time. Fix: change the field to `int` or a custom IntField type. Same drift pattern as `SipGateway.inbound/outbound` (issue noted in Tier-1 drift findings).
+0. **~~`SIPClient.is_active` drift.~~** ✅ **RESOLVED 2026-05-01.** Live `GET /Clients` returns `is_active` as a number (0/1), not a bool. Fixed by changing `provision.SIPClient.IsActive` to use the existing `IntField` type (same drift pattern as `SipGateway.inbound/outbound`).
 
 1. **~~`X-Test-Id` correlation not reaching the webhook server.~~** ✅ **RESOLVED 2026-04-20.** Root cause was api-server's `validateCreateCall` (`<api-server-checkout>/lib/routes/api/accounts.js:415-434`), which clobbers the caller's `call_hook` with the Application's fixed URL when `application_sid` is set. Fix: use the POST /Calls top-level `tag` field — feature-server surfaces it as `customerData` on every webhook payload. `internal/webhook/correlation.go` defines `CorrelationKey = "x_test_id"` and reads `customerData[CorrelationKey]`.
 2. **~~DTMF digit-shift on `SendDTMF`.~~** ✅ **RESOLVED 2026-04-20.** Two layered bugs in diago's DTMF sender:
@@ -87,14 +182,31 @@
 
 ### Resume plan
 
-**Next session, start here:**
+**Next session, start here (post 2026-05-01 refactor):**
 
-1. **Wire UAC origination into `tests/verbs/`.** The harness already has diago's client side (the spike proved it). What's missing is a `placeCallAsUAC(ctx, t, target)` helper that lets a test INVITE a jambonz-served URI instead of calling `POST /Calls`. That unlocks:
-   - `alert` — assert 180 Ringing + Alert-Info on our UAC.
-   - `sip:decline` — assert the 4xx/5xx/6xx from jambonz when it rejects our INVITE.
-   - Symmetric verb testing from both directions.
+1. **Pre-flight cluster verification.** Run `go run ./cmd/probe` on
+   the target cluster to confirm: (a) SP can create accounts, (b)
+   ApiKey minting works, (c) SipRealm endpoint accepts a synthetic
+   realm (it'll return 500 from the DNS layer but that's fine), (d)
+   resolver-routed REGISTER + POST /Calls roundtrip works. If any
+   step fails, the error message tells you which jambonz layer needs
+   investigation. Then `go test ./tests/...` should be green.
 
-2. **Multi-leg orchestration.** `dial`, `conference`, `enqueue`/`dequeue`/`leave` need two concurrent calls against the same jambonz application. Plan: a `placeTwoLegCall` helper that runs two `placeCall` goroutines against a shared webhook script.
+2. **Two persistent items left from earlier sessions:**
+   - **Schema URL `$ref` loader** for vendored `@jambonz/schema` —
+     santhosh-tekuri's jsonschema can't resolve absolute URL refs
+     from disk. Currently mitigated by detecting "no Loader found"
+     and logging Debug. Real fix is a `jsonschema.Loader` that maps
+     `https://jambonz.org/schema/<path>` → local `schemas/<path>`.
+   - **Upstream PR for diago DTMF** — the `RTPDtmfWriter.writeDTMF`
+     timestamp-0-for-every-packet bug. Worth filing against
+     `emiago/diago` so we can drop our own `SendDTMFWithDuration`
+     workaround at some point.
+
+3. **Tier 4 / 6 / 7 backlog** (per [docs/coverage-matrix.md](docs/coverage-matrix.md)):
+   - Tier 4 — advanced verbs (most are vendor-gated)
+   - Tier 6 — `PUT /Calls/{sid}` matrix
+   - Tier 7 — WebSocket API tests over the existing `/ws` endpoint
 
 3. **Decide on schema URL-ref strategy (issue #3).** Either:
    - Write a `jsonschema.Loader` that maps `https://jambonz.org/schema/<path>` → `file://<repo>/schemas/<path>`, or
@@ -147,6 +259,147 @@ None.
 ---
 
 ## Session log (reverse-chronological)
+
+### 2026-05-01 — Self-provisioning ephemeral suite accounts + `dial` bridge fix + ergonomics overhaul
+
+**Scope:** the harness used to depend on a long-lived account-scope
+identity (`JAMBONZ_API_KEY` + `JAMBONZ_ACCOUNT_SID`) that pointed at
+a real account on the cluster. User asked to remove that dependency
+and have every test run create + tear down its own account under the
+SP — so the harness can be pointed at any cluster where you have an
+SP token, and never touches anything else under that SP.
+
+This session also fixed the long-standing `TestVerb_Dial_User_Bridge`
+flake and absorbed all eight "Top wins" + most "Smaller polish" items
+from the DX audit (general agent review).
+
+**Done — self-provisioning model:**
+
+- **`internal/provision/suite.go`** — new `SetupSuiteAccount(...)`
+  helper used by both TestMain implementations:
+  1. SP creates account `it-<runID>-{verbs,rest}` under the configured SP
+  2. SP mints account-scope ApiKey via POST /ApiKeys
+  3. account-scope POST /Accounts/<sid>/SipRealms/<synthetic-realm>
+     where realm is `<account-name>.smoke.test` — verified via
+     follow-up GetAccount because the cluster's DNS provider returns
+     500 even after the DB UPDATE has committed (so we tolerate 500
+     in `provision.SetSipRealm` and assert correctness via GET)
+  4. returns a `*SuiteAccount` with `{AccountSID, AccountName,
+     APIKeySID, Token, SIPRealm, AccountClient (account-scope), SPClient}`
+  5. `Teardown()` deletes the suite account's clients first
+     (upstream FK constraint workaround) then the account itself
+- **`internal/sip/resolver.go`** — new `StaticResolver` runs an
+  in-process UDP DNS server on 127.0.0.1, answers A queries for the
+  synthetic realm with the SBC public IP, forwards everything else to
+  the system resolver. Hooked into sipgo via
+  `Stack.Config.Resolver` → `WithUserAgentDNSResolver`. Without this,
+  sipgo's transport layer NXDOMAINs on the synthetic realm and
+  REGISTER never fires.
+- **`internal/provision/accounts.go`** gained `SetSipRealm` —
+  POST `/Accounts/<sid>/SipRealms/<realm>`. Tolerates 500 from
+  cluster's broken DNS provider integration since the DB UPDATE
+  always succeeds before the DNS hop.
+- **`internal/provision/sweeper_accounts.go`** rewritten with
+  hardened safety rules (see "Critical safety rule" section above).
+  Three other sweepers (Application, VoipCarrier, Lcr, SIPClient)
+  deleted — sub-resources cascade when their parent suite account is
+  deleted, so per-resource sweepers are unnecessary and risky.
+- **`internal/config/config.go`** — removed `APIKey`, `AccountSID`,
+  `SIPDomain`, `SIPProxy`, `BehindNAT`, `PublicIP`. Added required
+  `SBCPublicIP`, optional `SIPRealmZone` (defaults to `smoke.test`).
+  `JAMBONZ_SP_API_KEY`, `JAMBONZ_SP_SID`, `JAMBONZ_SBC_PUBLIC_IP`,
+  `NGROK_AUTHTOKEN`, `DEEPGRAM_API_KEY`, `DEEPSEEK_API_KEY` are now
+  all required.
+- **`tests/{verbs,rest}/<*>main_test.go`** — TestMain rewrites that
+  call `SetupSuiteAccount`, install the resolver, provision Deepgram
+  + webhook Application under the new account, run the suite, tear
+  the account down. Per-test code references `suite.SIPRealm` /
+  `suite.AccountSID` instead of `cfg.SIPDomain` / `cfg.AccountSID`.
+- **`cmd/probe/main.go`** — standalone Go program that exercises the
+  whole stand-up sequence end-to-end (account → ApiKey → SipRealm →
+  Client → REGISTER → POST /Calls → INVITE → Answer → Hangup) for
+  one-shot debugging. Run via `go run ./cmd/probe`. Useful when the
+  refactor hits a new cluster and you want to isolate where it
+  rejects.
+
+**Done — `dial` bridge fix:**
+
+- **Root cause:** by default jambonz brokers a peer-to-peer SDP
+  exchange between the two legs of a `dial` verb. Each leg ends up
+  with the OTHER leg's NAT'd RTP address (10.x.x.x in EC2 internal
+  networking). Neither side can reach those — the bridge "completes"
+  SIP-wise (`dial_call_status: completed, dial_sip_status: 200`) but
+  no audio crosses. The caller's recording was 1.74s of silence
+  (`rms=0.0`).
+- **Fix:** add `anchorMedia: true` to the dial verb. Forces
+  FreeSWITCH to relay every RTP packet through the cluster's data
+  plane (which we can reach via the SBC public IP). After the fix:
+  caller records 5.46s of audio at `rms=21160` and Deepgram
+  transcribes "the sun is shining" cleanly.
+
+**Done — ergonomics (8 helpers + payload accessors):**
+
+- `claimSession`, `SessionURL`, `SessionAckEmpty`, `RunAudioRoundtrip`,
+  `WaitFor`, `HangupAndWaitEnded`, `ScriptAgent`, `provisionWebhookApp`,
+  `helperFatalf` — all in `tests/verbs/helpers_test.go`.
+- `webhook.Callback.{String,Int,Bool,NestedString,NestedAny,CustomerData}`
+  payload accessors in `internal/webhook/types.go`.
+- `internal/sip/Call.MethodsReceived()` shortcut.
+- Named timing constants (`RecognizerArmDelay`, `LLMReplyWindow`, etc).
+- Migrated 16 verb test files + agent test (9 sub-functions), every
+  webhook URL site, every audio-roundtrip site. Suite per-test
+  bodies are visibly shorter and uniform.
+
+**Surprises:**
+
+- **The `GET /Clients` endpoint ignores its `account_sid` query
+  parameter** — confirmed by curl. Earlier in the session a
+  client-side delete loop (filtered by `?account_sid=...`) actually
+  iterated **every client visible to the SP token**, deleting 12
+  clients across 2 unrelated accounts. Restored by the user from
+  another session; we now treat /Clients as cross-account by default
+  and filter exclusively client-side via `ListSIPClientsForAccount`.
+  The `AccountSweeper` re-checks `name` prefix per-record before
+  every DELETE. Documented in the new "Critical safety rule"
+  section.
+- **The cluster's POST /SipRealms returns HTTP 500** when its DNS
+  provider is half-configured (`DME_API_KEY` set but the integration
+  is broken — `createDnsRecords is not a function`). The upstream
+  handler runs the DB UPDATE BEFORE the DNS hop, so the realm is
+  persisted regardless. `SetSipRealm` swallows the 500; the caller
+  verifies via GET.
+- **`anchorMedia` was the obvious-in-hindsight fix** for dial — the
+  test had been flagged as a known issue for ~10 days. Without
+  anchored media the dial test was passing only when the cluster
+  happened to advertise public IPs in SDP, which was nondeterministic.
+- **Probe binary was the right move.** Building `cmd/probe` to
+  validate the whole synthetic-realm pipeline before refactoring
+  TestMain saved hours of "is it the resolver, the realm, the
+  cluster, or the test?" debugging during the migration.
+
+**Verified runs:**
+
+| Suite | Wall-clock | Tests | Status |
+|---|---|---|---|
+| `tests/rest` | ~27s | 23 | all pass |
+| `tests/verbs` | ~85s | 47 | all pass (incl. dial) |
+| Combined | ~112s | 70 | all pass |
+
+The `it-*` accounts seen on the cluster after a successful run are
+zero — verified by curl. The two persistent accounts on the cluster
+(`default account`, `ic-test-account`) are never touched.
+
+**Files touched (notable):**
+- new: `internal/sip/resolver.go`, `internal/provision/suite.go`,
+  `cmd/probe/main.go`
+- removed: `internal/provision/sweeper_{applications,lcrs,sip_clients,voip_carriers}.go`
+- rewritten: `internal/config/config.go`, `tests/{verbs,rest}/*main_test.go`,
+  `internal/provision/sweeper_accounts.go`,
+  `internal/provision/sip_clients.go` (added `ListSIPClientsForAccount`,
+  switched `IsActive` to `IntField`)
+- migrated: 16 verb test files, 11 rest test files
+
+---
 
 ### 2026-05-01 — Tier 5 `agent` verb: full coverage, self-hosted, contract-validated
 

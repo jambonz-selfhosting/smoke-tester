@@ -39,6 +39,128 @@ type Callback struct {
 	Transport_ Transport         // reserved for future SP-vs-account routing
 }
 
+// String returns a top-level string field from the decoded body, or "".
+// Use NestedString for deeper paths.
+func (c Callback) String(field string) string {
+	if c.JSON == nil {
+		return ""
+	}
+	if v, ok := c.JSON[field].(string); ok {
+		return v
+	}
+	return ""
+}
+
+// Int returns a top-level numeric field as int. Returns 0 if missing or
+// non-numeric.
+func (c Callback) Int(field string) int {
+	if c.JSON == nil {
+		return 0
+	}
+	switch v := c.JSON[field].(type) {
+	case float64:
+		return int(v)
+	case int:
+		return v
+	}
+	return 0
+}
+
+// Bool returns a top-level boolean field. Returns false if missing.
+func (c Callback) Bool(field string) bool {
+	if c.JSON == nil {
+		return false
+	}
+	if v, ok := c.JSON[field].(bool); ok {
+		return v
+	}
+	return false
+}
+
+// NestedString descends a dot-separated path through nested objects /
+// array indices and returns a string at the end, or "". Use for things
+// like `cb.NestedString("speech.alternatives.0.transcript")`.
+func (c Callback) NestedString(path string) string {
+	v := c.NestedAny(path)
+	if v == nil {
+		return ""
+	}
+	if s, ok := v.(string); ok {
+		return s
+	}
+	return ""
+}
+
+// NestedAny is the lower-level traversal: returns the value at path or nil
+// when any segment is missing / wrong-typed. Numeric segments index into
+// arrays; everything else is treated as a map key.
+func (c Callback) NestedAny(path string) any {
+	if c.JSON == nil || path == "" {
+		return nil
+	}
+	var cur any = map[string]any(c.JSON)
+	for _, seg := range splitPath(path) {
+		switch typed := cur.(type) {
+		case map[string]any:
+			cur = typed[seg]
+		case []any:
+			idx := -1
+			for i, ch := range seg {
+				if i == 0 && ch == '-' {
+					idx = 0
+					continue
+				}
+				if ch < '0' || ch > '9' {
+					return nil
+				}
+				if idx < 0 {
+					idx = 0
+				}
+				idx = idx*10 + int(ch-'0')
+			}
+			if idx < 0 || idx >= len(typed) {
+				return nil
+			}
+			cur = typed[idx]
+		default:
+			return nil
+		}
+		if cur == nil {
+			return nil
+		}
+	}
+	return cur
+}
+
+// CustomerData returns the body's `customerData` map, or nil. Useful when
+// asserting on the correlation round-trip end-to-end.
+func (c Callback) CustomerData() map[string]any {
+	if c.JSON == nil {
+		return nil
+	}
+	if m, ok := c.JSON["customerData"].(map[string]any); ok {
+		return m
+	}
+	return nil
+}
+
+func splitPath(p string) []string {
+	out := []string{}
+	cur := ""
+	for _, ch := range p {
+		if ch == '.' {
+			out = append(out, cur)
+			cur = ""
+			continue
+		}
+		cur += string(ch)
+	}
+	if cur != "" {
+		out = append(out, cur)
+	}
+	return out
+}
+
 // HookOutcome says what the test wants the server to return for a specific
 // hook invocation. Scripts get turned into this by the registry when a
 // call_hook/action_hook is handled.

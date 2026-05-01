@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"log/slog"
+	"net"
 	"os"
 	"sync"
 	"time"
@@ -24,6 +25,12 @@ type Config struct {
 	Pass      string
 	Transport string // "tcp" (default) or "udp"
 	LogLevel  string // "info" | "debug"
+
+	// Resolver, if non-nil, replaces the default *net.Resolver in sipgo's
+	// transport layer. Use this to make synthetic SIP realms (no real DNS)
+	// resolve to the cluster's SBC public IP. See
+	// internal/sip/resolver.go's StaticResolver.
+	Resolver *net.Resolver
 }
 
 // InboundHandler is invoked synchronously for every incoming INVITE. The
@@ -59,9 +66,13 @@ func Start(ctx context.Context, cfg Config, handler InboundHandler) (*Stack, err
 		slog.SetDefault(slog.New(slog.NewTextHandler(os.Stderr, &slog.HandlerOptions{Level: slog.LevelDebug})))
 	}
 
-	ua, err := sipgo.NewUA(
+	uaOpts := []sipgo.UserAgentOption{
 		sipgo.WithUserAgent(nonEmpty(cfg.User, "jambonz-it")),
-	)
+	}
+	if cfg.Resolver != nil {
+		uaOpts = append(uaOpts, sipgo.WithUserAgentDNSResolver(cfg.Resolver))
+	}
+	ua, err := sipgo.NewUA(uaOpts...)
 	if err != nil {
 		return nil, fmt.Errorf("sipgo NewUA: %w", err)
 	}

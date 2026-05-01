@@ -9,6 +9,7 @@ import (
 	"encoding/json"
 	"fmt"
 	"io"
+	"net/url"
 	"os"
 	"path/filepath"
 	"slices"
@@ -92,11 +93,12 @@ func claimUAS(t *testing.T, ctx context.Context) *UAS {
 
 	inbound := make(chan *jsip.Call, 4)
 	stk, err := jsip.Start(context.Background(), jsip.Config{
-		SIPDomain: cfg.SIPDomain,
+		SIPDomain: suite.SIPRealm,
 		User:      username,
 		Pass:      password,
 		Transport: "tcp",
 		LogLevel:  cfg.LogLevel,
+		Resolver:  sipResolver.Resolver(),
 	}, func(_ context.Context, call *jsip.Call) error {
 		// Best-effort handoff: if the test's select has already picked up
 		// or the test ended, drop the call rather than leak the goroutine.
@@ -112,7 +114,7 @@ func claimUAS(t *testing.T, ctx context.Context) *UAS {
 		return nil
 	})
 	if err != nil {
-		t.Fatalf("claimUAS: SIP stack start (user=%s): %v", username, err)
+		helperFatalf(t, "claimUAS-stack", "SIP stack start (user=%s): %v", username, err)
 	}
 	t.Cleanup(func() {
 		// Stop the stack BEFORE the test's bounded ctx runs out: this
@@ -121,7 +123,6 @@ func claimUAS(t *testing.T, ctx context.Context) *UAS {
 		// log noise the spike noted.
 		stk.Stop()
 	})
-	t.Logf("claimUAS: registered sip:%s@%s (sid=%s)", username, cfg.SIPDomain, sid)
 	return &UAS{
 		SID:      sid,
 		Username: username,
@@ -153,7 +154,7 @@ func placeCallTo(ctx context.Context, t *testing.T, uas *UAS, verbs []map[string
 	t.Helper()
 	blob, err := json.Marshal(verbs)
 	if err != nil {
-		t.Fatalf("marshal verbs: %v", err)
+		helperFatalf(t, "marshal-verbs", "%v", err)
 	}
 	hook, statusHook := callbackURLs(t)
 	body := provision.CallCreate{
@@ -163,7 +164,7 @@ func placeCallTo(ctx context.Context, t *testing.T, uas *UAS, verbs []map[string
 		From:           "441514533212",
 		To: provision.CallTarget{
 			Type: "user",
-			Name: fmt.Sprintf("%s@%s", uas.Username, cfg.SIPDomain),
+			Name: fmt.Sprintf("%s@%s", uas.Username, suite.SIPRealm),
 		},
 		Tag: map[string]any{
 			webhook.CorrelationKey: t.Name(),
@@ -255,7 +256,7 @@ func placeWebhookCallTo(ctx context.Context, t *testing.T, uas *UAS, session *we
 		From:           "441514533212",
 		To: provision.CallTarget{
 			Type: "user",
-			Name: fmt.Sprintf("%s@%s", uas.Username, cfg.SIPDomain),
+			Name: fmt.Sprintf("%s@%s", uas.Username, suite.SIPRealm),
 		},
 		Tag: map[string]any{
 			webhook.CorrelationKey: session.ID(),
@@ -280,7 +281,7 @@ func placeWebhookCallToNoWait(ctx context.Context, t *testing.T, uas *UAS, sessi
 		From:           "441514533212",
 		To: provision.CallTarget{
 			Type: "user",
-			Name: fmt.Sprintf("%s@%s", uas.Username, cfg.SIPDomain),
+			Name: fmt.Sprintf("%s@%s", uas.Username, suite.SIPRealm),
 		},
 		Tag: map[string]any{
 			webhook.CorrelationKey: session.ID(),
@@ -292,7 +293,7 @@ func placeWebhookCallToNoWait(ctx context.Context, t *testing.T, uas *UAS, sessi
 	}
 	sid, err := client.CreateCall(ctx, body)
 	if err != nil {
-		t.Fatalf("CreateCall: %v", err)
+		helperFatalf(t, "create-call", "%v", err)
 	}
 	return sid
 }
@@ -302,12 +303,12 @@ func placeWebhookCallToNoWait(ctx context.Context, t *testing.T, uas *UAS, sessi
 func submitAndAwaitOn(ctx context.Context, t *testing.T, body provision.CallCreate, uas *UAS) *jsip.Call {
 	t.Helper()
 	sid := client.ManagedCall(t, ctx, body)
-	t.Logf("created call sid=%s -> sip:%s@%s", sid, uas.Username, cfg.SIPDomain)
+	t.Logf("created call sid=%s -> sip:%s@%s", sid, uas.Username, suite.SIPRealm)
 	select {
 	case call := <-uas.Inbound:
 		return call
 	case <-ctx.Done():
-		t.Fatalf("timed out waiting for inbound call on uas=%s: %v", uas.Username, ctx.Err())
+		helperFatalf(t, "await-inbound", "uas=%s: %v", uas.Username, ctx.Err())
 		return nil
 	}
 }
@@ -353,6 +354,223 @@ func WithWarmupScript(s webhook.Script) webhook.Script {
 	out = append(out, V("pause", "length", WarmupPause))
 	out = append(out, s...)
 	return out
+}
+
+// --- session + URL helpers --------------------------------------------------
+//
+// These collapse the 6-line "register webhook session" + "build hook URL with
+// X-Test-Id query param" boilerplate that every Phase-2 test was repeating.
+// Forgetting the X-Test-Id query param on hooks that don't carry customerData
+// (eventHook, toolHook) silently routes callbacks to the shared `_anon`
+// session and breaks parallel runs.
+
+// helperFatalf is the canonical "setup helper failure" entry point: it
+// records the failure into the FAILURE SUMMARY block, then t.Fatalf's so
+// the test stops at the call site. Use this instead of raw `t.Fatalf` in
+// any function called from tests that doesn't have a *StepCtx in scope
+// (e.g. claimUAS, resolveFixture, submitAndAwaitOn). Without this the
+// failure bypasses the summary and is invisible under `-parallel`.
+func helperFatalf(t *testing.T, step, format string, args ...any) {
+	t.Helper()
+	msg := fmt.Sprintf(format, args...)
+	recordFailure(t, step, msg)
+	t.Fatalf("[helper:%s] %s", step, msg)
+}
+
+// claimSession registers a webhook session keyed on t.Name() and returns
+// (testID, sess). t.Cleanup releases it. Idempotent: re-claiming an
+// existing session returns the existing one. Most Phase-2 tests open with
+// `testID, sess := claimSession(t)` and never need to touch webhookReg
+// directly.
+func claimSession(t *testing.T) (string, *webhook.Session) {
+	t.Helper()
+	id := t.Name()
+	sess := webhookReg.New(id)
+	t.Cleanup(func() { webhookReg.Release(id) })
+	return id, sess
+}
+
+// SessionURL returns a per-test webhook callback URL that carries the
+// X-Test-Id query param so the server's correlation layer routes the
+// callback to this test's session even when the payload itself doesn't
+// include customerData (agent eventHook/toolHook, transcribe's
+// transcriptionHook, tag verb, etc).
+//
+// `verb` is the path suffix under /action/ — e.g. "agent-turn",
+// "agent-tool", "agent-complete", "gather", "dial".
+//
+// Use this consistently in place of building the URL by hand.
+func SessionURL(sess *webhook.Session, verb string) string {
+	return webhookSrv.PublicURL() + "/action/" + verb +
+		"?" + webhook.CorrelationHeader + "=" + url.QueryEscape(sess.ID())
+}
+
+// SessionAckEmpty registers an empty action-hook script for the named
+// verb on `sess`, so the server returns `[]` rather than the default
+// hangup-everywhere behaviour. Used by every Phase-2 test that wires an
+// actionHook the test wants to capture but doesn't want to chain
+// follow-up verbs on. Variadic so common cases (agent: complete + turn)
+// fit on one line.
+func SessionAckEmpty(sess *webhook.Session, verbs ...string) {
+	for _, v := range verbs {
+		sess.ScriptActionHook(v, webhook.Script{})
+	}
+}
+
+// --- timing constants -------------------------------------------------------
+//
+// Hard-coded magic durations were sprinkled across 12+ tests with the same
+// rationale comment repeated. Centralised here so all callers move
+// together and the rationale lives once.
+
+// RecognizerArmDelay is the silence we pad after Answer + SendSilence
+// before user audio starts, to let the cluster's STT recognizer fully
+// arm. Empirically: 500ms loses the first word of a 4-word phrase;
+// 1500ms reliably captures the full phrase.
+const RecognizerArmDelay = 1500 * time.Millisecond
+
+// LLMReplyWindow is how long we wait after sending the user prompt for
+// the LLM round-trip + TTS streaming to complete and the recording to
+// capture the full reply. The agent verb's actionHook only fires at
+// call-end, not at LLM-reply-end, so the wait is upper-bound by us.
+const LLMReplyWindow = 12 * time.Second
+
+// BridgeSettleDelay is the delay between caller answer and the callee
+// starting to speak in multi-leg tests, so the bridge's RTP path
+// stabilises (symmetric-RTP latch on both legs) before audio starts.
+const BridgeSettleDelay = 1500 * time.Millisecond
+
+// EndedDrainTimeout is the budget for WaitState(StateEnded) at the end
+// of a test — the recording flushes only when the dialog fully tears
+// down. Generous because BYE round-trip can take 1-2s on a NAT'd path.
+const EndedDrainTimeout = 5 * time.Second
+
+// WaitFor logs a Step (start + ok), sleeps for d, then closes. Use for
+// "wait-for-stt", "wait-for-llm-reply", "wait-into-greeting" patterns
+// where the only thing the step does is pace.
+func WaitFor(t *testing.T, name string, d time.Duration) {
+	t.Helper()
+	s := Step(t, name)
+	defer s.Done()
+	time.Sleep(d)
+}
+
+// provisionWebhookApp creates an Application bound to the suite-wide
+// webhook tunnel and the suite's Deepgram speech credential, registers
+// a Cleanup, and returns the application_sid. Used by UAC tests
+// (`answer`, `sip:decline`) to set up an `sip:app-<sid>@<realm>` target
+// they can dial. Without this helper, every UAC test rebuilds the same
+// 14-field ApplicationCreate body.
+func provisionWebhookApp(t *testing.T, ctx context.Context, suffix string) string {
+	t.Helper()
+	return client.ManagedApplication(t, ctx, provision.ApplicationCreate{
+		Name:       provision.Name(suffix),
+		AccountSID: suite.AccountSID,
+		CallHook: provision.Webhook{
+			URL:    webhookSrv.PublicURL() + "/hook",
+			Method: "POST",
+		},
+		CallStatusHook: provision.Webhook{
+			URL:    webhookSrv.PublicURL() + "/status",
+			Method: "POST",
+		},
+		SpeechSynthesisVendor:    "deepgram",
+		SpeechSynthesisLabel:     deepgramLabel,
+		SpeechSynthesisVoice:     deepgramVoice,
+		SpeechRecognizerVendor:   "deepgram",
+		SpeechRecognizerLabel:    deepgramLabel,
+		SpeechRecognizerLanguage: "en-US",
+	})
+}
+
+// HangupAndWaitEnded hangs the call up (best-effort) and blocks for up
+// to EndedDrainTimeout for the recorder to flush. Replaces the 5-line
+// pattern at the tail of every recording-bearing test.
+func HangupAndWaitEnded(t *testing.T, ctx context.Context, call *jsip.Call) {
+	t.Helper()
+	s := Step(t, "hangup-and-wait-ended")
+	defer s.Done()
+	_ = call.Hangup()
+	endCtx, cancel := context.WithTimeout(ctx, EndedDrainTimeout)
+	defer cancel()
+	_ = call.WaitState(endCtx, jsip.StateEnded)
+}
+
+// --- audio round-trip -------------------------------------------------------
+
+// AudioRoundtrip captures the "answer + record + silence + arm-stt + send-wav
+// + wait-reply" sequence that 9 tests reproduce verbatim.
+//
+// Caller still owns the call lifecycle (placeWebhookCallTo + final Hangup);
+// AudioRoundtrip drives the in-the-middle steps and returns the recording
+// path the caller can hand to AssertTranscript* helpers.
+//
+// Steps (each gets its own log entry):
+//
+//	answer-record-and-silence
+//	wait-for-stt        (RecognizerArmDelay)
+//	send-prompt-wav     (the user's "voice")
+//	wait-for-reply      (LLMReplyWindow by default)
+//
+// The caller wraps the test with `defer HangupAndWaitEnded(...)` and
+// finishes with AssertTranscriptHasMost / AssertTranscriptContains.
+type AudioRoundtripOpts struct {
+	// PromptWAV: caller-provided path to a telephony-grade WAV that gets
+	// streamed at the cluster as the user's voice. Required.
+	PromptWAV string
+	// RecordTag: filename prefix under t.TempDir() for the inbound
+	// recording. Defaults to "reply".
+	RecordTag string
+	// ReplyWait: how long to silence-pace after the prompt. Defaults to
+	// LLMReplyWindow. Set shorter for tests that don't need a full LLM
+	// round-trip (e.g. transcribe, gather_speech).
+	ReplyWait time.Duration
+}
+
+// RunAudioRoundtrip performs the answer/record/prompt/wait sequence. Returns
+// the recording path. Hangup is the caller's responsibility (use
+// HangupAndWaitEnded).
+func RunAudioRoundtrip(t *testing.T, ctx context.Context, call *jsip.Call, opts AudioRoundtripOpts) string {
+	t.Helper()
+	if opts.PromptWAV == "" {
+		helperFatalf(t, "audio-roundtrip", "PromptWAV required")
+	}
+	if opts.RecordTag == "" {
+		opts.RecordTag = "reply"
+	}
+	if opts.ReplyWait == 0 {
+		opts.ReplyWait = LLMReplyWindow
+	}
+
+	s := Step(t, "answer-record-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	rec := filepath.Join(t.TempDir(), opts.RecordTag+".pcm")
+	if err := call.StartRecording(rec); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	WaitFor(t, "wait-for-stt", RecognizerArmDelay)
+
+	s = Step(t, "send-prompt-wav")
+	if err := call.SendWAV(opts.PromptWAV); err != nil {
+		s.Fatalf("SendWAV(%s): %v", opts.PromptWAV, err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-reply")
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	time.Sleep(opts.ReplyWait)
+	s.Done()
+
+	return rec
 }
 
 // V builds a single jambonz verb as a map[string]any from a verb name plus

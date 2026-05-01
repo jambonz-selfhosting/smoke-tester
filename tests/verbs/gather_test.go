@@ -50,14 +50,10 @@ func TestVerb_Gather_Digits(t *testing.T) {
 	ctx := WithTimeout(t, 60*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-gather-and-action-ack")
-	actionURL := webhookSrv.PublicURL() + "/action/gather"
+	s := Step(t, "script-gather-and-action-ack")
+	actionURL := SessionURL(sess, "gather")
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("gather",
 			"input", []any{"digits"},
@@ -67,7 +63,7 @@ func TestVerb_Gather_Digits(t *testing.T) {
 		V("hangup"),
 	}))
 	// Empty action-hook response = "ack, don't chain more verbs".
-	sess.ScriptActionHook("gather", webhook.Script{})
+	SessionAckEmpty(sess, "gather")
 	s.Done()
 
 	// Gather's flow diverges from other verb tests: we must send DTMF
@@ -113,9 +109,8 @@ func TestVerb_Gather_Digits(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "assert-digits-1234")
-	digits, _ := cb.JSON["digits"].(string)
-	if digits != "1234" {
-		s.Errorf("digits mismatch: got %q want %q (body: %s)", digits, "1234", string(cb.Body))
+	if got := cb.String("digits"); got != "1234" {
+		s.Errorf("digits mismatch: got %q want %q (body: %s)", got, "1234", string(cb.Body))
 	}
 	s.Done()
 

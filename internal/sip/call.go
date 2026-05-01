@@ -478,6 +478,22 @@ func (c *Call) Received() []Message {
 	return out
 }
 
+// MethodsReceived returns the SIP method of every received in-dialog
+// request, in arrival order. Convenience wrapper for the common
+// "did we see a BYE / INFO / REFER?" assertion. Method-less entries
+// (responses) are skipped.
+func (c *Call) MethodsReceived() []string {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	out := make([]string, 0, len(c.recv))
+	for _, m := range c.recv {
+		if m.Method != "" {
+			out = append(out, m.Method)
+		}
+	}
+	return out
+}
+
 // --- state waiting ---
 
 // Done returns a channel closed when the call reaches StateEnded.

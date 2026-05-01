@@ -70,19 +70,15 @@ func TestVerb_Dial_User_Bridge(t *testing.T) {
 	callerUAS := claimUAS(t, ctx)
 	calleeUAS := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "resolve-fixture")
+	s := Step(t, "resolve-fixture")
 	wavPath := resolveFixture(t, speechWAV)
 	s.Done()
 
 	s = Step(t, "script-dial-to-callee")
-	actionURL := webhookSrv.PublicURL() + "/action/dial"
-	target := fmt.Sprintf("%s@%s", calleeUAS.Username, cfg.SIPDomain)
+	actionURL := SessionURL(sess, "dial")
+	target := fmt.Sprintf("%s@%s", calleeUAS.Username, suite.SIPRealm)
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("dial",
 			"target", []any{map[string]any{
@@ -90,10 +86,18 @@ func TestVerb_Dial_User_Bridge(t *testing.T) {
 				"name": target,
 			}},
 			"timeout", 20,
-			"actionHook", actionURL),
+			"actionHook", actionURL,
+			// anchorMedia=true forces FreeSWITCH to relay RTP between the
+			// two legs instead of brokering a peer-to-peer SDP exchange.
+			// Without this the cluster sometimes hands each leg the OTHER
+			// leg's private NAT'd RTP address (10.x.x.x), which neither
+			// side can reach — so the bridge "completes" SIP-wise but no
+			// audio crosses. Anchored media keeps every packet inside the
+			// cluster's data plane, which we can reach via the SBC public IP.
+			"anchorMedia", true),
 		V("hangup"),
 	}))
-	sess.ScriptActionHook("dial", webhook.Script{})
+	SessionAckEmpty(sess, "dial")
 	s.Done()
 
 	s = Step(t, "claim-callee-channel")
@@ -139,7 +143,7 @@ func TestVerb_Dial_User_Bridge(t *testing.T) {
 			}
 			// Let the bridge settle + the caller's recording pipeline fully
 			// latch before speech starts. Same pattern as gather_speech.
-			time.Sleep(1500 * time.Millisecond)
+			time.Sleep(RecognizerArmDelay)
 			t.Logf("[callee:send-wav] start")
 			if err := c.SendWAV(wavPath); err != nil {
 				GoroutineFailf(t, "callee:send-wav", "SendWAV: %v", err)
@@ -200,11 +204,11 @@ func TestVerb_Dial_User_Bridge(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "assert-dial-status-completed")
-	if status, _ := cb.JSON["dial_call_status"].(string); status != "completed" {
-		s.Errorf("dial_call_status: got %q want %q", status, "completed")
+	if got := cb.String("dial_call_status"); got != "completed" {
+		s.Errorf("dial_call_status: got %q want %q", got, "completed")
 	}
-	if sip, _ := cb.JSON["dial_sip_status"].(float64); sip != 200 {
-		s.Errorf("dial_sip_status: got %v want 200", cb.JSON["dial_sip_status"])
+	if got := cb.Int("dial_sip_status"); got != 200 {
+		s.Errorf("dial_sip_status: got %d want 200", got)
 	}
 	s.Done()
 

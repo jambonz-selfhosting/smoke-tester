@@ -48,14 +48,10 @@ func TestVerb_Message_SendSMS(t *testing.T) {
 	ctx := WithTimeout(t, 45*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-message-and-action-ack")
-	actionURL := webhookSrv.PublicURL() + "/action/message"
+	s := Step(t, "script-message-and-action-ack")
+	actionURL := SessionURL(sess, "message")
 	sess.ScriptCallHook(webhook.Script{
 		V("message",
 			"to", to,
@@ -65,7 +61,7 @@ func TestVerb_Message_SendSMS(t *testing.T) {
 		V("pause", "length", 2),
 		V("hangup"),
 	})
-	sess.ScriptActionHook("message", webhook.Script{})
+	SessionAckEmpty(sess, "message")
 	s.Done()
 
 	s = Step(t, "place-call")

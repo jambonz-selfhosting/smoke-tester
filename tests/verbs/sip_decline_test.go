@@ -23,13 +23,11 @@
 package verbs
 
 import (
-	"context"
 	"errors"
 	"fmt"
 	"testing"
 	"time"
 
-	"github.com/jambonz-selfhosting/smoke-tester/internal/provision"
 	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
@@ -59,13 +57,9 @@ func TestVerb_SIPDecline_Basic(t *testing.T) {
 	ctx := WithTimeout(t, 45*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	testID, sess := claimSession(t)
 
-	s = Step(t, "script-sip-decline-486")
+	s := Step(t, "script-sip-decline-486")
 	// Script jambonz will execute when someone INVITEs the provisioned
 	// Application: respond with 486 Busy Here + a custom header.
 	sess.ScriptCallHook(webhook.Script{
@@ -79,40 +73,7 @@ func TestVerb_SIPDecline_Basic(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "provision-application")
-	// Provision a dedicated Application for this test. Both call_hook and
-	// call_status_hook point at the same webhook server; the hook URL has
-	// no correlation — we rely on the SIP X-Test-Id header the UAC sets
-	// on its INVITE.
-	appCtx, appCancel := context.WithTimeout(ctx, 15*time.Second)
-	defer appCancel()
-	appSID, err := client.CreateApplication(appCtx, provision.ApplicationCreate{
-		Name:       provision.Name("sipdecline-app"),
-		AccountSID: cfg.AccountSID,
-		CallHook: provision.Webhook{
-			URL:    webhookSrv.PublicURL() + "/hook",
-			Method: "POST",
-		},
-		CallStatusHook: provision.Webhook{
-			URL:    webhookSrv.PublicURL() + "/status",
-			Method: "POST",
-		},
-		// Speech creds are harmless here; sip:decline doesn't use them but
-		// jambonz validates these fields exist on the Application.
-		SpeechSynthesisVendor:    "deepgram",
-		SpeechSynthesisLabel:     deepgramLabel,
-		SpeechSynthesisVoice:     deepgramVoice,
-		SpeechRecognizerVendor:   "deepgram",
-		SpeechRecognizerLabel:    deepgramLabel,
-		SpeechRecognizerLanguage: "en-US",
-	})
-	if err != nil {
-		s.Fatalf("create Application: %v", err)
-	}
-	t.Cleanup(func() {
-		dctx, dcancel := context.WithTimeout(context.Background(), 15*time.Second)
-		defer dcancel()
-		_ = client.DeleteApplication(dctx, appSID)
-	})
+	appSID := provisionWebhookApp(t, ctx, "sipdecline-app")
 	s.Logf("provisioned Application sid=%s", appSID)
 	s.Done()
 
@@ -120,8 +81,8 @@ func TestVerb_SIPDecline_Basic(t *testing.T) {
 	// UAC INVITE to app-<sid>@<domain>. jambonz's SBC routes this URI to
 	// the bound Application's call_hook. Carry our correlation ID as an
 	// X-Test-Id SIP header so the hook payload lands in our session.
-	dest := fmt.Sprintf("sip:app-%s@%s", appSID, cfg.SIPDomain)
-	_, err = uas.Stack.Invite(ctx, dest, jsip.InviteOptions{
+	dest := fmt.Sprintf("sip:app-%s@%s", appSID, suite.SIPRealm)
+	_, err := uas.Stack.Invite(ctx, dest, jsip.InviteOptions{
 		Transport: "tcp",
 		FromUser:  uas.Username,
 		Username:  uas.Username,

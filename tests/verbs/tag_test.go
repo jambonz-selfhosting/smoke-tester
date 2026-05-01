@@ -37,13 +37,9 @@ func TestVerb_Tag_DataInCallbacks(t *testing.T) {
 	ctx := WithTimeout(t, 60*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-tag-say-hangup")
+	s := Step(t, "script-tag-say-hangup")
 	// The test infra already sets customerData.x_test_id (via the POST /Calls
 	// `tag` field). The `tag` verb merges its `data` into the same bucket, so
 	// subsequent webhook payloads should show both keys.
@@ -80,23 +76,27 @@ func TestVerb_Tag_DataInCallbacks(t *testing.T) {
 	s = Step(t, "assert-customer-data-foo-bar")
 	var found bool
 	for _, cb := range cbs {
-		cd, ok := cb.JSON["customerData"].(map[string]any)
-		if !ok {
+		if cb.NestedString("customerData.foo") != "bar" {
 			continue
 		}
-		if cd["foo"] == "bar" {
-			found = true
-			if v, _ := cd["n"].(float64); int(v) != 7 {
-				s.Errorf("customerData.n: got %v want 7", cd["n"])
-			}
-			break
+		found = true
+		if got := int(toFloat(cb.NestedAny("customerData.n"))); got != 7 {
+			s.Errorf("customerData.n: got %v want 7", cb.NestedAny("customerData.n"))
 		}
+		break
 	}
 	if !found {
 		s.Errorf("no callback carried customerData with foo=bar; saw %d callbacks", len(cbs))
 		for _, cb := range cbs {
-			s.Logf("  hook=%s customerData=%v", cb.Hook, cb.JSON["customerData"])
+			s.Logf("  hook=%s customerData=%v", cb.Hook, cb.CustomerData())
 		}
 	}
 	s.Done()
+}
+
+func toFloat(v any) float64 {
+	if f, ok := v.(float64); ok {
+		return f
+	}
+	return 0
 }

@@ -206,18 +206,14 @@ func TestVerb_Leave_FromWaitHook(t *testing.T) {
 	ctx := WithTimeout(t, 60*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
 	queue := fmt.Sprintf("jambonz-it-q-%d", time.Now().UnixNano())
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-enqueue-waithook-leave")
+	s := Step(t, "script-enqueue-waithook-leave")
 	// Main script: enqueue (with a waitHook that calls leave), then say
 	// something distinctive. If `leave` works, we get the post-enqueue
 	// audio out.
-	waitURL := webhookSrv.PublicURL() + "/action/wait"
+	waitURL := SessionURL(sess, "wait")
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("enqueue", "name", queue, "waitHook", waitURL),
 		V("say", "text", "After leave."),

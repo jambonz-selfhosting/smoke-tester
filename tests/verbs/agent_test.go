@@ -30,12 +30,10 @@ package verbs
 
 import (
 	"context"
-	"net/url"
 	"strings"
 	"testing"
 	"time"
 
-	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
@@ -173,22 +171,37 @@ func firstNonEmpty(a, b string) string {
 func findAgentEvents(cbs []webhook.Callback, wantType string) []webhook.Callback {
 	var out []webhook.Callback
 	for _, cb := range cbs {
-		t, _ := cb.JSON["type"].(string)
-		if t == wantType {
+		if cb.String("type") == wantType {
 			out = append(out, cb)
 		}
 	}
 	return out
 }
 
-// extractEventField pulls a string field out of an agent eventHook callback
-// (e.g. "transcript" from a user_transcript event, "response" from
-// llm_response). Returns "" if missing.
-func extractEventField(cb webhook.Callback, field string) string {
-	if v, ok := cb.JSON[field].(string); ok {
-		return v
+// ScriptAgent registers the canonical agent-verb call_hook script on sess
+// + the empty action-hook acks for the two agent callbacks
+// (`agent-complete` + `agent-turn`). It also wires the per-session
+// X-Test-Id-aware URLs into agentVerbOpts so tests don't have to know
+// about the eventHook/toolHook correlation footgun.
+//
+// The default trailing chain is `[hangup]`; pass `extra` verbs to append
+// before hangup.
+func ScriptAgent(sess *webhook.Session, opts agentVerbOpts, extra ...map[string]any) {
+	opts.ActionURL = SessionURL(sess, "agent-complete")
+	opts.EventURL = SessionURL(sess, "agent-turn")
+	if len(opts.Tools) > 0 {
+		opts.ToolURL = SessionURL(sess, "agent-tool")
 	}
-	return ""
+	script := webhook.Script{buildAgentVerb(opts)}
+	for _, v := range extra {
+		script = append(script, v)
+	}
+	script = append(script, V("hangup"))
+	sess.ScriptCallHook(WithWarmupScript(script))
+	SessionAckEmpty(sess, "agent-complete", "agent-turn")
+	if len(opts.Tools) > 0 {
+		SessionAckEmpty(sess, "agent-tool")
+	}
 }
 
 // TestVerb_Agent_Echo — happy-path round-trip. Pre-gen "alpha bravo charlie
@@ -230,68 +243,23 @@ func TestVerb_Agent_Echo(t *testing.T) {
 	s.Logf("prompt wav: %s", wavPath)
 	s.Done()
 
-	s = Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
-	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		buildAgentVerb(agentVerbOpts{
-			SystemPrompt: agentEchoSystemPrompt,
-			Greeting:     false,
-			ActionURL:    webhookSrv.PublicURL() + "/action/agent-complete",
-			EventURL:     webhookSrv.PublicURL() + "/action/agent-turn",
-		}),
-		V("hangup"),
-	}))
-	sess.ScriptActionHook("agent-complete", webhook.Script{})
-	sess.ScriptActionHook("agent-turn", webhook.Script{})
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt: agentEchoSystemPrompt,
+	})
 	s.Done()
 
 	s = Step(t, "place-call")
 	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
 	s.Done()
 
-	s = Step(t, "answer-record-and-silence")
-	if err := call.Answer(); err != nil {
-		s.Fatalf("Answer: %v", err)
-	}
-	recPath := t.TempDir() + "/agent-reply.pcm"
-	if err := call.StartRecording(recPath); err != nil {
-		s.Fatalf("StartRecording: %v", err)
-	}
-	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence: %v", err)
-	}
-	s.Done()
-
-	s = Step(t, "wait-for-stt")
-	// Leading silence lets Deepgram STT arm before user audio starts;
-	// without it the first keyword can clip.
-	time.Sleep(1500 * time.Millisecond)
-	s.Done()
-
-	s = Step(t, "send-prompt-wav")
-	if err := call.SendWAV(wavPath); err != nil {
-		s.Fatalf("SendWAV(%s): %v", wavPath, err)
-	}
-	s.Done()
-
-	s = Step(t, "wait-for-llm-reply")
-	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence (post): %v", err)
-	}
-	time.Sleep(12 * time.Second)
-	s.Done()
-
-	s = Step(t, "hangup-and-wait-ended")
-	_ = call.Hangup()
-	endCtx, ecancel := context.WithTimeout(ctx, 5*time.Second)
-	defer ecancel()
-	_ = call.WaitState(endCtx, jsip.StateEnded)
-	s.Done()
+	recPath := RunAudioRoundtrip(t, ctx, call, AudioRoundtripOpts{
+		PromptWAV: wavPath,
+		RecordTag: "agent-reply",
+	})
+	HangupAndWaitEnded(t, ctx, call)
 
 	s = Step(t, "assert-reply-keywords")
 	keywords := []string{"alpha", "bravo", "charlie", "delta"}
@@ -351,36 +319,23 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
 	// Append ?X-Test-Id=<testID> to per-callback URLs so the webhook server
 	// routes eventHook callbacks to THIS session (the payload itself has no
 	// customerData and would otherwise land in shared `_anon`, racing with
 	// parallel agent tests).
-	q := "?" + webhook.CorrelationHeader + "=" + url.QueryEscape(testID)
-	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		buildAgentVerb(agentVerbOpts{
-			SystemPrompt: agentEchoSystemPrompt,
-			Greeting:     false,
-			ActionURL:    webhookSrv.PublicURL() + "/action/agent-complete",
-			EventURL:     webhookSrv.PublicURL() + "/action/agent-turn" + q,
-		}),
-		V("hangup"),
-	}))
-	sess.ScriptActionHook("agent-complete", webhook.Script{})
-	sess.ScriptActionHook("agent-turn", webhook.Script{})
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt: agentEchoSystemPrompt,
+	})
 	s.Done()
 
 	s = Step(t, "place-call")
 	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
 	s.Done()
 
-	s = Step(t, "answer-record-and-silence")
+	s = Step(t, "answer-and-silence")
 	if err := call.Answer(); err != nil {
 		s.Fatalf("Answer: %v", err)
 	}
@@ -389,9 +344,7 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "wait-for-stt")
-	time.Sleep(1500 * time.Millisecond)
-	s.Done()
+	WaitFor(t, "wait-for-stt", RecognizerArmDelay)
 
 	s = Step(t, "send-prompt-wav")
 	if err := call.SendWAV(wavPath); err != nil {
@@ -403,13 +356,12 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence (post): %v", err)
 	}
-	// Drain THIS session while events stream in. Routed via X-Test-Id
-	// query param on the eventHook URL — no `_anon` contention. Each
-	// event type can fire at different points (user_transcript ~when STT
-	// finalizes, llm_response ~when LLM stream completes, turn_end ~when
-	// TTS empties). 12s window covers the slowest path on a healthy
-	// cluster.
-	cbs := DrainCallbacks(sess, 12*time.Second)
+	// Drain THIS session while events stream in (eventHook URL was
+	// minted via SessionURL so it carries our X-Test-Id query param —
+	// no `_anon` contention). Each event type fires at a different
+	// moment (user_transcript ~when STT finalizes, llm_response ~when
+	// LLM stream completes, turn_end ~when TTS empties).
+	cbs := DrainCallbacks(sess, LLMReplyWindow)
 	s.Logf("captured %d agent events", len(cbs))
 	s.Done()
 
@@ -423,7 +375,7 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 	// proves it was OUR call's event, not a parallel test's.
 	matched := ""
 	for _, cb := range transcripts {
-		txt := strings.ToLower(extractEventField(cb, "transcript"))
+		txt := strings.ToLower(cb.String("transcript"))
 		for _, kw := range []string{"alpha", "bravo", "charlie", "delta"} {
 			if strings.Contains(txt, kw) {
 				matched = txt
@@ -449,7 +401,7 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 	} else {
 		// Just ensure the response body is non-empty and string-typed —
 		// content correctness is asserted via the audio round-trip in Echo.
-		got := extractEventField(responses[0], "response")
+		got := responses[0].String("response")
 		if got == "" {
 			s.Errorf("llm_response event has empty response field: %s", string(responses[0].Body))
 		} else {
@@ -527,11 +479,7 @@ func TestVerb_Agent_Greeting(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
 	// Soften the system prompt so the LLM does produce a greeting on the
@@ -541,17 +489,10 @@ func TestVerb_Agent_Greeting(t *testing.T) {
 		"e.g. \"Hello, how can I help?\"). " +
 		"On every later turn, repeat back exactly the words the user spoke " +
 		"and nothing else."
-	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		buildAgentVerb(agentVerbOpts{
-			SystemPrompt: greetingSystemPrompt,
-			Greeting:     true, // <-- agent speaks first
-			ActionURL:    webhookSrv.PublicURL() + "/action/agent-complete",
-			EventURL:     webhookSrv.PublicURL() + "/action/agent-turn",
-		}),
-		V("hangup"),
-	}))
-	sess.ScriptActionHook("agent-complete", webhook.Script{})
-	sess.ScriptActionHook("agent-turn", webhook.Script{})
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt: greetingSystemPrompt,
+		Greeting:     true,
+	})
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -571,14 +512,8 @@ func TestVerb_Agent_Greeting(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "wait-for-greeting")
-	// 6s is enough for a one-sentence greeting (LLM ~1s + TTS ~3-4s for
-	// "Hello, how can I help?"). After this window we should already have
-	// inbound RTP from the agent's TTS.
-	time.Sleep(6 * time.Second)
+	WaitFor(t, "wait-for-greeting", 6*time.Second)
 	bytesAfterGreeting := call.PCMBytesIn()
-	s.Logf("recorded %d PCM bytes by t+6s (greeting window)", bytesAfterGreeting)
-	s.Done()
 
 	s = Step(t, "assert-greeting-audio")
 	// 6s of greeting TTS at PCMU 8 kHz is ~96 KB; we want at least 16 KB
@@ -601,15 +536,10 @@ func TestVerb_Agent_Greeting(t *testing.T) {
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence (post): %v", err)
 	}
-	time.Sleep(12 * time.Second)
+	time.Sleep(LLMReplyWindow)
 	s.Done()
 
-	s = Step(t, "hangup-and-wait-ended")
-	_ = call.Hangup()
-	endCtx, ecancel := context.WithTimeout(ctx, 5*time.Second)
-	defer ecancel()
-	_ = call.WaitState(endCtx, jsip.StateEnded)
-	s.Done()
+	HangupAndWaitEnded(t, ctx, call)
 
 	s = Step(t, "assert-reply-keywords-or-greeting")
 	// Generous matcher: greeting OR keyword echo. Exactly which words
@@ -654,24 +584,12 @@ func TestVerb_Agent_ActionHookOnEnd(t *testing.T) {
 	ctx := WithTimeout(t, 90*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s = Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	testID, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
-	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		buildAgentVerb(agentVerbOpts{
-			SystemPrompt: agentEchoSystemPrompt,
-			Greeting:     false,
-			ActionURL:    webhookSrv.PublicURL() + "/action/agent-complete",
-			EventURL:     webhookSrv.PublicURL() + "/action/agent-turn",
-		}),
-		V("hangup"),
-	}))
-	sess.ScriptActionHook("agent-complete", webhook.Script{})
-	sess.ScriptActionHook("agent-turn", webhook.Script{})
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt: agentEchoSystemPrompt,
+	})
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -718,13 +636,13 @@ func TestVerb_Agent_ActionHookOnEnd(t *testing.T) {
 	// our `results` object which carries `completion_reason` (snake-cased
 	// by HttpRequestor.snakeCaseKeys). Both confirm correlation works for
 	// actionHook (unlike eventHook which lands in _anon).
-	if got, _ := actionCB.JSON["call_sid"].(string); got == "" {
+	if got := actionCB.String("call_sid"); got == "" {
 		s.Errorf("action/agent-complete payload missing call_sid: %s",
 			string(actionCB.Body))
 	} else {
 		s.Logf("call_sid in payload: %s", got)
 	}
-	if got, _ := actionCB.JSON["completion_reason"].(string); got == "" {
+	if got := actionCB.String("completion_reason"); got == "" {
 		s.Errorf("action/agent-complete payload missing completion_reason: %s",
 			string(actionCB.Body))
 	} else {
@@ -732,10 +650,8 @@ func TestVerb_Agent_ActionHookOnEnd(t *testing.T) {
 	}
 	// customerData.x_test_id should also round-trip back to us — proves
 	// the actionHook hit our session, not _anon.
-	if cd, ok := actionCB.JSON["customer_data"].(map[string]any); ok {
-		if id, _ := cd["x_test_id"].(string); id != testID {
-			s.Errorf("customer_data.x_test_id=%q want %q", id, testID)
-		}
+	if id := actionCB.NestedString("customer_data.x_test_id"); id != "" && id != testID {
+		s.Errorf("customer_data.x_test_id=%q want %q", id, testID)
 	}
 	s.Done()
 }
@@ -794,11 +710,7 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb-with-tool")
 	tool := map[string]any{
@@ -813,29 +725,15 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 		"The ONLY way to learn the secret word is to call the get_secret_word tool. " +
 		"When the user asks for the secret word, immediately call get_secret_word. " +
 		"After the tool returns, speak the returned word to the user and stop."
-	// Append ?X-Test-Id=<testID> to per-callback URLs so the webhook server
-	// can route each callback (incl. eventHook + toolHook) to THIS test's
-	// session even when the payload has no customerData. Without this,
-	// callbacks land in shared `_anon` and parallel agent tests race for
-	// the same toolHook outcome.
-	q := "?" + webhook.CorrelationHeader + "=" + url.QueryEscape(testID)
-	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		buildAgentVerb(agentVerbOpts{
-			SystemPrompt: systemPrompt,
-			Greeting:     false,
-			ActionURL:    webhookSrv.PublicURL() + "/action/agent-complete",
-			EventURL:     webhookSrv.PublicURL() + "/action/agent-turn" + q,
-			ToolURL:      webhookSrv.PublicURL() + "/action/agent-tool" + q,
-			Tools:        []map[string]any{tool},
-		}),
-		V("hangup"),
-	}))
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt: systemPrompt,
+		Tools:        []map[string]any{tool},
+	})
 	// agent-tool gets a JSON body (not a verb array): feature-server takes
 	// our response body verbatim and feeds it to the LLM as the tool result.
 	toolBody := []byte(`{"word":"` + secretWord + `"}`)
 	sess.ScriptActionHookBody("agent-tool", toolBody)
-	sess.ScriptActionHook("agent-complete", webhook.Script{})
-	sess.ScriptActionHook("agent-turn", webhook.Script{})
+	SessionAckEmpty(sess, "agent-complete", "agent-turn")
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -883,15 +781,15 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "assert-tool-payload")
-	if got, _ := toolCB.JSON["name"].(string); got != "get_secret_word" {
+	if got := toolCB.String("name"); got != "get_secret_word" {
 		s.Errorf("tool name = %q, want %q", got, "get_secret_word")
 	}
-	if got, _ := toolCB.JSON["tool_call_id"].(string); got == "" {
+	if got := toolCB.String("tool_call_id"); got == "" {
 		s.Errorf("tool_call_id missing in payload: %s", string(toolCB.Body))
 	}
 	// `arguments` must exist; for a parameterless tool it's `{}`. Some LLMs
 	// send it as a JSON-encoded string instead of an object — accept both.
-	if _, ok := toolCB.JSON["arguments"]; !ok {
+	if toolCB.NestedAny("arguments") == nil {
 		s.Errorf("arguments missing in payload: %s", string(toolCB.Body))
 	}
 	s.Done()
@@ -902,12 +800,7 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	time.Sleep(12 * time.Second)
 	s.Done()
 
-	s = Step(t, "hangup-and-wait-ended")
-	_ = call.Hangup()
-	endCtx, ecancel := context.WithTimeout(ctx, 5*time.Second)
-	defer ecancel()
-	_ = call.WaitState(endCtx, jsip.StateEnded)
-	s.Done()
+	HangupAndWaitEnded(t, ctx, call)
 
 	s = Step(t, "assert-secret-word-spoken")
 	// Tolerance 1/1: the secret word must come through. If LLM verbosely
@@ -965,30 +858,18 @@ func TestVerb_Agent_BargeIn(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
 	greetingSystemPrompt := "You are a friendly voice assistant. " +
 		"On your first turn, greet the user with a long, slow welcome " +
 		"of at least three full sentences so they have time to interrupt. " +
 		"On subsequent turns, repeat the user's words back to them verbatim."
-	q := "?" + webhook.CorrelationHeader + "=" + url.QueryEscape(testID)
-	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		buildAgentVerb(agentVerbOpts{
-			SystemPrompt: greetingSystemPrompt,
-			Greeting:     true,
-			BargeIn:      true,
-			ActionURL:    webhookSrv.PublicURL() + "/action/agent-complete",
-			EventURL:     webhookSrv.PublicURL() + "/action/agent-turn" + q,
-		}),
-		V("hangup"),
-	}))
-	sess.ScriptActionHook("agent-complete", webhook.Script{})
-	sess.ScriptActionHook("agent-turn", webhook.Script{})
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt: greetingSystemPrompt,
+		Greeting:     true,
+		BargeIn:      true,
+	})
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -1047,12 +928,7 @@ func TestVerb_Agent_BargeIn(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "hangup-and-wait-ended")
-	_ = call.Hangup()
-	endCtx, ecancel := context.WithTimeout(ctx, 5*time.Second)
-	defer ecancel()
-	_ = call.WaitState(endCtx, jsip.StateEnded)
-	s.Done()
+	HangupAndWaitEnded(t, ctx, call)
 }
 
 // TestVerb_Agent_KrispTurnDetection — verifies the agent runs with
@@ -1100,28 +976,13 @@ func TestVerb_Agent_KrispTurnDetection(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	if _, ok := webhookReg.Lookup("_anon"); !ok {
-		webhookReg.New("_anon")
-	}
-	s.Done()
+	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
-	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		buildAgentVerb(agentVerbOpts{
-			SystemPrompt:  agentEchoSystemPrompt,
-			Greeting:      false,
-			TurnDetection: "krisp",
-			ActionURL:     webhookSrv.PublicURL() + "/action/agent-complete",
-			EventURL:      webhookSrv.PublicURL() + "/action/agent-turn",
-		}),
-		V("hangup"),
-	}))
-	sess.ScriptActionHook("agent-complete", webhook.Script{})
-	sess.ScriptActionHook("agent-turn", webhook.Script{})
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt:  agentEchoSystemPrompt,
+		TurnDetection: "krisp",
+	})
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -1158,12 +1019,7 @@ func TestVerb_Agent_KrispTurnDetection(t *testing.T) {
 	time.Sleep(12 * time.Second)
 	s.Done()
 
-	s = Step(t, "hangup-and-wait-ended")
-	_ = call.Hangup()
-	endCtx, ecancel := context.WithTimeout(ctx, 5*time.Second)
-	defer ecancel()
-	_ = call.WaitState(endCtx, jsip.StateEnded)
-	s.Done()
+	HangupAndWaitEnded(t, ctx, call)
 
 	s = Step(t, "assert-call-completed")
 	// Per user direction: it's enough that jambonz accepted the param and
@@ -1244,14 +1100,7 @@ func TestVerb_Agent_NoiseIsolation(t *testing.T) {
 			}
 			s.Done()
 
-			s = Step(t, "register-webhook-session")
-			testID := t.Name()
-			sess := webhookReg.New(testID)
-			t.Cleanup(func() { webhookReg.Release(testID) })
-			if _, ok := webhookReg.Lookup("_anon"); !ok {
-				webhookReg.New("_anon")
-			}
-			s.Done()
+			_, sess := claimSession(t)
 
 			s = Step(t, "script-agent-verb")
 			// Build the agent verb manually so we can plug in either a
@@ -1260,16 +1109,15 @@ func TestVerb_Agent_NoiseIsolation(t *testing.T) {
 			verb := buildAgentVerb(agentVerbOpts{
 				SystemPrompt: agentEchoSystemPrompt,
 				Greeting:     false,
-				ActionURL:    webhookSrv.PublicURL() + "/action/agent-complete",
-				EventURL:     webhookSrv.PublicURL() + "/action/agent-turn",
+				ActionURL:    SessionURL(sess, "agent-complete"),
+				EventURL:     SessionURL(sess, "agent-turn"),
 			})
 			verb["noiseIsolation"] = v.value
 			sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 				verb,
 				V("hangup"),
 			}))
-			sess.ScriptActionHook("agent-complete", webhook.Script{})
-			sess.ScriptActionHook("agent-turn", webhook.Script{})
+			SessionAckEmpty(sess, "agent-complete", "agent-turn")
 			s.Done()
 
 			s = Step(t, "place-call")
@@ -1306,12 +1154,7 @@ func TestVerb_Agent_NoiseIsolation(t *testing.T) {
 			time.Sleep(10 * time.Second)
 			s.Done()
 
-			s = Step(t, "hangup-and-wait-ended")
-			_ = call.Hangup()
-			endCtx, ecancel := context.WithTimeout(ctx, 5*time.Second)
-			defer ecancel()
-			_ = call.WaitState(endCtx, jsip.StateEnded)
-			s.Done()
+			HangupAndWaitEnded(t, ctx, call)
 
 			s = Step(t, "assert-call-produced-audio")
 			// Just prove the call didn't get rejected. If feature-server
@@ -1366,30 +1209,18 @@ func TestVerb_Agent_NoResponseTimeout(t *testing.T) {
 	ctx := WithTimeout(t, 120*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s = Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
 	timeout := 4
 	systemPrompt := "You are a brief voice assistant. " +
 		"On every turn, reply with a single short sentence. " +
 		"Greet the user on your first turn."
-	q := "?" + webhook.CorrelationHeader + "=" + url.QueryEscape(testID)
-	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		buildAgentVerb(agentVerbOpts{
-			SystemPrompt:      systemPrompt,
-			Greeting:          true,
-			NoResponseTimeout: &timeout,
-			ActionURL:         webhookSrv.PublicURL() + "/action/agent-complete",
-			EventURL:          webhookSrv.PublicURL() + "/action/agent-turn" + q,
-		}),
-		V("hangup"),
-	}))
-	sess.ScriptActionHook("agent-complete", webhook.Script{})
-	sess.ScriptActionHook("agent-turn", webhook.Script{})
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt:      systemPrompt,
+		Greeting:          true,
+		NoResponseTimeout: &timeout,
+	})
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -1424,22 +1255,17 @@ func TestVerb_Agent_NoResponseTimeout(t *testing.T) {
 		// fire at all.
 		var bodies []string
 		for _, cb := range responses {
-			bodies = append(bodies, truncate(extractEventField(cb, "response"), 80))
+			bodies = append(bodies, truncate(cb.String("response"), 80))
 		}
 		s.Errorf("expected >= 2 llm_response events (greeting + re-prompt) got %d: %v",
 			len(responses), bodies)
 	} else {
 		s.Logf("re-prompt fired: %s",
-			truncate(extractEventField(responses[1], "response"), 100))
+			truncate(responses[1].String("response"), 100))
 	}
 	s.Done()
 
-	s = Step(t, "hangup-and-wait-ended")
-	_ = call.Hangup()
-	endCtx, ecancel := context.WithTimeout(ctx, 5*time.Second)
-	defer ecancel()
-	_ = call.WaitState(endCtx, jsip.StateEnded)
-	s.Done()
+	HangupAndWaitEnded(t, ctx, call)
 }
 
 // summarizeEventTypes returns a comma-joined string of the event types
@@ -1461,7 +1287,7 @@ func summarizeEventTypes(cbs []webhook.Callback) string {
 func summarizeTranscripts(cbs []webhook.Callback) []string {
 	out := make([]string, 0, len(cbs))
 	for _, cb := range cbs {
-		out = append(out, truncate(extractEventField(cb, "transcript"), 80))
+		out = append(out, truncate(cb.String("transcript"), 80))
 	}
 	return out
 }

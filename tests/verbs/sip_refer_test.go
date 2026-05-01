@@ -41,13 +41,9 @@ func TestVerb_SIPRefer_EmitsRefer(t *testing.T) {
 	ctx := WithTimeout(t, 30*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-sip-refer")
+	s := Step(t, "script-sip-refer")
 	const transferTarget = "sip:transfer-target@example.invalid"
 	sess.ScriptCallHook(webhook.Script{
 		V("sip:refer", "referTo", transferTarget),

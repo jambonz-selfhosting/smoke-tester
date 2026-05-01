@@ -38,13 +38,9 @@ func TestVerb_Redirect_FetchesNewHook(t *testing.T) {
 	ctx := WithTimeout(t, 60*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "register-webhook-session")
-	testID := t.Name()
-	sess := webhookReg.New(testID)
-	t.Cleanup(func() { webhookReg.Release(testID) })
-	s.Done()
+	_, sess := claimSession(t)
 
-	s = Step(t, "script-redirect-and-action")
+	s := Step(t, "script-redirect-and-action")
 	redirectURL := webhookSrv.PublicURL() + "/action/redirect"
 	// First hook returns a redirect; our server then gets a second POST at
 	// /action/redirect which returns the real verb script.

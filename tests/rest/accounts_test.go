@@ -1,7 +1,6 @@
 package rest
 
 import (
-	"strings"
 	"testing"
 	"time"
 
@@ -65,36 +64,6 @@ func TestAccount_CRUD_SP(t *testing.T) {
 	}
 	if !found {
 		s.Fatalf("list did not include sid %q (found %d accounts)", sid, len(accounts))
-	}
-	s.Done()
-}
-
-// TestAccount_Get_AccountScope confirms that an account-scoped token can
-// retrieve its own account. List may return just [current] or empty depending
-// on server behaviour; don't assert on count here.
-//
-// Steps:
-//  1. get-own-account — account-scope client fetches cfg.AccountSID
-//  2. assert-fields-present — sid matches, name is non-empty, service_provider_sid present
-func TestAccount_Get_AccountScope(t *testing.T) {
-	ctx := WithTimeout(t, 15*time.Second)
-
-	s := Step(t, "get-own-account")
-	acct, err := client.GetAccount(ctx, cfg.AccountSID)
-	if err != nil {
-		s.Fatalf("get own account: %v", err)
-	}
-	s.Done()
-
-	s = Step(t, "assert-fields-present")
-	if acct.AccountSID != cfg.AccountSID {
-		s.Fatalf("sid mismatch: got %q want %q", acct.AccountSID, cfg.AccountSID)
-	}
-	if strings.TrimSpace(acct.Name) == "" {
-		s.Errorf("account has empty name: %+v", acct)
-	}
-	if acct.ServiceProviderSID == "" {
-		s.Errorf("account has empty service_provider_sid: %+v", acct)
 	}
 	s.Done()
 }

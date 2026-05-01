@@ -129,7 +129,7 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 		s.Fatalf("speaker SendSilence: %v", err)
 	}
 	// Let both legs fully bridge before speech; same pattern as dial/gather_speech.
-	time.Sleep(1500 * time.Millisecond)
+	time.Sleep(RecognizerArmDelay)
 	if err := speaker.SendWAV(wavPath); err != nil {
 		s.Fatalf("speaker SendWAV: %v", err)
 	}

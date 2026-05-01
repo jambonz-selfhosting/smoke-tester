@@ -21,7 +21,7 @@ func TestApiKey_Create_AccountScope(t *testing.T) {
 
 	s := Step(t, "create-api-key")
 	sid, token := client.ManagedApiKey(t, ctx, provision.ApiKeyCreate{
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 	})
 	s.Done()
 
@@ -49,7 +49,7 @@ func TestApiKey_RoundTrip(t *testing.T) {
 
 	s := Step(t, "mint-api-key")
 	_, token := client.ManagedApiKey(t, ctx, provision.ApiKeyCreate{
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 	})
 	if token == "" {
 		s.Fatal("token is empty")
@@ -61,18 +61,18 @@ func TestApiKey_RoundTrip(t *testing.T) {
 	if err != nil {
 		s.Fatalf("contract new: %v", err)
 	}
-	minted := provision.New(cfg.APIBaseURL, token, cfg.AccountSID, v,
+	minted := provision.New(cfg.APIBaseURL, token, suite.AccountSID, v,
 		provision.WithLabel("minted"))
 	s.Done()
 
 	s = Step(t, "call-with-minted-client")
-	acct, err := minted.GetAccount(ctx, cfg.AccountSID)
+	acct, err := minted.GetAccount(ctx, suite.AccountSID)
 	if err != nil {
 		s.Fatalf("minted key GET /Accounts/{sid}: %v", err)
 	}
-	if acct.AccountSID != cfg.AccountSID {
+	if acct.AccountSID != suite.AccountSID {
 		s.Errorf("minted key returned wrong account: got %q want %q",
-			acct.AccountSID, cfg.AccountSID)
+			acct.AccountSID, suite.AccountSID)
 	}
 	s.Done()
 }

@@ -20,7 +20,7 @@ func TestApplication_CRUD(t *testing.T) {
 
 	body := provision.ApplicationCreate{
 		Name:       provision.Name("app-crud"),
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 		CallHook: provision.Webhook{
 			URL:    "https://example.invalid/hook", // placeholder; no call is placed in this test
 			Method: "POST",
@@ -50,8 +50,8 @@ func TestApplication_CRUD(t *testing.T) {
 	if app.Name != body.Name {
 		s.Errorf("name mismatch: got %q want %q", app.Name, body.Name)
 	}
-	if app.AccountSID != cfg.AccountSID {
-		s.Errorf("account_sid mismatch: got %q want %q", app.AccountSID, cfg.AccountSID)
+	if app.AccountSID != suite.AccountSID {
+		s.Errorf("account_sid mismatch: got %q want %q", app.AccountSID, suite.AccountSID)
 	}
 	if app.CallHook.URL != body.CallHook.URL {
 		s.Errorf("call_hook.url mismatch: got %q want %q", app.CallHook.URL, body.CallHook.URL)
@@ -83,7 +83,7 @@ func TestApplication_CRUD(t *testing.T) {
 // the main account SID and verifies the SP key can list and fetch it.
 //
 // Steps:
-//  1. create-application-sp — POST /Applications under cfg.AccountSID via SP client
+//  1. create-application-sp — POST /Applications under suite.AccountSID via SP client
 //  2. get-application-sp — SP client fetches by sid and asserts account_sid
 //  3. list-and-find-account-scope — account-scope client sees the SP-created app
 func TestApplication_CRUD_SP(t *testing.T) {
@@ -95,7 +95,7 @@ func TestApplication_CRUD_SP(t *testing.T) {
 	s := Step(t, "create-application-sp")
 	sid := spClient.ManagedApplication(t, ctx, provision.ApplicationCreate{
 		Name:       provision.Name("app-sp"),
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 		CallHook: provision.Webhook{
 			URL:    "https://example.invalid/hook",
 			Method: "POST",
@@ -113,8 +113,8 @@ func TestApplication_CRUD_SP(t *testing.T) {
 	if err != nil {
 		s.Fatalf("sp get application: %v", err)
 	}
-	if app.AccountSID != cfg.AccountSID {
-		s.Errorf("account_sid mismatch: got %q want %q", app.AccountSID, cfg.AccountSID)
+	if app.AccountSID != suite.AccountSID {
+		s.Errorf("account_sid mismatch: got %q want %q", app.AccountSID, suite.AccountSID)
 	}
 	s.Done()
 
@@ -149,7 +149,7 @@ func TestApplication_PUT(t *testing.T) {
 	s := Step(t, "create-application")
 	sid := client.ManagedApplication(t, ctx, provision.ApplicationCreate{
 		Name:       provision.Name("app-put"),
-		AccountSID: cfg.AccountSID,
+		AccountSID: suite.AccountSID,
 		CallHook: provision.Webhook{
 			URL:    "https://example.invalid/hook",
 			Method: "POST",
