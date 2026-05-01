@@ -41,6 +41,12 @@ type Settings struct {
 	// transcript assertions log-skip.
 	DeepgramAPIKey string
 
+	// Optional — Deepseek LLM API key. Passed inline as `agent.llm.auth.apiKey`
+	// in the agent verb test, bypassing jambonz's database credential lookup
+	// (feature-server/lib/tasks/agent/index.js:446 honors inline auth). When
+	// unset, the agent test skips.
+	DeepseekAPIKey string
+
 	// Environment capability (ADR-0007, ADR-0014)
 	BehindNAT bool
 	PublicIP  net.IP // empty unless set; only required for Carrier/Inbound modes
@@ -62,6 +68,9 @@ func (s *Settings) HasSPScope() bool { return s.SPAPIKey != "" && s.SPSID != "" 
 // HasDeepgram reports whether Deepgram-backed flows can run (provisioned
 // SpeechCredential at TestMain, plus offline transcript verification).
 func (s *Settings) HasDeepgram() bool { return s.DeepgramAPIKey != "" }
+
+// HasDeepseek reports whether the Deepseek-backed agent verb test can run.
+func (s *Settings) HasDeepseek() bool { return s.DeepseekAPIKey != "" }
 
 var (
 	loadOnce sync.Once
@@ -121,6 +130,7 @@ func parse() (*Settings, error) {
 		SIPDomain:      os.Getenv("JAMBONZ_SIP_DOMAIN"),
 		SIPProxy:       os.Getenv("JAMBONZ_SIP_PROXY"),
 		DeepgramAPIKey: os.Getenv("DEEPGRAM_API_KEY"),
+		DeepseekAPIKey: os.Getenv("DEEPSEEK_API_KEY"),
 		NgrokAuthToken: os.Getenv("NGROK_AUTHTOKEN"),
 		NgrokDomain:    os.Getenv("NGROK_DOMAIN"),
 		RunID:          os.Getenv("RUN_ID"),

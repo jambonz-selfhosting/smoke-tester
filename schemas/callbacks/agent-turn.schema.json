@@ -24,6 +24,18 @@
           "description": "True if the user interrupted the assistant before it finished speaking.",
           "default": false
         },
+        "confidence": {
+          "type": "number",
+          "description": "DRIFT (TODO upstream): feature-server emits the STT recognizer's per-turn confidence on turn_end events; not declared in the upstream schema."
+        },
+        "tool_calls": {
+          "type": "array",
+          "description": "DRIFT (TODO upstream): feature-server emits a tool_calls summary on turn_end events when the turn included LLM function/tool calls; not declared in the upstream schema. Each entry is `{tool_call_id, name, arguments, result_ms?}`-shaped.",
+          "items": {
+            "type": "object",
+            "additionalProperties": true
+          }
+        },
         "latency": {
           "type": "object",
           "description": "Latency metrics for this turn, all in milliseconds. Fields are absent when not applicable.",
@@ -35,6 +47,26 @@
             "turn_detection_latency": {
               "type": "integer",
               "description": "Additional wait after final transcript for end-of-turn detection, in milliseconds. Absent when EOT fires before or with the transcript."
+            },
+            "stt_ms": {
+              "type": "integer",
+              "description": "DRIFT (TODO upstream): smoke-tester observed feature-server emitting `stt_ms` on turn_end events (see lib/tasks/agent/agent-turn.js). Upstream schema names this field `transcriber_latency`; left both in until upstream is unified."
+            },
+            "eot_ms": {
+              "type": "integer",
+              "description": "DRIFT (TODO upstream): smoke-tester observed feature-server emitting `eot_ms` (end-of-turn). Upstream schema names this `turn_detection_latency`."
+            },
+            "llm_ms": {
+              "type": "integer",
+              "description": "DRIFT (TODO upstream): feature-server emits `llm_ms` (model latency); upstream schema names this `model_latency`."
+            },
+            "tts_ms": {
+              "type": "integer",
+              "description": "DRIFT (TODO upstream): feature-server emits `tts_ms` (TTS engine latency); upstream schema names this `voice_latency`."
+            },
+            "tool_ms": {
+              "type": "integer",
+              "description": "DRIFT (TODO upstream): feature-server emits `tool_ms` on turn_end events when the turn included a function/tool round-trip. Not declared in the upstream schema."
             },
             "model_latency": {
               "type": "integer",

@@ -11,12 +11,17 @@
 
 ---
 
-## State as of 2026-04-25
+## State as of 2026-05-01
 
 > **Orientation:** for the harness ↔ jambonz component diagram + traffic
 > breakdown, see [docs/architecture/components.md](docs/architecture/components.md).
 
 ### Now (in progress)
+
+- **Tier 5 `agent` verb green: 11 tests parallel ~28s wall-clock.** Self-hosted webhook + ngrok serves the `agent` verb response (no external deploy needed). Inline LLM auth (`agent.llm.auth.apiKey`) bypasses /LlmCredentials provisioning — bring DEEPSEEK_API_KEY in `.env`. STT + TTS use the in-jambonz Deepgram credential we provision at TestMain; offline reply transcripts verified by re-uploading to Deepgram. Per-test eventHook/toolHook routing via `?X-Test-Id=<testID>` query param (server's `extractTestID` was already wired) — no `_anon` contention under parallel.
+- Coverage: round-trip echo, eventHook (`user_transcript` / `llm_response` / `turn_end`), `greeting:true`, `actionHook` on end (callInfo + completion_reason + customerData correlation round-trip), `toolHook` round-trip (LLM function call → server replies JSON body → LLM speaks the secret word), `bargeIn` + `user_interruption`, `noResponseTimeout` re-prompt, `turnDetection:"krisp"`, `noiseIsolation` 3 variants. See `tests/verbs/agent_test.go`.
+- New infra: `internal/tts/deepgram.go` (cached Deepgram /v1/speak helper for pre-generated user-side WAVs), `webhook.Session.ScriptActionHookBody` (raw JSON body responder, needed for toolHook).
+- Drift in `schemas/callbacks/agent-turn.schema.json`: feature-server emits `latency.{stt_ms, eot_ms, llm_ms, tts_ms, tool_ms}` (upstream uses `*_latency` names) and adds `turn_end.{confidence, tool_calls}` not declared upstream. Both kept in the local schema with `DRIFT (TODO upstream)` markers — file a PR upstream when convenient.
 
 - **Tier 3 verb coverage: 23/34 verbs tested, 34 passing + 13 skip-stubs, parallel runtime ~80s (down from 252s sequential).** Audio-bearing tests all verified content-level via Deepgram. Multi-leg tests (`dial`, `conference`, `enqueue/dequeue/leave`) provision two dynamic UASes per test and assert bridged audio passes through. `listen`/`stream` exercised via a generic WS endpoint in `internal/webhook/ws.go`.
 - **Per-test SIP isolation via dynamic /Clients provisioning.** Every test now calls `claimUAS(t, ctx)` which: (1) POSTs `/Clients` to provision a fresh `it-<runID>-uas-<hash>` SIP user, (2) brings up a private sipgo+diago stack registered with those credentials, (3) returns a `*UAS{SID, Username, Password, Stack, Inbound}` whose Inbound channel is private to the test. No more shared `currentCall` / `currentCalleeCall` singletons → tests run safely in parallel.
@@ -142,6 +147,178 @@ None.
 ---
 
 ## Session log (reverse-chronological)
+
+### 2026-05-01 — Tier 5 `agent` verb: full coverage, self-hosted, contract-validated
+
+**Scope:** stand up the `agent` verb test surface using only the
+smoke-tester's existing webhook + ngrok infrastructure (no external deploy
+of `jambonz-test-agent` to EC2). Use Deepseek as the LLM (user has the
+key; OpenAI key not available) and the in-jambonz Deepgram credential we
+already provision at TestMain for STT + TTS. End-to-end audio round-trips
+verified by re-uploading recordings to Deepgram.
+
+**What landed (11 tests, all PASS parallel ~28s):**
+
+- **`TestVerb_Agent_Echo`** — round-trip STT → Deepseek → TTS → STT,
+  asserts ≥3/4 keywords ("alpha bravo charlie delta") survive the loop.
+- **`TestVerb_Agent_EventHook`** — drains the per-test session for the
+  3 turn-level events (`user_transcript`, `llm_response`, `turn_end`).
+  Asserts each fires at least once with a content-bearing payload.
+  `turn_end` validated against `schemas/callbacks/agent-turn.schema.json`
+  (this is where most schema drift surfaced — see "Drift" below).
+- **`TestVerb_Agent_Greeting`** — `greeting: true` ⇒ agent emits TTS
+  before the user speaks. Asserts ~96 KB inbound PCM in the first 6s
+  (greeting window) before any user audio is sent.
+- **`TestVerb_Agent_ActionHookOnEnd`** — actionHook fires on agent.kill
+  (call BYE → call-session teardown → `notifyTaskDone` →
+  `performAction`). Asserts payload has `call_sid`, `completion_reason`,
+  and that `customerData.x_test_id` round-trips back to us — proving
+  correlation works for actionHook (unlike eventHook).
+- **`TestVerb_Agent_ToolHook`** — declares `get_secret_word` in
+  `llmOptions.tools`, system prompt forces Deepseek to call it, server
+  replies with raw JSON body `{"word":"kingfisher"}`. Asserts callback
+  payload has `tool_call_id` + `name` + `arguments`, and that the LLM
+  speaks "kingfisher" in the second turn (verified offline via Deepgram).
+  Required new `webhook.Session.ScriptActionHookBody` to return a raw
+  JSON body instead of a verb array (toolHook expects an object, not a
+  verb sequence).
+- **`TestVerb_Agent_BargeIn`** — `greeting: true, bargeIn: true`. Sends
+  user WAV ~3s into the agent's greeting and asserts the eventHook
+  emits `user_interruption`.
+- **`TestVerb_Agent_NoResponseTimeout`** — sets `noResponseTimeout: 4`,
+  stays silent through one greeting + one re-prompt window, asserts ≥2
+  `llm_response` events landed in the eventHook stream. Re-prompt fired:
+  *"Are you still there, or is there something I can help you with?"*
+- **`TestVerb_Agent_KrispTurnDetection`** — agent runs with
+  `turnDetection: "krisp"`. Confirms the verb param is accepted and
+  there's inbound RTP. Krisp is internal to jambonz (mod_krisp) — no
+  client-side handle — so the test scope is "did the verb run", not
+  "did Krisp emit EOT".
+- **`TestVerb_Agent_NoiseIsolation/{krisp_shorthand,rnnoise_shorthand,krisp_object_form}`**
+  — three sub-tests covering shorthand strings + the
+  `{mode, level, direction}` object form. Same "param accepted, RTP
+  flowed" smoke level as Krisp.
+
+**Self-hosted architecture (no external deploy needed):**
+
+```
+test → POST /Calls (application_sid=webhookApp, tag.x_test_id=<testID>)
+     ↓
+jambonz fetches verbs from ngrok tunnel /hook
+     ↓
+webhook server returns [answer, pause, agent {stt:dg, tts:dg,
+                                              llm: {vendor:deepseek,
+                                                    auth:{apiKey:cfg.DeepseekAPIKey},
+                                                    ...},
+                                              eventHook, actionHook,
+                                              toolHook}]
+     ↓
+agent runs → eventHook/toolHook callbacks back to ngrok
+     ↓
+test asserts on captured callbacks + recorded reply audio
+```
+
+`agent.llm.auth.apiKey` inline → feature-server skips DB credential
+lookup (`lib/tasks/agent/index.js:446`), so no `/LlmCredentials`
+provisioning is needed.
+
+**Per-test routing for hooks without customerData:**
+
+eventHook + toolHook payloads don't carry our `tag.x_test_id`
+correlation key (feature-server's `_sendEventHook` / agent tool-call
+path only forward `{type, ...}` / `{tool_call_id, name, arguments}` —
+not `callInfo`). Without intervention every event from every parallel
+agent test would land in the shared `_anon` session and races would
+make `WaitCallbackFor` non-deterministic.
+
+Workaround: append `?X-Test-Id=<testID>` to the eventHook + toolHook
+URLs the test gives jambonz. The webhook server's `extractTestID`
+(internal/webhook/correlation.go) already resolves the test ID from
+URL query, so the callback routes to the per-test session. No
+`_anon` contention. Verified by running all 11 tests parallel
+without flakes across multiple runs.
+
+**Drift findings (filed as TODO upstream, applied to local schema):**
+
+`schemas/callbacks/agent-turn.schema.json` `turn_end` variant:
+- Upstream declares `latency.{transcriber_latency,
+  turn_detection_latency, model_latency, voice_latency, preflight}`
+  with `additionalProperties: false`.
+- Feature-server emits `latency.{stt_ms, eot_ms, llm_ms, tts_ms,
+  tool_ms}` instead. Local schema now accepts both.
+- Feature-server also adds `turn_end.confidence` (STT recognizer
+  confidence) and `turn_end.tool_calls` (array of tool-call summaries)
+  — neither declared upstream. Local schema accepts both.
+All marked `DRIFT (TODO upstream)` in the schema descriptions for a
+future schema-repo PR.
+
+**New infra:**
+
+- **`internal/tts/deepgram.go`** — `EnsureWAV(ctx, dir, text, opts)`
+  hits Deepgram's `/v1/speak` REST API (8 kHz / mono / linear16),
+  wraps the raw LPCM in a RIFF/WAVE header, caches by sha1(model|text)
+  under `tests/verbs/testdata/agent/<sha>.wav`. Re-runs are free; the
+  WAVs are checked in (`.gitignore` allowlists
+  `tests/verbs/testdata/agent/*.wav`).
+- **`webhook.Session.ScriptActionHookBody(verbName, body)`** — raw
+  JSON body responder. Needed because toolHook expects an object
+  result, not a verb array — `ScriptActionHook(...)` JSON-encodes the
+  Verbs slice as `[]` by default. New helper sets `HookOutcome.Body`
+  directly with `Status: 200` so `writeOutcome` short-circuits the
+  verb-array path.
+- **`agentVerbOpts` builder** in `agent_test.go` — centralised
+  parameterised verb construction (system prompt, hook URLs,
+  greeting/bargeIn/turnDetection/noiseIsolation/etc.), so every test
+  expresses only the diff from the default echo configuration.
+- **`AssertTranscriptHasMost(s, ctx, recording, minHits, wants...)`** —
+  relaxed sibling of `AssertTranscriptContains`. Tolerates LLM word
+  drops/substitutions; asserts ≥minHits keywords landed.
+
+**Surprises:**
+
+- Deepseek frequently dropped one word (e.g. "delta" → "dulsett") on
+  the STT round-trip. Echo test uses `AssertTranscriptHasMost(... 3, ...)`
+  to tolerate it; otherwise we'd have a flaky test for a non-bug.
+- `greeting: false` is essential when you want the user to speak first.
+  Without it the agent emits "Begin the conversation." before our WAV
+  arrives and the recording becomes a two-turn jumble. Documented in
+  the agentVerbOpts default and used in 8/11 tests.
+- toolHook callback initially landed in `_anon` and our per-test
+  `ScriptActionHookBody("agent-tool", ...)` was ignored — the server
+  routed to `_anon.outcomeForActionHook("agent-tool")` which had no
+  registered script and replied `[]`. Net effect: LLM got an empty
+  string back from the tool and started saying "the secret word is
+  empty". Fixed by routing the callback to the per-test session via
+  `?X-Test-Id=<testID>`; once the routing was correct, the test went
+  green on the first re-run.
+- Agent verb's `actionHook` only fires from
+  `awaitTaskDone()` → `performAction()`, which only resolves at
+  call-session teardown. No `noResponseTimeout` path or LLM-finish
+  shortcut ends the agent task — call BYE is the only signal. Test
+  hangs up proactively after a brief settle.
+
+**Verified runs:**
+
+| Mode | Wall-clock | Status |
+|---|---|---|
+| `-parallel 8`, agent suite alone (11 tests) | ~28s | all green |
+
+No regressions in the rest of the verbs suite.
+
+**Files touched:**
+- `internal/config/config.go` — `DeepseekAPIKey` + `HasDeepseek()`
+- `internal/tts/deepgram.go` — new
+- `internal/webhook/registry.go` — `ScriptActionHookBody`
+- `tests/verbs/agent_test.go` — new (11 tests)
+- `tests/verbs/helpers_test.go` — `AssertTranscriptHasMost`
+- `tests/verbs/ai_skips_test.go` — drop `TestVerb_Agent_Basic` skip-stub
+- `tests/verbs/testdata/agent/b45558c6b28216eb.wav` — pre-gen prompt
+- `schemas/callbacks/agent-turn.schema.json` — drift fixes
+- `.env.example` — document `DEEPSEEK_API_KEY`
+- `.gitignore` — allowlist `tests/verbs/testdata/agent/*.wav`
+- `docs/coverage-matrix.md` — Tier 5 row 5.0 added
+
+---
 
 ### 2026-04-25 — Failure-fast pattern + answer verb via UAC origination + response-code helpers
 

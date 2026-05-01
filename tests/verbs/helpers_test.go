@@ -481,6 +481,40 @@ func AssertTranscriptContains(s *StepCtx, ctx context.Context, recording string,
 	}
 }
 
+// AssertTranscriptHasMost is AssertTranscriptContains relaxed for LLM-driven
+// reply audio: requires at least minHits of the wants to appear in the
+// transcript. Used by agent_test where occasional word drops/substitutions
+// from the LLM (or imperfect TTS→STT round-trip) shouldn't fail an
+// otherwise-correct echo.
+func AssertTranscriptHasMost(s *StepCtx, ctx context.Context, recording string, minHits int, wants ...string) {
+	s.t.Helper()
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		return
+	}
+	transcript, err := stt.Transcribe(ctx, recording)
+	if err != nil {
+		s.Fatalf("stt.Transcribe(%s): %v", recording, err)
+	}
+	s.Logf("transcript: %q", transcript)
+	hits := 0
+	var missing []string
+	for _, want := range wants {
+		if strings.Contains(transcript, stt.Normalize(want)) {
+			hits++
+		} else {
+			missing = append(missing, want)
+		}
+	}
+	if hits < minHits {
+		s.Errorf("transcript %q matched only %d/%d keywords (need %d). missing=%v",
+			transcript, hits, len(wants), minHits, missing)
+	} else if len(missing) > 0 {
+		s.Logf("transcript matched %d/%d keywords (tolerated misses: %v)",
+			hits, len(wants), missing)
+	}
+}
+
 // AssertAudioBytes is like AssertAudioDuration but gates on raw PCM bytes
 // received, useful when upstream duration reporting is unreliable (play
 // verb with transcoding). Failures are reported via the step context so

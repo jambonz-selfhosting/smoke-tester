@@ -3,6 +3,10 @@
 bin/
 *.wav
 !tests/verbs/testdata/*.wav
+# agent test cache: TTS-generated prompts. Re-creatable from internal/tts;
+# safe to commit once generated so CI without DEEPGRAM_API_KEY can run, but
+# also safe to delete and regenerate.
+!tests/verbs/testdata/agent/*.wav
 *.pcap
 .DS_Store
 coverage.out

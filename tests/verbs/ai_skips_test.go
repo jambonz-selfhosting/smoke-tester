@@ -21,11 +21,8 @@ func TestVerb_S2S_Basic(t *testing.T) {
 	t.Skip("s2s is synonym for llm — same credential gating (Tier 5)")
 }
 
-// agent — a complete voice AI agent (STT → LLM → TTS stack). Requires
-// both STT and LLM credentials, plus an agent endpoint.
-func TestVerb_Agent_Basic(t *testing.T) {
-	t.Skip("agent needs full STT+LLM+TTS vendor stack on the account (Tier 5)")
-}
+// agent — covered by TestVerb_Agent_Echo in agent_test.go (uses Deepgram
+// STT/TTS via the in-jambonz credential, Deepseek LLM via inline auth).
 
 // dialogflow — connects caller to a Google Dialogflow agent. Needs
 // Dialogflow project credentials.
@@ -59,11 +56,4 @@ func TestVerb_Google_S2S_Basic(t *testing.T) {
 // ultravox_s2s — Ultravox model shortcut. Needs ULTRAVOX credential.
 func TestVerb_Ultravox_S2S_Basic(t *testing.T) {
 	t.Skip("ultravox_s2s needs an Ultravox credential (Tier 5)")
-}
-
-// rest_dial — "internal verb … not typically used directly in apps" per
-// the schema. Origination goes through POST /Calls which we already
-// cover heavily in phase-1 tests. No verb-level test.
-func TestVerb_RestDial_Basic(t *testing.T) {
-	t.Skip("rest_dial is internal — origination covered via POST /Calls in phase-1 tests")
 }

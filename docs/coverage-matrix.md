@@ -133,6 +133,7 @@ Each row requires provider credentials; tests skip with a clear reason if absent
 
 | # | Verb | Creds required | Feature | Contract | Schema source | Notes |
 |---|---|---|---|---|---|---|
+| 5.0 | `agent` | DEEPSEEK_API_KEY (inline auth) + Deepgram (in-jambonz cred + offline STT) | ☑ | ☑ | local + upstream | 11 tests cover round-trip echo, eventHook (`user_transcript`/`llm_response`/`turn_end`), `greeting:true`, `actionHook` on end (call_sid + completion_reason + customerData), `toolHook` round-trip (function call → JSON body reply → LLM speak), `bargeIn` + `user_interruption`, `noResponseTimeout` re-prompt, `turnDetection:"krisp"`, `noiseIsolation` 3 variants (krisp/rnnoise/object). Per-test routing for hooks without customerData via `?X-Test-Id=` query param. Drift: latency.{stt_ms,eot_ms,llm_ms,tts_ms,tool_ms} + turn_end.{confidence,tool_calls} added to `schemas/callbacks/agent-turn.schema.json` with TODO upstream. |
 | 5.1 | `llm` | vendor API key (OpenAI, etc.) | ☐ | ☐ | local | `eventHook`, `toolHook`, `actionHook`. Realtime connection. |
 | 5.2 | `lex` | AWS access key + secret | ☐ | ☐ | local | Lex V2 session; intents + transcription. |
 | 5.3 | `dialogflow` | Google service-account JSON | ☐ | ☐ | local | Welcome event; intent event; actionHook on end. |

@@ -126,6 +126,19 @@ func (s *Session) ScriptActionHook(verbName string, verbs Script) *Session {
 	return s
 }
 
+// ScriptActionHookBody sets a raw JSON body the server returns for the named
+// action hook, overriding the default verb-array response. Used by hooks
+// that expect a JSON object rather than a verb array — most notably the
+// agent verb's toolHook, where the body becomes the tool's return value
+// piped back to the LLM (see feature-server lib/tasks/agent/state-machine.js
+// `_onToolCall`).
+func (s *Session) ScriptActionHookBody(verbName string, body []byte) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.actionHooks[verbName] = HookOutcome{Status: 200, Body: body}
+	return s
+}
+
 // outcomeForCallHook returns what the server should reply to a call_hook
 // request for this session.
 func (s *Session) outcomeForCallHook() HookOutcome {
