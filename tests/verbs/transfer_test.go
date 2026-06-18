@@ -500,12 +500,7 @@ func TestVerb_Transfer_WarmParked(t *testing.T) {
 //	// Deepgram: assert caller recording has "briefing" + "agent" (brief)
 //	// Deepgram: assert caller recording has "sun" + "shining"  (bridge)
 func TestVerb_Transfer_WarmThreeWay(t *testing.T) {
-	// NOT t.Parallel(): this exercises a 3-way FreeSWITCH conference. Under
-	// concurrent load the human leg's live audio intermittently mixes into the
-	// conference at a much lower level (rms ~1.7k vs ~15k) so Deepgram can't
-	// catch the bridged words — a conference-mix concurrency race, not a feature
-	// bug (the transfer always bridges + plays the brief; passes 100% run alone).
-	// Running serially keeps the strict STT assertion reliable.
+	t.Parallel()
 	requireWebhook(t)
 	ctx := WithTimeout(t, 150*time.Second)
 	callerUAS, targetUAS := claimUAS2(t, ctx)
@@ -683,5 +678,156 @@ func TestVerb_Transfer_WarmThreeWay(t *testing.T) {
 	// to the caller (same callerRec). Conference mixing attenuates and STT drops
 	// boundary words; "shining" reliably proves the WAV reached the caller.
 	AssertTranscriptContains(s, ctx, callerRec, "shining")
+	s.Done()
+}
+
+// TestVerb_Transfer_NoAnswerReturn — failure-disposition path (spec §8): the
+// human target never answers, so within `timeout` the transfer resolves to the
+// `return` disposition. This is the spec's headline value — failure handling is
+// "the part that actually makes the hand-rolled version too hard, and the part
+// packaging must own." The happy-path tests never exercise a disposition; this
+// one proves the platform owns the no-answer path end-to-end.
+//
+// Asserts:
+//
+//	(a) actionHook reports transfer_result=="returned", transfer_reason=="no-answer",
+//	(b) the caller is STILL ON THE LINE and the verb stack CONTINUED — proven by a
+//	    distinctive `say` scripted AFTER the transfer verb reaching the caller's
+//	    recording ("...the verb stack continues — so the app resumes control", §5.2).
+//
+// Steps:
+//  1. script-transfer-no-answer  — [transfer warm onNoAnswer=return, say "<marker>", hangup] + empty action ack
+//  2. spawn-target-goroutine     — async: Trying + Ringing then NEVER answer; let jambonz time out + CANCEL
+//  3. place-caller-and-record    — POST /Calls, answer caller, record (hold music + post-return say)
+//  4. wait-target-done           — target goroutine saw CANCEL / ctx done
+//  5. assert-target-sip-wire     — target received INVITE, sent 100/180, never 200
+//  6. wait-action-transfer-callback — block on /action/transfer
+//  7. assert-transfer-status-returned — transfer_result=="returned", transfer_reason=="no-answer"
+//  8. assert-post-return-say-reached-caller — caller recording contains the post-transfer say marker
+func TestVerb_Transfer_NoAnswerReturn(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+	ctx := WithTimeout(t, 120*time.Second)
+	callerUAS, targetUAS := claimUAS2(t, ctx)
+
+	_, sess := claimSession(t)
+
+	s := Step(t, "script-transfer-no-answer")
+	actionURL := SessionURL(sess, "transfer")
+	target := fmt.Sprintf("%s@%s", targetUAS.Username, suite.SIPRealm)
+	// timeout:8 keeps the no-answer wait short. onNoAnswer:return is the spec
+	// default but set explicitly to pin the behavior under test. The say after
+	// the transfer is the proof the caller survived and the stack resumed;
+	// "afterwards" is the trailing keyword we assert (STT-robust, distinctive).
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		V("transfer",
+			"mode", "warm",
+			"callerPresent", false,
+			"target", []any{map[string]any{
+				"type": "user",
+				"name": target,
+			}},
+			"brief", map[string]any{"text": "Briefing the agent now."},
+			"timeout", 8,
+			"anchorMedia", true,
+			"disposition", map[string]any{"onNoAnswer": "return"},
+			"actionHook", actionURL),
+		V("say", "text", "The transfer returned afterwards."),
+		V("hangup"),
+	}))
+	SessionAckEmpty(sess, "transfer")
+	s.Done()
+
+	s = Step(t, "spawn-target-goroutine")
+	// Target goroutine: ring but NEVER answer, so jambonz's `timeout` fires and
+	// the no-answer disposition runs. Send 100/180, then wait for the inbound
+	// INVITE to be CANCEL'd (jambonz cancels the ringing leg on timeout) or ctx
+	// to end. We do NOT Answer().
+	targetDone := make(chan struct{})
+	var targetCall *jsip.Call
+	go func() {
+		defer close(targetDone)
+		select {
+		case c := <-targetUAS.Inbound:
+			targetCall = c
+			t.Logf("[target:trying] start")
+			if err := c.Trying(); err != nil {
+				GoroutineFailf(t, "target:trying", "Trying: %v", err)
+				return
+			}
+			t.Logf("[target:ringing] start")
+			if err := c.Ringing(); err != nil {
+				GoroutineFailf(t, "target:ringing", "Ringing: %v", err)
+				return
+			}
+			// Do NOT answer — wait for jambonz to CANCEL the ringing leg on
+			// timeout, or for the test context to end.
+			t.Logf("[target:awaiting-cancel] start")
+			select {
+			case <-c.Done():
+				t.Logf("[target] leg ended (canceled by jambonz)")
+			case <-ctx.Done():
+				t.Logf("[target] ctx done while awaiting cancel")
+			}
+		case <-ctx.Done():
+			GoroutineFailf(t, "target", "never received INVITE: %v", ctx.Err())
+		}
+	}()
+	s.Done()
+
+	s = Step(t, "place-caller-and-record")
+	call := placeWebhookCallTo(ctx, t, callerUAS, sess, withTimeLimit(60))
+	callerRec := AnswerRecordAndWaitEnded(s, ctx, call,
+		WithRecord("transfer-noanswer-caller"), WithSilence())
+	s.Done()
+
+	s = Step(t, "wait-target-done")
+	<-targetDone
+	s.Done()
+
+	s = Step(t, "assert-target-sip-wire")
+	if targetCall == nil {
+		s.Fatal("target call was never handed to the handler")
+	}
+	// The target rang (100/180) but was never answered (no 200).
+	RequireRecvMethods(s, targetCall, "INVITE")
+	sent := StatusesOf(targetCall.Sent())
+	for _, want := range []int{100, 180} {
+		if !slices.Contains(sent, want) {
+			s.Errorf("target sent statuses = %v, want %d", sent, want)
+		}
+	}
+	if slices.Contains(sent, 200) {
+		s.Errorf("target answered (sent 200) but this test requires no-answer; statuses = %v", sent)
+	}
+	s.Done()
+
+	s = Step(t, "wait-action-transfer-callback")
+	waitCtx, wcancel := context.WithTimeout(ctx, 20*time.Second)
+	defer wcancel()
+	cb, err := sess.WaitCallbackFor(waitCtx, "action/transfer")
+	if err != nil {
+		s.Fatalf("WaitCallbackFor action/transfer: %v", err)
+	}
+	s.Logf("action/transfer body: %s", string(cb.Body))
+	s.Done()
+
+	s = Step(t, "assert-transfer-status-returned")
+	if got := cb.String("transfer_result"); got != "returned" {
+		s.Errorf("transfer_result: got %q want %q", got, "returned")
+	}
+	if got := cb.String("transfer_reason"); got != "no-answer" {
+		s.Errorf("transfer_reason: got %q want %q", got, "no-answer")
+	}
+	s.Done()
+
+	s = Step(t, "assert-post-return-say-reached-caller")
+	// The real proof of `return`: the caller is still on the line and the verb
+	// stack continued past the transfer. The say scripted AFTER the transfer
+	// must reach the caller. If `return` were broken (caller dropped, or the
+	// stack didn't resume), this recording would be hold music / silence only.
+	s.Logf("caller recorded pcm_bytes=%d rms=%.1f duration=%s",
+		call.PCMBytesIn(), call.RMS(), call.AudioDuration())
+	AssertTranscriptContains(s, ctx, callerRec, "afterwards")
 	s.Done()
 }
