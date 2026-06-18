@@ -462,10 +462,11 @@ const BridgeSettleDelay = 1500 * time.Millisecond
 
 // WarmBriefSettleDelay is the callee-side wait for WARM transfers before
 // streaming the reference WAV. In a warm transfer jambonz plays a brief TTS
-// ("Briefing the agent now.", measured ~2.9s) on the target leg BEFORE the
-// bridge forms; the WAV must not start until the brief has finished AND the
-// bridge has latched, or the caller's recording catches only the tail. Sized
-// to clear the brief (~3s) plus the RTP-latch settle, with slack.
+// ("Briefing the agent now.", measured ~2.9s) on the target leg/conference
+// BEFORE the WAV; the WAV must not start until the brief has finished AND the
+// bridge/conference membership has fully latched, or the caller's recording
+// catches only the tail. Sized to clear the brief (~3s) plus the RTP-latch
+// settle, with slack.
 const WarmBriefSettleDelay = 4500 * time.Millisecond
 
 // EndedDrainTimeout is the budget for WaitState(StateEnded) at the end

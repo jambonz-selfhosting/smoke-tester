@@ -500,7 +500,12 @@ func TestVerb_Transfer_WarmParked(t *testing.T) {
 //	// Deepgram: assert caller recording has "briefing" + "agent" (brief)
 //	// Deepgram: assert caller recording has "sun" + "shining"  (bridge)
 func TestVerb_Transfer_WarmThreeWay(t *testing.T) {
-	t.Parallel()
+	// NOT t.Parallel(): this exercises a 3-way FreeSWITCH conference. Under
+	// concurrent load the human leg's live audio intermittently mixes into the
+	// conference at a much lower level (rms ~1.7k vs ~15k) so Deepgram can't
+	// catch the bridged words — a conference-mix concurrency race, not a feature
+	// bug (the transfer always bridges + plays the brief; passes 100% run alone).
+	// Running serially keeps the strict STT assertion reliable.
 	requireWebhook(t)
 	ctx := WithTimeout(t, 150*time.Second)
 	callerUAS, targetUAS := claimUAS2(t, ctx)
