@@ -268,23 +268,8 @@ func statusCallbacks(t *testing.T, within time.Duration) []webhook.Callback {
 // the correlation rationale.
 func placeWebhookCallTo(ctx context.Context, t *testing.T, uas *UAS, session *webhook.Session, extras ...func(*provision.CallCreate)) *jsip.Call {
 	t.Helper()
-	requireWebhook(t)
-	body := provision.CallCreate{
-		ApplicationSID: webhookApp,
-		From:           "441514533212",
-		To: provision.CallTarget{
-			Type: "user",
-			Name: fmt.Sprintf("%s@%s", uas.Username, suite.SIPRealm),
-		},
-		Tag: map[string]any{
-			webhook.CorrelationKey: session.ID(),
-		},
-		TimeLimit: 30,
-	}
-	for _, e := range extras {
-		e(&body)
-	}
-	return submitAndAwaitOn(ctx, t, body, uas)
+	_, call := placeWebhookCallToWithSID(ctx, t, uas, session, extras...)
+	return call
 }
 
 // placeWebhookCallToNoWait is placeWebhookCallTo without the inbound-INVITE
@@ -320,15 +305,47 @@ func placeWebhookCallToNoWait(ctx context.Context, t *testing.T, uas *UAS, sessi
 // resulting INVITE. Common tail of placeCallTo + placeWebhookCallTo.
 func submitAndAwaitOn(ctx context.Context, t *testing.T, body provision.CallCreate, uas *UAS) *jsip.Call {
 	t.Helper()
+	_, call := submitAndAwaitOnWithSID(ctx, t, body, uas)
+	return call
+}
+
+// submitAndAwaitOnWithSID is submitAndAwaitOn but also returns the jambonz
+// call_sid — needed by Live Call Control tests that issue updateCall against
+// the in-progress call.
+func submitAndAwaitOnWithSID(ctx context.Context, t *testing.T, body provision.CallCreate, uas *UAS) (string, *jsip.Call) {
+	t.Helper()
 	sid := client.ManagedCall(t, ctx, body)
 	t.Logf("created call sid=%s -> sip:%s@%s", sid, uas.Username, suite.SIPRealm)
 	select {
 	case call := <-uas.Inbound:
-		return call
+		return sid, call
 	case <-ctx.Done():
 		helperFatalf(t, "await-inbound", "uas=%s: %v", uas.Username, ctx.Err())
-		return nil
+		return "", nil
 	}
+}
+
+// placeWebhookCallToWithSID is placeWebhookCallTo that also returns the jambonz
+// call_sid (for Live Call Control / updateCall tests).
+func placeWebhookCallToWithSID(ctx context.Context, t *testing.T, uas *UAS, session *webhook.Session, extras ...func(*provision.CallCreate)) (string, *jsip.Call) {
+	t.Helper()
+	requireWebhook(t)
+	body := provision.CallCreate{
+		ApplicationSID: webhookApp,
+		From:           "441514533212",
+		To: provision.CallTarget{
+			Type: "user",
+			Name: fmt.Sprintf("%s@%s", uas.Username, suite.SIPRealm),
+		},
+		Tag: map[string]any{
+			webhook.CorrelationKey: session.ID(),
+		},
+		TimeLimit: 30,
+	}
+	for _, e := range extras {
+		e(&body)
+	}
+	return submitAndAwaitOnWithSID(ctx, t, body, uas)
 }
 
 // WarmupPause is the duration we tell jambonz to pause right after it

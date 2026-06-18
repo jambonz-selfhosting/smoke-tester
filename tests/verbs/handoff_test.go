@@ -52,13 +52,10 @@ const handoffCallerUtterance = "I need to speak to a human agent please, can you
 // formed without serializing the whole test behind the 90s call timeLimit.
 const targetHoldAfterAnswer = 4 * time.Second
 
-// answerAndIdleTarget is the target/human UAS goroutine for the handoff dial
-// bridge: answer the inbound INVITE, send silence to prove the bridge carries
-// media, hold briefly, then HANG UP. Hanging up (rather than idling until ctx)
-// tears down the bridge so the agent/llm verb completes and fires its
-// actionHook promptly. Its job is to ANSWER (100/180/200) so the dial bridges
-// and the handoff resolves "bridged". It publishes the received Call via *out
-// so the main goroutine can assert the SIP wire (Call holds a mutex — no copy).
+// answerAndIdleTarget answers the bridged target INVITE (100/180/200), sends
+// silence to prove media flows, briefly holds, then hangs up to release the
+// bridge so the agent/llm verb completes and fires its actionHook. Publishes
+// the Call via *out for the main goroutine (Call holds a mutex — pointer, no copy).
 func answerAndIdleTarget(t *testing.T, ctx context.Context, targetUAS *UAS, done chan<- struct{}, out **jsip.Call) func() {
 	return func() {
 		defer close(done)
@@ -98,7 +95,13 @@ func answerAndIdleTarget(t *testing.T, ctx context.Context, targetUAS *UAS, done
 				t.Logf("[target] ctx done")
 			}
 		case <-ctx.Done():
-			GoroutineFailf(t, "target", "never received INVITE: %v", ctx.Err())
+			// Only a genuine timeout is a failure. context.Canceled means the
+			// main goroutine already returned (e.g. an earlier step failed and
+			// the test is tearing down) — logging via t.Errorf then would panic
+			// ("Log after test completed"), so exit quietly.
+			if ctx.Err() == context.DeadlineExceeded {
+				GoroutineFailf(t, "target", "never received INVITE: %v", ctx.Err())
+			}
 		}
 	}
 }
@@ -115,17 +118,6 @@ func answerAndIdleTarget(t *testing.T, ctx context.Context, targetUAS *UAS, done
 // never sees a tool call. Given real caller audio it emits a proper function_call
 // reliably. This mirrors the example, which only calls get_weather after the
 // caller asks; it never forces a tool call.
-//
-// Steps:
-//  1. preflight-skips             — skip unless OPENAI_API_KEY + Deepgram (TTS for caller audio) set
-//  2. ensure-caller-wav           — synthesize the caller's "transfer me to a human" utterance
-//  3. script-llm-openai-handoff   — [llm openai (greet, tools, tool_choice:auto) + handoff(dial,target), hangup]
-//  4. spawn-target-goroutine      — async: target answers (100/180/200), holds, hangs up → bridge forms+releases
-//  5. place-caller                — POST /Calls, answer, let the model greet, then speak the utterance
-//  6. wait-target-done            — target leg ended
-//  7. assert-target-answered      — target received INVITE, sent 100/180/200 (bridge formed)
-//  8. wait-action-llm-callback    — block on /action/llm
-//  9. assert-completion-transferred — completion_reason=="transferred"
 func TestVerb_LLM_OpenAI_Handoff(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -255,16 +247,6 @@ func TestVerb_LLM_OpenAI_Handoff(t *testing.T) {
 // to act on turn 1; the force prompt makes it call transfer_to_human; jambonz
 // dials + bridges the target, and the agent actionHook reports
 // completion_reason=="transferred".
-//
-// Steps:
-//  1. preflight-skips                — skip unless OPENAI_API_KEY + DEEPGRAM (+ label) present
-//  2. script-agent-openai-handoff    — [agent(deepgram stt/tts, openai llm) + handoff(dial,target), hangup] + acks
-//  3. spawn-target-goroutine         — async: target answers so the bridge forms
-//  4. place-caller                   — POST /Calls, answer caller, send silence
-//  5. wait-target-done               — target leg ended
-//  6. assert-target-answered         — target received INVITE, 100/180/200
-//  7. wait-action-agent-callback     — block on /action/agent-complete
-//  8. assert-completion-transferred  — completion_reason=="transferred"
 func TestVerb_Agent_OpenAI_Handoff(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)

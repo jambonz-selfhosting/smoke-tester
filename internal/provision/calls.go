@@ -83,6 +83,20 @@ func (c *Client) CreateCall(ctx context.Context, body CallCreate) (string, error
 	return ok.SID, nil
 }
 
+// UpdateCall issues a Live Call Control command against an in-progress call:
+// POST /Accounts/{AccountSid}/Calls/{CallSid} with an arbitrary command body
+// (e.g. {transfer: {...}}, {whisper: ...}, {call_status: "completed"}). jambonz
+// acknowledges with 202 Accepted; the command is applied asynchronously by the
+// feature-server's CallSession.updateCall. body is any JSON-serializable value.
+func (c *Client) UpdateCall(ctx context.Context, callSID string, body any) error {
+	if c.accountSID == "" {
+		return fmt.Errorf("UpdateCall requires an account-scoped client")
+	}
+	path := "/Accounts/" + c.accountSID + "/Calls/" + callSID
+	_, err := c.Request(ctx, http.MethodPost, path, body, "", http.StatusAccepted)
+	return err
+}
+
 // DeleteCall ends a live call (204). Idempotent on 404.
 func (c *Client) DeleteCall(ctx context.Context, callSID string) error {
 	if c.accountSID == "" {
