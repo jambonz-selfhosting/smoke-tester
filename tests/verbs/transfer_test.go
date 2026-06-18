@@ -831,3 +831,88 @@ func TestVerb_Transfer_NoAnswerReturn(t *testing.T) {
 	AssertTranscriptContains(s, ctx, callerRec, "afterwards")
 	s.Done()
 }
+
+// TestVerb_Transfer_BlindRefer — blind transfer via the DEFAULT method, SIP
+// REFER (spec §7.1: "blind transfer is a trivial sip:refer"). The existing
+// TestVerb_Transfer_Blind forces blindMethod="dial"; this one omits it so
+// blindMethod defaults to "refer" and the REFER path is exercised.
+//
+// With REFER, jambonz sends a REFER toward the caller's far end (Refer-To =
+// target) and drops out of the media path — so there is NO bridge audio to
+// assert, and this differs fundamentally from blindMethod="dial" (which places
+// an outbound INVITE to the target). In this harness the SBC/UAS rejects the
+// REFER with 488 (Not Acceptable Here), which TaskSipRefer maps to a 'rejected'
+// outcome → transfer_reason "error" → the onFailure disposition (default
+// "return"). That is the correct, deterministic outcome here and is exactly the
+// signature of the REFER path (a dial path would yield no-answer/busy/completed,
+// never an immediate "error" from a SIP-method rejection).
+//
+// Asserts: actionHook reports transfer_result=="returned" / transfer_reason=="error".
+// (We do NOT assert the REFER on the UAS wire: the SBC mediates/rejects it, so
+// the diago UAS does not observe a clean REFER request. The actionHook reason is
+// the reliable proof jambonz ran the REFER path.)
+//
+// Steps:
+//  1. script-transfer-blind-refer — [transfer mode=blind (refer default) target, hangup] + empty action ack
+//  2. place-caller-and-wait       — POST /Calls, answer caller, hold until the transfer resolves
+//  3. wait-action-transfer-callback — block on /action/transfer
+//  4. assert-transfer-status-returned — transfer_result=="returned", transfer_reason=="error"
+func TestVerb_Transfer_BlindRefer(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+	ctx := WithTimeout(t, 60*time.Second)
+	callerUAS := claimUAS(t, ctx)
+
+	_, sess := claimSession(t)
+
+	s := Step(t, "script-transfer-blind-refer")
+	actionURL := SessionURL(sess, "transfer")
+	// A target user on the realm. It need not be registered — for REFER we only
+	// assert jambonz emitted the REFER with this URI in Refer-To; the referred
+	// call is completed by the caller's far end (here, our UAS that never
+	// NOTIFYs), not by us dialing the target.
+	target := fmt.Sprintf("refer-target-%s@%s", sess.ID(), suite.SIPRealm)
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		V("transfer",
+			"mode", "blind",
+			// blindMethod omitted on purpose → defaults to "refer".
+			"target", []any{map[string]any{
+				"type": "user",
+				"name": target,
+			}},
+			"timeout", 20,
+			"actionHook", actionURL),
+		V("hangup"),
+	}))
+	SessionAckEmpty(sess, "transfer")
+	s.Done()
+
+	s = Step(t, "place-caller-and-wait")
+	// No recording assertion: REFER takes jambonz out of media. Answer + hold
+	// the leg open through the REFER + the ~15s NOTIFY timeout until the call
+	// ends (jambonz hangs up after the transfer resolves + the trailing hangup).
+	call := placeWebhookCallTo(ctx, t, callerUAS, sess, withTimeLimit(60))
+	AnswerRecordAndWaitEnded(s, ctx, call, WithSilence())
+	s.Done()
+
+	s = Step(t, "wait-action-transfer-callback")
+	waitCtx, wcancel := context.WithTimeout(ctx, 25*time.Second)
+	defer wcancel()
+	cb, err := sess.WaitCallbackFor(waitCtx, "action/transfer")
+	if err != nil {
+		s.Fatalf("WaitCallbackFor action/transfer: %v", err)
+	}
+	s.Logf("action/transfer body: %s", string(cb.Body))
+	s.Done()
+
+	s = Step(t, "assert-transfer-status-returned")
+	if got := cb.String("transfer_result"); got != "returned" {
+		s.Errorf("transfer_result: got %q want %q", got, "returned")
+	}
+	// 488 rejection of the REFER → 'rejected' → reason "error" → onFailure
+	// (default return). This "error" reason is the REFER-path signature.
+	if got := cb.String("transfer_reason"); got != "error" {
+		s.Errorf("transfer_reason: got %q want %q", got, "error")
+	}
+	s.Done()
+}

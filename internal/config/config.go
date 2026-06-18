@@ -60,6 +60,12 @@ type Settings struct {
 	// lib/tasks/agent/index.js:446).
 	DeepseekAPIKey string
 
+	// Optional — OpenAI API key. Passed inline as `llm.auth.apiKey` /
+	// `agent.llm.auth.apiKey` in the transfer-handoff tests. Optional: tests
+	// that need it skip when unset (see HasOpenAI), so the broader suite still
+	// runs without it.
+	OpenAIAPIKey string
+
 	// Required — ngrok auth token. Phase-2 verb tests + Phase-1 status
 	// callbacks both need a public URL forwarded to the local webhook
 	// server. The whole verb suite gates on this.
@@ -84,6 +90,8 @@ func (s *Settings) HasDeepgram() bool { return s.DeepgramAPIKey != "" }
 
 // HasDeepseek reports whether the Deepseek-backed agent verb test can run.
 func (s *Settings) HasDeepseek() bool { return s.DeepseekAPIKey != "" }
+
+func (s *Settings) HasOpenAI() bool { return s.OpenAIAPIKey != "" }
 
 var (
 	loadOnce sync.Once
@@ -141,6 +149,7 @@ func parse() (*Settings, error) {
 		SIPRealmZone:   firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
 		DeepgramAPIKey: os.Getenv("DEEPGRAM_API_KEY"),
 		DeepseekAPIKey: os.Getenv("DEEPSEEK_API_KEY"),
+		OpenAIAPIKey:   os.Getenv("OPENAI_API_KEY"),
 		NgrokAuthToken: os.Getenv("NGROK_AUTHTOKEN"),
 		NgrokDomain:    os.Getenv("NGROK_DOMAIN"),
 		RunID:          os.Getenv("RUN_ID"),
