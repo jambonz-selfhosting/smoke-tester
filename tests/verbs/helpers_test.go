@@ -460,6 +460,15 @@ const LLMReplyWindow = 12 * time.Second
 // stabilises (symmetric-RTP latch on both legs) before audio starts.
 const BridgeSettleDelay = 1500 * time.Millisecond
 
+// WarmBriefSettleDelay is the callee-side wait for WARM transfers before
+// streaming the reference WAV. In a warm transfer jambonz plays a brief TTS
+// ("Briefing the agent now.", measured ~2.9s) on the target leg/conference
+// BEFORE the WAV; the WAV must not start until the brief has finished AND the
+// bridge/conference membership has fully latched, or the caller's recording
+// catches only the tail. Sized to clear the brief (~3s) plus the RTP-latch
+// settle, with slack.
+const WarmBriefSettleDelay = 4500 * time.Millisecond
+
 // EndedDrainTimeout is the budget for WaitState(StateEnded) at the end
 // of a test — the recording flushes only when the dialog fully tears
 // down. Generous because BYE round-trip can take 1-2s on a NAT'd path.
