@@ -1,9 +1,15 @@
 // Tests for the `dtmf` verb.
 //
 // Schema: schemas/verbs/dtmf — sends digits mid-call to the peer (us).
-// Required: `dtmf` (string of digits). Valid characters: 0-9, *, #, A-D,
-// and 'w' for a 500ms inter-digit pause. Optional `duration` (ms per
-// tone, default 500).
+// Required: `dtmf` (string of digits). Optional `duration` (ms per tone,
+// default 500).
+//
+// Digit set: 0-9, *, #, A-D. NOTE: the canonical schema documents 'w' as a
+// 500ms inter-digit pause, but the running platform rejects it —
+// @jambonz/mrf's inband frame validator throws `invalid dtmf digit 'w'`
+// before the string reaches FreeSWITCH's send_dtmf (which does understand
+// w/W). So we send bare digit strings here; per-tone `duration` already
+// separates them. If 'w' support lands in mrf, add a dedicated pause test.
 //
 // Digits captured on our side via RFC 2833 decode in the audio pipeline
 // (Call.StartRecording wires the diago DTMFReader).
@@ -20,22 +26,20 @@ import (
 // TestVerb_Dtmf_SingleDigit — verb sends "5".
 func TestVerb_Dtmf_SingleDigit(t *testing.T) { expectDTMF(t, "5", "5", "dtmf-single", 2) }
 
-// TestVerb_Dtmf_MultiDigit — sends "1w2w3w4" with explicit inter-digit
-// pauses; the receiver should observe "1234".
-func TestVerb_Dtmf_MultiDigit(t *testing.T) { expectDTMF(t, "1w2w3w4", "1234", "dtmf-multi", 5) }
+// TestVerb_Dtmf_MultiDigit — sends "1234"; the receiver should observe "1234".
+func TestVerb_Dtmf_MultiDigit(t *testing.T) { expectDTMF(t, "1234", "1234", "dtmf-multi", 5) }
 
-// TestVerb_Dtmf_Symbols — "*#0" with explicit inter-digit pauses.
-func TestVerb_Dtmf_Symbols(t *testing.T) { expectDTMF(t, "*w#w0", "*#0", "dtmf-symbols", 3) }
+// TestVerb_Dtmf_Symbols — non-numeric digits "*#0".
+func TestVerb_Dtmf_Symbols(t *testing.T) { expectDTMF(t, "*#0", "*#0", "dtmf-symbols", 3) }
 
 // expectDTMF dials, sends the given digits via the dtmf verb, and asserts
 // the receiver observed at least the expected sequence.
 //
-//	sent     — the `dtmf` string on the verb (may include 'w' pauses)
-//	wantSeq  — digits the receiver should actually see (no 'w')
-//	tailSecs — trailing `pause` length. Size it to: (tones × 500ms) +
-//	           (w-separators × 500ms) + 1s slack for the last RFC 2833
-//	           end-event to arrive before BYE. Too short → tail digit
-//	           dropped; too long → wasted wall-clock.
+//	sent     — the `dtmf` string on the verb
+//	wantSeq  — digits the receiver should actually see
+//	tailSecs — trailing `pause` length. Size it to: (tones × 500ms) + 1s
+//	           slack for the last RFC 2833 end-event to arrive before BYE.
+//	           Too short → tail digit dropped; too long → wasted wall-clock.
 //
 // Steps (shared by all TestVerb_Dtmf_* variants):
 //  1. place-call — POST /Calls with [answer, pause, dtmf <sent>, pause <tailSecs>]

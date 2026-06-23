@@ -1,4 +1,4 @@
-.PHONY: help build test test-rest test-sip test-verbs test-report lint clean deps
+.PHONY: help build test test-rest test-sip test-verbs test-one test-report lint clean deps
 
 # Parallelism: default to min(NumCPU, 8). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
@@ -25,6 +25,8 @@ help:
 	@echo "  make test-rest    # Tier 1/2 REST tests only"
 	@echo "  make test-sip     # Tier 3+ SIP tests only"
 	@echo "  make test-verbs   # per-verb tests (outbound calls via app_json)"
+	@echo "  make test-one NAME=TestVerb_Conference_TwoParty [PKG=./tests/verbs/]"
+	@echo "                    # run a single test by name (anchored ^NAME$$)"
 	@echo "  make test-report  # run all tests, write self-contained report.html"
 	@echo "  make lint         # go vet ./..."
 	@echo "  make clean        # remove build artifacts"
@@ -64,6 +66,35 @@ test-sip:
 
 test-verbs:
 	go test -count=1 -timeout 180s -parallel $(PARALLEL) ./tests/verbs/...
+
+# Run a single test by name. The -run pattern is anchored (^NAME$) so
+# NAME=TestVerb_Conference_TwoParty does not also match siblings like
+# TestVerb_Conference_TwoParty_Muted. PKG defaults to ./tests/... so you
+# don't have to know which package the test lives in; pass PKG to narrow
+# it and speed up compilation. -v surfaces the per-step markers and the
+# === FAILURE SUMMARY === block.
+#
+#   make test-one NAME=TestVerb_Conference_TwoParty
+#   make test-one NAME=TestVerb_Conference_TwoParty PKG=./tests/verbs/
+# Run a single test by typing its name as the make goal:
+#
+#   make TestVerb_Conference_TwoParty
+#
+# It searches all test packages, picks the one that defines the test, and
+# runs only that package (so an unrelated package's suite setup can't fail
+# the run). Anchored ^NAME$ so siblings don't also match.
+test-one:
+ifndef NAME
+	$(error NAME is required, e.g. make test-one NAME=TestVerb_Conference_TwoParty)
+endif
+	@pkg=$$(grep -rl "func $(NAME)(" --include='*_test.go' tests | head -1 | xargs -I{} dirname {}); \
+	test -n "$$pkg" || { echo "test $(NAME) not found"; exit 1; }; \
+	echo "running $(NAME) in ./$$pkg/"; \
+	go test -count=1 -timeout 300s -v -run '^$(NAME)$$' "./$$pkg/"
+
+# Any goal that looks like a Go test name (TestXxx) runs that single test.
+Test%:
+	@$(MAKE) --no-print-directory test-one NAME=$@
 
 test-report:
 	@# `go test -json` streams NDJSON test events; cmd/testreport renders

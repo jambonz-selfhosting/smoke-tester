@@ -465,6 +465,15 @@ func SessionAckEmpty(sess *webhook.Session, verbs ...string) {
 // while shaving ~800ms per arm site (used 11+ times across the suite).
 const RecognizerArmDelay = 700 * time.Millisecond
 
+// RecognizerArmDelayLong is a longer prime pad for verbs that finalize
+// aggressively. The `transcribe` verb with singleUtterance:true closes the
+// utterance on the first end-of-speech it detects, so a marginally-armed
+// recognizer drops everything but the trailing word ("the sun is shining"
+// -> "shining"). 700ms is enough for gather (which keeps listening); the
+// stricter single-utterance path needs the recognizer fully armed before
+// the first syllable. 1500ms captures the whole phrase reliably.
+const RecognizerArmDelayLong = 1500 * time.Millisecond
+
 // LLMReplyWindow is how long we wait after sending the user prompt for
 // the LLM round-trip + TTS streaming to complete and the recording to
 // capture the full reply. 12s gives ~2s of end-of-utterance + ~3s LLM

@@ -34,6 +34,7 @@ import (
 //  7. post-speech-silence — trailing silence to trigger end-of-utterance
 //  8. collect-transcription-hook — drain per-test + anon sessions for transcript
 //  9. assert-transcript-sun-shining — transcript contains both words
+//
 // 10. hangup — best-effort tear-down
 //
 // Test     --POST /Calls-->                       Jambonz
@@ -85,9 +86,12 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "wait-for-recognizer")
-	// Same pattern as gather_speech — leading silence lets the recognizer
-	// arm before the WAV starts.
-	time.Sleep(RecognizerArmDelay)
+	// Leading silence lets the recognizer arm before the WAV starts. We use
+	// the LONG pad here (not the shared RecognizerArmDelay) because
+	// singleUtterance:true finalizes on the first end-of-speech: if the
+	// recognizer isn't fully armed when the first syllable arrives it drops
+	// "the sun is" and keeps only "shining".
+	time.Sleep(RecognizerArmDelayLong)
 	s.Done()
 
 	s = Step(t, "send-wav")
@@ -110,8 +114,15 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 	// routes them to the anon session). Same quirk we documented for
 	// other ancillary hooks.
 	deadline := time.Now().Add(30 * time.Second)
-	var transcript string
-Collect:
+	// Accumulate ALL transcription hooks, not just the first non-empty one.
+	// With singleUtterance:true the recognizer can finalize the clip in more
+	// than one utterance ("the sun is" then "shining"); grabbing only the
+	// first delivered final is a coin-flip on which segment we assert
+	// against. Concatenating every final transcript we see in the window
+	// reconstructs the full phrase regardless of segmentation. We keep
+	// collecting until we have all four content words or the window closes.
+	var parts []string
+	transcript := ""
 	for time.Now().Before(deadline) {
 		for _, sess := range sessionsToDrain(sess) {
 			if cb, err := tryPop(sess); err == nil {
@@ -119,11 +130,14 @@ Collect:
 					continue
 				}
 				s.Logf("action/transcription body: %s", string(cb.Body))
-				transcript = strings.ToLower(extractTranscript(cb))
-				if transcript != "" {
-					break Collect
+				if seg := strings.ToLower(extractTranscript(cb)); seg != "" {
+					parts = append(parts, seg)
+					transcript = strings.Join(parts, " ")
 				}
 			}
+		}
+		if transcript != "" && transcriptHits(transcript) >= 2 {
+			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -138,13 +152,7 @@ Collect:
 	// sun" as "is it" / "the sun is" / "sun is" depending on prosody.
 	// Require at least 2 of 4 content words — strong enough to fail a
 	// regression that returns no transcript or a wrong one entirely.
-	hits := 0
-	for _, want := range []string{"the", "sun", "is", "shining"} {
-		if strings.Contains(transcript, want) {
-			hits++
-		}
-	}
-	if hits < 2 {
+	if hits := transcriptHits(transcript); hits < 2 {
 		s.Errorf("transcript %q matched only %d of [the,sun,is,shining]; want >= 2",
 			transcript, hits)
 	}
@@ -153,6 +161,20 @@ Collect:
 	s = Step(t, "hangup")
 	_ = call.Hangup()
 	s.Done()
+}
+
+// transcriptHits counts how many of the reference phrase's content words
+// appear in the (lower-cased) transcript. Shared by the collect loop's
+// early-exit and the final assertion so both use one definition of "good
+// enough".
+func transcriptHits(transcript string) int {
+	hits := 0
+	for _, want := range []string{"the", "sun", "is", "shining"} {
+		if strings.Contains(transcript, want) {
+			hits++
+		}
+	}
+	return hits
 }
 
 // sessionsToDrain returns the per-test session plus the anon session if

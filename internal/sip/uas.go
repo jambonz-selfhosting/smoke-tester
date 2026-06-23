@@ -49,6 +49,15 @@ type Stack struct {
 	ctx    context.Context
 	cancel context.CancelFunc
 
+	// regTx is the live REGISTER transaction. Held so Stop() can send the
+	// de-REGISTER over the *same* connection (and thus same local source
+	// port) the registration was created on, before the serve context is
+	// cancelled and the connection torn down. Deregistering after cancel
+	// would dial a fresh ephemeral port the registrar can't match to the
+	// existing binding -> 403 Forbidden.
+	regTx    *diago.RegisterTransaction
+	stopOnce sync.Once
+
 	handlerMu sync.RWMutex
 	handler   InboundHandler
 }
@@ -115,12 +124,33 @@ func (s *Stack) SetHandler(h InboundHandler) {
 	s.handlerMu.Unlock()
 }
 
-// Stop cancels the serve loop and closes the UA. Safe to call more than once.
+// Stop deregisters (over the live registration connection) then cancels the
+// serve loop and closes the UA. Safe to call more than once.
+//
+// Order matters: the de-REGISTER must go out BEFORE s.cancel() tears down
+// the transport, so sipgo reuses the same TCP connection — and thus the same
+// local source port — that the original REGISTER created. The registrar
+// matches the de-REGISTER to that binding only when the source port matches;
+// deregistering on a fresh ephemeral port gets a 403.
 func (s *Stack) Stop() {
-	s.cancel()
-	if s.ua != nil {
-		_ = s.ua.Close()
-	}
+	s.stopOnce.Do(func() {
+		if s.regTx != nil {
+			// Fresh, short ctx: s.ctx may already be near its deadline, and
+			// the deregister is best-effort cleanup either way.
+			deregCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+			if err := s.regTx.Unregister(deregCtx); err != nil {
+				slog.Debug("sip: deregister failed (cleanup, best-effort)",
+					"user", s.cfg.User, "err", err)
+			} else {
+				slog.Debug("sip: deregistered", "user", s.cfg.User)
+			}
+			cancel()
+		}
+		s.cancel()
+		if s.ua != nil {
+			_ = s.ua.Close()
+		}
+	})
 }
 
 func (s *Stack) register() error {
@@ -129,29 +159,36 @@ func (s *Stack) register() error {
 	regURI := sip.Uri{User: s.cfg.User, Host: s.cfg.SIPDomain, UriParams: params}
 	slog.Debug("sip: registering", "uri", regURI.String(), "transport", s.cfg.Transport)
 
-	readyCh := make(chan struct{}, 1)
-	regErrCh := make(chan error, 1)
+	// Use RegisterTransaction (not dg.Register) so we own the transaction
+	// handle. dg.Register buries an Unregister in a defer that only fires
+	// after its qualify loop exits — i.e. after s.cancel() has already closed
+	// the connection — which sends the de-REGISTER from a new ephemeral port
+	// the registrar can't match (403). We instead deregister explicitly in
+	// Stop(), on the live connection, before cancelling.
+	tx, err := s.dg.RegisterTransaction(s.ctx, regURI, diago.RegisterOptions{
+		Username: s.cfg.User,
+		Password: s.cfg.Pass,
+		Expiry:   300 * time.Second,
+	})
+	if err != nil {
+		return fmt.Errorf("register: build transaction: %w", err)
+	}
+
+	if err := tx.Register(s.ctx); err != nil {
+		return fmt.Errorf("register: %w", err)
+	}
+	s.regTx = tx
+
+	// Keep the registration fresh in the background until the serve ctx ends.
+	// QualifyLoop blocks re-sending REGISTER on the expiry schedule; it
+	// returns when s.ctx is cancelled (in Stop) or on a fatal register error.
 	go func() {
-		regErrCh <- s.dg.Register(s.ctx, regURI, diago.RegisterOptions{
-			Username: s.cfg.User,
-			Password: s.cfg.Pass,
-			Expiry:   300 * time.Second,
-			OnRegistered: func() {
-				select {
-				case readyCh <- struct{}{}:
-				default:
-				}
-			},
-		})
+		if err := tx.QualifyLoop(s.ctx); err != nil &&
+			s.ctx.Err() == nil {
+			slog.Debug("sip: register qualify loop ended", "user", s.cfg.User, "err", err)
+		}
 	}()
 
-	select {
-	case <-readyCh:
-	case err := <-regErrCh:
-		return fmt.Errorf("register: %w", err)
-	case <-time.After(15 * time.Second):
-		return fmt.Errorf("register: timeout after 15s")
-	}
 	slog.Info("sip: registered", "user", s.cfg.User, "domain", s.cfg.SIPDomain, "transport", s.cfg.Transport)
 	return nil
 }
