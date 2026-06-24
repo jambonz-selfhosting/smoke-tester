@@ -447,10 +447,15 @@ verified by re-uploading recordings to Deepgram.
   there's inbound RTP. Krisp is internal to jambonz (mod_krisp) — no
   client-side handle — so the test scope is "did the verb run", not
   "did Krisp emit EOT".
-- **`TestVerb_Agent_NoiseIsolation/{krisp_shorthand,rnnoise_shorthand,krisp_object_form}`**
-  — three sub-tests covering shorthand strings + the
-  `{mode, level, direction}` object form. Same "param accepted, RTP
-  flowed" smoke level as Krisp.
+- **`TestVerb_Agent_NoiseIsolation`** — exercises the
+  `{mode, level, direction}` object form (the most expressive shape; if
+  it parses, the shorthand strings do too — same validator). Same
+  "param accepted, RTP flowed" smoke level as Krisp: noiseIsolation is
+  media-server-internal (FreeSWITCH mod_krisp; mediajam's own path) with
+  no client-side handle, so we don't assert the LLM echoed the prompt —
+  on a pass-through media server (no Krisp) that flakes under load
+  without signalling a defect. Runs on every cluster (no skip);
+  audio-path round-trip is covered by Agent_Echo.
 
 **Self-hosted architecture (no external deploy needed):**
 

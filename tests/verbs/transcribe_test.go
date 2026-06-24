@@ -18,8 +18,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
+
+// transcribeText is the phrase the caller streams for the cluster's recognizer
+// to transcribe. The old fixture ("The sun is shining.") was only ~1.3s — under
+// parallel load the system-under-test STT routinely lost the prefix and
+// returned just "shining", failing a 2-of-4 word assertion on a noisy but
+// non-broken transcription. A longer, common-word sentence gives the recognizer
+// more material and survives prefix clipping, so the assertion still fails on a
+// missing/empty transcript but is robust to STT drift on individual words.
+const transcribeText = "The weather report says it will be sunny tomorrow " +
+	"with clear skies and a gentle breeze across the coastal region."
 
 // TestVerb_Transcribe_Basic — `transcribe` runs continuous STT and posts
 // each utterance to transcriptionHook.
@@ -95,7 +106,14 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "send-wav")
-	wavPath := resolveFixture(t, speechWAV)
+	// Synthesize a long, common-word sentence (cached under testdata/transcribe)
+	// rather than the short fixture — see transcribeText for why.
+	wavPath, err := tts.EnsureWAV(ctx, "testdata/transcribe", transcribeText, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
+	}
 	if err := call.SendWAV(wavPath); err != nil {
 		s.Fatalf("SendWAV: %v", err)
 	}
@@ -147,14 +165,14 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 	if transcript == "" {
 		s.Fatalf("no transcript received within timeout")
 	}
-	// Cluster-side STT (the system under test, not Deepgram REST) on a
-	// 1.3s telephony-quality clip is noisy; it routinely mishears "the
-	// sun" as "is it" / "the sun is" / "sun is" depending on prosody.
-	// Require at least 2 of 4 content words — strong enough to fail a
-	// regression that returns no transcript or a wrong one entirely.
+	// Cluster-side STT (the system under test, not Deepgram REST) at
+	// telephony quality is noisy and drops/mishears individual words,
+	// especially under load. Require at least 2 distinctive content words —
+	// strong enough to fail a regression that returns no transcript or a
+	// wrong one entirely, robust to single-word drift.
 	if hits := transcriptHits(transcript); hits < 2 {
-		s.Errorf("transcript %q matched only %d of [the,sun,is,shining]; want >= 2",
-			transcript, hits)
+		s.Errorf("transcript %q matched only %d of %v; want >= 2",
+			transcript, hits, transcribeWords)
 	}
 	s.Done()
 
@@ -167,9 +185,14 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 // appear in the (lower-cased) transcript. Shared by the collect loop's
 // early-exit and the final assertion so both use one definition of "good
 // enough".
+// transcribeWords are distinctive content words from transcribeText. We
+// require a couple to land — enough to fail an empty/wrong transcript while
+// tolerating cluster-side STT drift on any individual word under load.
+var transcribeWords = []string{"weather", "sunny", "tomorrow", "clear", "skies", "breeze", "coastal", "region"}
+
 func transcriptHits(transcript string) int {
 	hits := 0
-	for _, want := range []string{"the", "sun", "is", "shining"} {
+	for _, want := range transcribeWords {
 		if strings.Contains(transcript, want) {
 			hits++
 		}

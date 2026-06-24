@@ -1,20 +1,27 @@
 .PHONY: help build test test-rest test-sip test-verbs test-one test-report lint clean deps
 
-# Parallelism: default to min(NumCPU, 8). Go's `go test -parallel N`
+# Parallelism: default to min(NumCPU, 4). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
-# Without an explicit -parallel, Go defaults to GOMAXPROCS (==NumCPU on
-# most platforms), which is fine on 4-8 core dev boxes but on 16+ core
-# machines starts to flake the ngrok free tier (rate-limited tunnel
-# accepts) and the jambonz cluster (concurrent /Calls + REGISTER bursts).
-# Empirically -parallel 8 is the highest value the upstream services
-# accept without periodic flakes.
 #
-# Override on the command line if you have a beefier upstream:
-#   make test PARALLEL=16
+# The limiting resource is NOT the dev box — it's the jambonz CLUSTER under
+# test plus the third-party services each call drives (Deepgram STT+TTS
+# websockets, ngrok tunnel). A media-heavy verb test (agent/conference/dial/
+# listen) holds a live RTP leg + 1-2 vendor websockets for its whole run.
+# Measured on a 4-vCPU cluster (mediajam media server): at -parallel 8 the
+# full suite flakes 5-7/49 each run — STT drops words/times out, DTMF is
+# late, fork audio comes back silent — and the failing SET changes run to
+# run (the signature of concurrent-load saturation, not a logic bug). The
+# same tests pass individually and in small groups. At -parallel 4 the full
+# suite is stable (≤1-2 residual LLM-content/correlation flakes). So 4 is
+# the gate default; it tracks the cluster's real concurrent-call headroom,
+# not the dev box core count.
+#
+# Override on the command line for a beefier cluster:
+#   make test PARALLEL=8
 # Or to debug serially:
 #   make test PARALLEL=1
 NUM_CPU := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-PARALLEL ?= $(shell echo $$(( $(NUM_CPU) < 8 ? $(NUM_CPU) : 8 )))
+PARALLEL ?= $(shell echo $$(( $(NUM_CPU) < 4 ? $(NUM_CPU) : 4 )))
 
 help:
 	@echo "smoke-tester — release-gate harness"

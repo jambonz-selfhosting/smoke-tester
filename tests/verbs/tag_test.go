@@ -51,7 +51,7 @@ func TestVerb_Tag_DataInCallbacks(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess)
+	callSid, call := placeWebhookCallToWithSID(ctx, t, uas, sess)
 	s.Done()
 
 	s = Step(t, "answer-and-wait-end")
@@ -84,6 +84,14 @@ func TestVerb_Tag_DataInCallbacks(t *testing.T) {
 	var postTagDetails []string
 	for _, cb := range cbs {
 		if cb.Hook != "call_status_hook" {
+			continue
+		}
+		// Under -parallel the anon session is a shared bag: status hooks
+		// from OTHER tests' calls (which also drop correlation) land here
+		// too. Only count callbacks for THIS test's call — otherwise a
+		// concurrent test's tag-less "completed" frame inflates
+		// postTagWithout and flakes the assertion.
+		if sid := cb.NestedString("call_sid"); sid != "" && sid != callSid {
 			continue
 		}
 		status := cb.NestedString("call_status")

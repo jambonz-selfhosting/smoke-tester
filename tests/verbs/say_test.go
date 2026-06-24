@@ -6,6 +6,18 @@
 //
 // earlyMedia coverage is deferred — needs diago media-session init plumbing
 // we don't yet expose.
+//
+// maxDur sizing: AudioDuration() counts every inbound RTP sample from answer
+// to BYE — including the silence the media server sends before speech starts.
+// With WithWarmup the script is [answer, pause 1s, say], and a streaming-TTS
+// media server then spends ~0.5s dialing the vendor before first audio, so
+// every recording carries ~1.5s of leading silence on top of the spoken
+// length (measured on the mediajam cluster: dial ~510ms, vendor ttfb ~190ms,
+// + the deliberate 1s warmup pause). The upper bounds below are therefore the
+// spoken length plus generous headroom for that fixed startup overhead and
+// per-run jitter — they exist to catch runaway/looping playback, not to pin
+// exact duration. Lower bounds + transcript assertions are the real content
+// guards.
 package verbs
 
 import (
@@ -22,7 +34,8 @@ func TestVerb_Say_Basic(t *testing.T) {
 		ctxTimeout: 30 * time.Second,
 		tag:        "say-basic",
 		minDur:     1 * time.Second,
-		maxDur:     6 * time.Second,
+		// ~2s spoken + ~1.5s startup overhead; 9s leaves headroom for jitter.
+		maxDur: 9 * time.Second,
 		verb:      V("say", "text", "Hello from jambonz integration tests."),
 		wantWords: []string{"hello", "jambonz", "integration"},
 	})
@@ -40,9 +53,10 @@ func TestVerb_Say_SSML(t *testing.T) {
 		ctxTimeout: 30 * time.Second,
 		tag:        "say-ssml",
 		// "Hello" + 500ms break + "world" → observed ~900ms on this cluster;
-		// TTS voices compress short utterances.
-		minDur:    500 * time.Millisecond,
-		maxDur:    6 * time.Second,
+		// TTS voices compress short utterances. Upper bound covers the ~1.5s
+		// streaming-TTS startup overhead on top of the short utterance.
+		minDur: 500 * time.Millisecond,
+		maxDur: 9 * time.Second,
 		verb:      V("say", "text", "<speak>Hello <break time='500ms'/> world.</speak>"),
 		wantWords: []string{"hello", "world"},
 		// We asked for 500ms of silence in the middle. TTS engines often
@@ -93,7 +107,8 @@ func TestVerb_Say_ArrayRandom(t *testing.T) {
 		ctxTimeout: 45 * time.Second,
 		tag:        "say-array",
 		minDur:     1 * time.Second,
-		maxDur:     12 * time.Second,
+		// Three concatenated phrases (~10s spoken) + ~1.5s startup overhead.
+		maxDur: 16 * time.Second,
 		verb: V("say", "text", []any{
 			"Number one apple.",
 			"Number two banana.",
@@ -117,9 +132,9 @@ func TestVerb_Say_Loop2(t *testing.T) {
 		ctxTimeout: 45 * time.Second,
 		tag:        "say-loop2",
 		// "one two three" ≈ 1s → loop=2 ≈ 2s + gap. Wide window for codec +
-		// network variance.
+		// network variance, plus ~1.5s streaming-TTS startup overhead.
 		minDur: 1500 * time.Millisecond,
-		maxDur: 8 * time.Second,
+		maxDur: 11 * time.Second,
 		verb:   V("say", "text", "one two three.", "loop", 2),
 		// Asserting the second pass's phrase is distinctive enough; if the
 		// loop didn't run twice, we'd only see one copy and miss this.
@@ -136,7 +151,8 @@ func TestVerb_Say_SynthesizerOverride(t *testing.T) {
 		ctxTimeout: 30 * time.Second,
 		tag:        "say-override",
 		minDur:     1 * time.Second,
-		maxDur:     5 * time.Second,
+		// ~1.5s spoken + ~1.5s startup overhead; 8s leaves headroom.
+		maxDur: 8 * time.Second,
 		verb: V("say", "text", "Override voice test.",
 			"synthesizer", map[string]any{
 				"vendor":   "deepgram",
