@@ -92,6 +92,34 @@ func (s *Session) WSClosed() <-chan struct{} {
 	return ch
 }
 
+// WSConnected blocks until jambonz has opened the WS to our endpoint (so
+// SendWSText / SendWSBinary will succeed), or ctx fires. Bidirectional
+// tests must wait on this before sending audio: jambonz dials out to
+// /ws/<id> only once the listen/stream verb executes, which races the
+// test's call setup.
+func (s *Session) WSConnected(ctx context.Context) error {
+	ticker := time.NewTicker(50 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		s.mu.Lock()
+		ws := s.ws
+		s.mu.Unlock()
+		if ws != nil {
+			ws.mu.Lock()
+			connected := ws.conn != nil
+			ws.mu.Unlock()
+			if connected {
+				return nil
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return ctx.Err()
+		case <-ticker.C:
+		}
+	}
+}
+
 // WSMetadata returns the first JSON frame jambonz sent on the WS (if
 // any). Many verb shapes put configuration / session context there.
 // Returns nil if no JSON frame has been received yet or the first frame
@@ -203,6 +231,65 @@ func (s *Session) SendWSText(b []byte) error {
 		return errors.New("WS: not connected")
 	}
 	return ws.conn.WriteMessage(websocket.TextMessage, b)
+}
+
+// WSMark is a `mark` event received from jambonz on a bidirectional
+// listen/stream WS. jambonz emits one when audio that was tagged with a
+// `mark` command either reaches the caller (Event=="playout") or is
+// discarded before playout via killAudio/clearMarks (Event=="cleared").
+// See mod_audio_fork lws_glue.cpp::send_mark_event.
+type WSMark struct {
+	Name  string
+	Event string // "playout" | "cleared"
+}
+
+// WaitWSMark blocks until a `mark` event whose data.name == name arrives
+// on the WS, or ctx fires. Frames that aren't a matching mark (audio,
+// metadata, other-named marks) are skipped. Returns the matched mark's
+// event, or ctx.Err() / a stream-closed error.
+//
+// Shape on the wire (mod_audio_fork → us):
+//
+//	{"type":"mark","data":{"name":"<name>","event":"playout"|"cleared"}}
+func (s *Session) WaitWSMark(ctx context.Context, name string) (WSMark, error) {
+	s.mu.Lock()
+	if s.ws == nil {
+		s.ws = newWSSession()
+	}
+	ws := s.ws
+	s.mu.Unlock()
+	for {
+		select {
+		case m, ok := <-ws.inbound:
+			if !ok {
+				return WSMark{}, errors.New("WS: stream closed before mark arrived")
+			}
+			mark, ok := parseMark(m)
+			if ok && mark.Name == name {
+				return mark, nil
+			}
+		case <-ctx.Done():
+			return WSMark{}, ctx.Err()
+		}
+	}
+}
+
+// parseMark extracts a WSMark from a text frame, reporting whether the
+// frame was a well-formed `mark` message.
+func parseMark(m WSMessage) (WSMark, bool) {
+	if m.Kind != WSText || m.JSON == nil {
+		return WSMark{}, false
+	}
+	if t, _ := m.JSON["type"].(string); t != "mark" {
+		return WSMark{}, false
+	}
+	data, _ := m.JSON["data"].(map[string]any)
+	if data == nil {
+		return WSMark{}, false
+	}
+	name, _ := data["name"].(string)
+	event, _ := data["event"].(string)
+	return WSMark{Name: name, Event: event}, true
 }
 
 // SendWSBinary writes a binary frame to jambonz (e.g. audio reply on

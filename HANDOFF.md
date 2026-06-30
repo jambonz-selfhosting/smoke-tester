@@ -11,12 +11,40 @@
 
 ---
 
-## State as of 2026-05-01
+## State as of 2026-06-30
 
 > **Orientation:** for the harness ↔ jambonz component diagram + traffic
 > breakdown, see [docs/architecture/components.md](docs/architecture/components.md).
 
 ### Now (in progress)
+
+- **`listen` verb `mark` feature green (2026-06-30): 2 tests.**
+  `TestVerb_Listen_Mark_Playout` and `TestVerb_Listen_Mark_Cleared` in
+  `tests/verbs/listen_mark_test.go`. The mark protocol is a
+  bidirectional-audio synchronization mechanism handled entirely in
+  **mod_audio_fork** (`lws_glue.cpp`), NOT feature-server JS — the JS
+  only handles non-streaming `playAudio`/`killAudio`; mark/playout/
+  cleared live in mod_audio_fork's *streaming* playout buffer path
+  (`bidirectionalAudio.streaming: true`). Flow: our WS server sends raw
+  linear16 PCM as **binary** frames → buffered in the playout buffer;
+  sends `{type:"mark",data:{name}}` → next binary frame inserts an
+  `AUDIO_MARKER` sentinel at the buffer tail; as the buffer drains to
+  the caller and hits the sentinel, mod_audio_fork sends
+  `{type:"mark",data:{name,event:"playout"}}` back. `killAudio`/
+  `clearMarks` discard buffered audio → pending marks return
+  `event:"cleared"`. The Playout test additionally records the caller
+  leg and asserts real audio (rms≈17700, 6.26s) reached the caller —
+  the mark fires because audio played, not by accident. The Cleared
+  test bursts a long (~12s) audio block unpaced so `killAudio` arrives
+  while the marked position is still deep in the undrained buffer.
+  New infra: `webhook.Session.WSConnected(ctx)` (block until jambonz
+  dials /ws/<id>), `webhook.Session.WaitWSMark(ctx, name)` +
+  `webhook.WSMark{Name,Event}`. Playback audio synthesized via
+  `tts.EnsureWAV` (Deepgram), raw PCM extracted by stripping the
+  44-byte RIFF header; fixtures cached under
+  `tests/verbs/testdata/listen/*.wav` (gitignore-allowlisted, same
+  policy as agent). Stable across 3 consecutive runs; no regression in
+  the listen/stream suite.
 
 - **Self-provisioning ephemeral suite accounts (2026-05-01).** TestMain
   no longer touches any pre-existing account on the cluster. It uses
@@ -259,6 +287,72 @@ None.
 ---
 
 ## Session log (reverse-chronological)
+
+### 2026-06-30 — `listen` verb `mark` feature (bidirectional playout sync)
+
+**Scope:** implement tests for the `mark` feature of the `listen` verb
+(https://docs.jambonz.org/verbs/verbs/listen#mark).
+
+**Investigation:** the docs are thin; the authoritative protocol was
+read from `mod_audio_fork/lws_glue.cpp`. Key finding: `mark`/`clearMarks`
+and the `playout`/`cleared` events are **not** in feature-server JS at
+all (`listen.js` only wires `playAudio`/`killAudio`). They operate on
+mod_audio_fork's *streaming* playout buffer, which only exists when
+`bidirectionalAudio.streaming: true` and the WS server sends raw audio
+as **binary** frames (not the `playAudio` JSON-with-base64 path, which
+goes through `ep.play()` and bypasses the buffer/marks entirely).
+
+**Done — 2 tests (`tests/verbs/listen_mark_test.go`):**
+
+- **`TestVerb_Listen_Mark_Playout`** — listen with
+  `bidirectionalAudio{enabled,streaming,sampleRate:8000}`; after WS
+  connect, stream paced linear16 PCM binary frames, send
+  `{type:mark,name}`, flush a trailing burst. Asserts the returned
+  mark has `event:"playout"` AND the caller-leg recording is real
+  audio (rms≈17700, 6.26s) — proving the marked audio actually reached
+  the caller.
+- **`TestVerb_Listen_Mark_Cleared`** — bursts a long (~12s) audio block
+  unpaced, sends `{type:mark,name}` + one frame, then `{type:killAudio}`
+  immediately. Asserts the returned mark has `event:"cleared"`. The
+  burst keeps the marked position deep in the undrained buffer so the
+  kill wins the race; an early version that paced the stream got
+  `playout` because the audio drained before the kill arrived.
+
+**New infra:**
+- `webhook.Session.WSConnected(ctx)` — block until jambonz dials our
+  `/ws/<id>` (bidi sends race call setup otherwise).
+- `webhook.Session.WaitWSMark(ctx, name)` + `webhook.WSMark{Name,Event}`
+  + `parseMark` — drain text frames for a matching `{type:mark}`.
+- Test helpers `marksRawPCM` (EnsureWAV → strip 44-byte RIFF header),
+  `marksStreamPCM(sess, pcm, paced)`, `marksMarkMsg`,
+  `marksKillAudioMsg`, `marksAnswerRecord`.
+- Distinct playback text per test so `EnsureWAV` cache keys differ
+  (parallel tests sharing one cache file caused a 0-byte partial-read
+  race in the first run).
+- `.gitignore` allowlist `tests/verbs/testdata/listen/*.wav`.
+
+**Surprises:**
+- First run: the two tests shared `markPlayAudioText` → same EnsureWAV
+  cache path → parallel read-during-write yielded a 0-byte WAV. Fixed
+  by giving each test distinct text (distinct sha1 cache key).
+- First run cleared test got `playout` not `cleared`: paced streaming
+  let the marked audio drain to the caller before `killAudio` landed.
+  Fixed by bursting a long undrained block before the kill.
+- `clearMarks` and `killAudio` both produce `event:"cleared"`; this
+  test exercises the `killAudio` path (also clears the buffer).
+  `clearMarks` (no buffer flush) is left for a future depth pass.
+
+**Verified runs:** mark pair ~15s parallel, 3 consecutive green; full
+`TestVerb_(Listen|Stream)` suite ~15s green (no regression).
+
+**Files touched:**
+- new: `tests/verbs/listen_mark_test.go`,
+  `tests/verbs/testdata/listen/{d252370b21acbcb8,f5f010e7f47f7f40}.wav`
+- `internal/webhook/ws.go` — `WSConnected`, `WaitWSMark`, `WSMark`,
+  `parseMark`
+- `.gitignore`, `docs/coverage-matrix.md` (row 4.2)
+
+---
 
 ### 2026-05-01 — Self-provisioning ephemeral suite accounts + `dial` bridge fix + ergonomics overhaul
 

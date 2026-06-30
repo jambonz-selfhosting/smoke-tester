@@ -7,6 +7,10 @@ bin/
 # safe to commit once generated so CI without DEEPGRAM_API_KEY can run, but
 # also safe to delete and regenerate.
 !tests/verbs/testdata/agent/*.wav
+# listen `mark` test playback audio — same policy as the agent cache:
+# TTS-generated, re-creatable from internal/tts, safe to commit so CI
+# without DEEPGRAM_API_KEY can run the bidirectional-audio path.
+!tests/verbs/testdata/listen/*.wav
 *.pcap
 .DS_Store
 coverage.out
