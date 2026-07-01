@@ -1,4 +1,4 @@
-.PHONY: help build test test-rest test-sip test-verbs test-one test-report lint clean deps
+.PHONY: help build test test-rest test-sip test-verbs test-report lint clean deps
 
 # Parallelism: default to min(NumCPU, 4). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
@@ -32,8 +32,10 @@ help:
 	@echo "  make test-rest    # Tier 1/2 REST tests only"
 	@echo "  make test-sip     # Tier 3+ SIP tests only"
 	@echo "  make test-verbs   # per-verb tests (outbound calls via app_json)"
-	@echo "  make test-one NAME=TestVerb_Conference_TwoParty [PKG=./tests/verbs/]"
+	@echo "  make TestVerb_Conference_TwoParty"
 	@echo "                    # run a single test by name (anchored ^NAME$$)"
+	@echo "  make builtin_hangup_test.go"
+	@echo "                    # run every TestXxx defined in one _test.go file"
 	@echo "  make test-report  # run all tests, write self-contained report.html"
 	@echo "  make lint         # go vet ./..."
 	@echo "  make clean        # remove build artifacts"
@@ -74,34 +76,49 @@ test-sip:
 test-verbs:
 	go test -count=1 -timeout 180s -parallel $(PARALLEL) ./tests/verbs/...
 
-# Run a single test by name. The -run pattern is anchored (^NAME$) so
-# NAME=TestVerb_Conference_TwoParty does not also match siblings like
-# TestVerb_Conference_TwoParty_Muted. PKG defaults to ./tests/... so you
-# don't have to know which package the test lives in; pass PKG to narrow
-# it and speed up compilation. -v surfaces the per-step markers and the
-# === FAILURE SUMMARY === block.
-#
-#   make test-one NAME=TestVerb_Conference_TwoParty
-#   make test-one NAME=TestVerb_Conference_TwoParty PKG=./tests/verbs/
 # Run a single test by typing its name as the make goal:
 #
 #   make TestVerb_Conference_TwoParty
 #
-# It searches all test packages, picks the one that defines the test, and
-# runs only that package (so an unrelated package's suite setup can't fail
-# the run). Anchored ^NAME$ so siblings don't also match.
-test-one:
-ifndef NAME
-	$(error NAME is required, e.g. make test-one NAME=TestVerb_Conference_TwoParty)
-endif
-	@pkg=$$(grep -rl "func $(NAME)(" --include='*_test.go' tests | head -1 | xargs -I{} dirname {}); \
-	test -n "$$pkg" || { echo "test $(NAME) not found"; exit 1; }; \
-	echo "running $(NAME) in ./$$pkg/"; \
-	go test -count=1 -timeout 300s -v -run '^$(NAME)$$' "./$$pkg/"
-
-# Any goal that looks like a Go test name (TestXxx) runs that single test.
+# It searches all test packages, picks the one that defines the test, and runs
+# only that package (so an unrelated package's suite setup can't fail the run).
+# Anchored ^NAME$ so siblings like ..._Muted don't also match. -v surfaces the
+# per-step markers and the === FAILURE SUMMARY === block.
 Test%:
-	@$(MAKE) --no-print-directory test-one NAME=$@
+	@name=$@; \
+	pkg=$$(grep -rl "func $$name(" --include='*_test.go' tests | head -1 | xargs -I{} dirname {}); \
+	test -n "$$pkg" || { echo "test $$name not found"; exit 1; }; \
+	echo "running $$name in ./$$pkg/"; \
+	go test -count=1 -timeout 300s -v -run "^$$name$$" "./$$pkg/"
+
+# Run every test defined in ONE _test.go file by typing the file as the goal:
+#
+#   make builtin_hangup_test.go
+#   make handoff_test.go PARALLEL=2
+#
+# You can pass the bare filename (it's located under tests/) or a path.
+# Go compiles per-package, not per-file, so we can't hand `go test` a single
+# file and get its package linked — instead we scrape the top-level
+# `func TestXxx(` names out of the file, OR them into one anchored -run pattern
+# (^(A|B|C)$), and run that against the file's own package (the rest of the
+# package still compiles + links, but only this file's tests execute). Each
+# alternative is individually anchored so a sibling whose name is a prefix of
+# one of ours can't sneak in.
+#
+# The FORCE prereq defeats make's "target file already exists → up to date"
+# short-circuit: when you pass a real path (tests/verbs/foo_test.go), that file
+# is on disk, so without FORCE make would say "up to date" and skip the recipe.
+%_test.go: FORCE
+	@file="$@"; \
+	test -f "$$file" || file=$$(find tests -name "$@" | head -1); \
+	test -n "$$file" -a -f "$$file" || { echo "file not found: $@"; exit 1; }; \
+	pkg=$$(dirname "$$file"); \
+	tests=$$(grep -oE '^func (Test[A-Za-z0-9_]+)\(' "$$file" | sed -E 's/^func //; s/\($$//'); \
+	test -n "$$tests" || { echo "no top-level TestXxx funcs in $$file"; exit 1; }; \
+	pattern=$$(echo "$$tests" | paste -sd '|' -); \
+	echo "running $$(echo "$$tests" | wc -l | tr -d ' ') test(s) from $$file in ./$$pkg/"; \
+	echo "  -run '^($$pattern)$$'"; \
+	go test -count=1 -timeout 300s -v -parallel $(PARALLEL) -run "^($$pattern)$$" "./$$pkg/"
 
 test-report:
 	@# `go test -json` streams NDJSON test events; cmd/testreport renders
@@ -116,3 +133,8 @@ lint:
 clean:
 	rm -rf bin/ coverage.out report.xml report.html
 	find . -name '*.wav' -not -path './spikes/*' -not -path './tests/verbs/testdata/*' -delete
+
+# Empty phony prerequisite used to force pattern-rule recipes (%_test.go) to
+# always run even when a real file of that name exists on disk.
+.PHONY: FORCE
+FORCE:

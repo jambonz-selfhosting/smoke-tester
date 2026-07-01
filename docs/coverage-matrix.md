@@ -138,6 +138,7 @@ Each row requires provider credentials; tests skip with a clear reason if absent
 | 5.2 | `lex` | AWS access key + secret | ☐ | ☐ | local | Lex V2 session; intents + transcription. |
 | 5.3 | `dialogflow` | Google service-account JSON | ☐ | ☐ | local | Welcome event; intent event; actionHook on end. |
 | 5.4 | `rasa` | Rasa server URL | ☐ | ☐ | local | REST channel; prompt played; user/bot messages. |
+| 5.5 | built-in `hangup` (agent + llm) | OPENAI_API_KEY (inline auth) + Deepgram (in-jambonz cred + caller-utterance TTS) | ☑ | ☑ | upstream | 2 tests (`builtin_hangup_test.go`). Sibling of built-in `handoff`. Verb carries a `hangup:{reason}` block → runtime injects a `hangup` tool. Agent (cascaded, forced first-turn call) + llm (OpenAI s2s, conversational "I'm done" trigger). Asserts the observable contract: server-initiated BYE (`EndReason=="remote-bye"`, test never calls Hangup), `X-Reason` header on the BYE carries the reason, and the verb actionHook reports `completion_reason=="hangup"`. |
 
 ---
 
