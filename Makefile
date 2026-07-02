@@ -1,4 +1,4 @@
-.PHONY: help build test test-rest test-sip test-verbs test-report lint clean deps
+.PHONY: help build test test-rest test-sip test-verbs test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive list-drachtio lint clean deps
 
 # Parallelism: default to min(NumCPU, 4). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
@@ -37,6 +37,27 @@ help:
 	@echo "  make builtin_hangup_test.go"
 	@echo "                    # run every TestXxx defined in one _test.go file"
 	@echo "  make test-report  # run all tests, write self-contained report.html"
+	@echo "  make test-drachtio"
+	@echo "                    # run-all: every drachtio test (drachtio build tag)"
+	@echo "                    # NOTE: the generic 'make Test%' pattern rule does"
+	@echo "                    # NOT work for these — it omits -tags drachtio."
+	@echo "  make test-drachtio RUN=TestDrachtio_SessionTimer_UASRefresher"
+	@echo "                    # run-one: exact test name (RUN is a regexp, so"
+	@echo "                    # an exact name matches just that one test)"
+	@echo "  make test-drachtio RUN=TestDrachtio_SessionTimer"
+	@echo "                    # run-a-file's-tests: RUN as a prefix regexp runs"
+	@echo "                    # every test in one file. Convention: each"
+	@echo "                    # tests/drachtio/<area>_test.go file's tests all"
+	@echo "                    # share one TestDrachtio_<Area>_* prefix (e.g."
+	@echo "                    # session_timer_test.go -> TestDrachtio_SessionTimer),"
+	@echo "                    # so the prefix IS the file selector — no"
+	@echo "                    # separate FILE= flag needed or provided."
+	@echo "  make list-drachtio"
+	@echo "                    # list every available drachtio test name, so"
+	@echo "                    # you don't have to grep the source to find one"
+	@echo "  make test-drachtio-uas   # shortcut: only the UAS-refresher (proactive re-INVITE) test"
+	@echo "  make test-drachtio-uac   # shortcut: only the UAC-expiry (timeout BYE) test"
+	@echo "  make test-drachtio-uac-keepalive  # shortcut: only the UAC-keepalive (proactive refresh, call stays up) test"
 	@echo "  make lint         # go vet ./..."
 	@echo "  make clean        # remove build artifacts"
 	@echo
@@ -119,6 +140,50 @@ Test%:
 	echo "running $$(echo "$$tests" | wc -l | tr -d ' ') test(s) from $$file in ./$$pkg/"; \
 	echo "  -run '^($$pattern)$$'"; \
 	go test -count=1 -timeout 300s -v -parallel $(PARALLEL) -run "^($$pattern)$$" "./$$pkg/"
+
+# RFC 4028 session-timer tests, exercised against a live sbc-inbound
+# (drachtio). Long-running (~90-120s per test), so they are EXCLUDED from
+# `make test` / `make test-report` via the `drachtio` build tag — without
+# `-tags drachtio` these files compile to an empty package (see doc.go) and
+# TEST_PACKAGES' `./tests/...` walk finds nothing to run here. They also
+# depend on server-side drachtio default-refresher configuration, so they
+# aren't safe to run unconditionally in the default suite.
+#
+# Future tests: this package is future-proofed generically, not per-test —
+# no Makefile edit is needed to add a new drachtio test:
+#   - run-all:            make test-drachtio
+#   - run-one-test:       make test-drachtio RUN=TestDrachtio_SessionTimer_UASRefresher
+#   - run-one-file's-tests: RUN doubles as a per-file selector under one
+#     convention: one file = one TestDrachtio_<Area>_* prefix (e.g. all
+#     tests in session_timer_test.go start with TestDrachtio_SessionTimer).
+#     `make test-drachtio RUN=TestDrachtio_SessionTimer` runs that whole
+#     file's tests without a separate FILE= flag. `go test` has no
+#     "run only this file" flag (it compiles per-package, not per-file), so
+#     a true FILE= target would either be a no-op or require re-deriving
+#     this exact same prefix from the filename — the naming convention
+#     already does that job, so keep new drachtio test files following it
+#     and skip a FILE= target as unnecessary indirection.
+#   - discover names:     make list-drachtio
+RUN ?= .
+test-drachtio:
+	go test -tags drachtio -count=1 -timeout 360s -parallel 2 -v -run "$(RUN)" ./tests/drachtio/
+
+# Memorable shortcuts for the two session-timer tests, so you don't have to
+# remember RUN= or the exact TestDrachtio_SessionTimer_* name.
+test-drachtio-uas:
+	go test -tags drachtio -count=1 -timeout 360s -parallel 2 -v -run "TestDrachtio_SessionTimer_UASRefresher" ./tests/drachtio/
+
+test-drachtio-uac:
+	go test -tags drachtio -count=1 -timeout 360s -parallel 2 -v -run "TestDrachtio_SessionTimer_UACRefresherExpiry" ./tests/drachtio/
+
+test-drachtio-uac-keepalive:
+	go test -tags drachtio -count=1 -timeout 360s -parallel 2 -v -run "TestDrachtio_SessionTimer_UACRefresherKeepalive" ./tests/drachtio/
+
+# List every available drachtio test name (requires -tags drachtio, same
+# reason as above: without it the package is empty). Use this to discover
+# what to pass to RUN= instead of grepping the source.
+list-drachtio:
+	go test -tags drachtio -list '.*' ./tests/drachtio/
 
 test-report:
 	@# `go test -json` streams NDJSON test events; cmd/testreport renders

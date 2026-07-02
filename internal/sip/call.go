@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"strings"
 	"sync"
 	"time"
 
@@ -258,6 +259,72 @@ func (c *Call) SendRefer(ctx context.Context, target sip.Uri) error {
 	return c.out.Refer(ctx, target)
 }
 
+// SendReinvite sends an in-dialog re-INVITE carrying custom headers, waits
+// for the final response, and ACKs a 2xx. Outbound (UAC) calls only.
+//
+// diago's DialogClientSession only auto-ACKs re-INVITEs it RECEIVES
+// in-dialog (see handleReInviteACK); a re-INVITE this side SENDS is not
+// auto-ACKed, so the 2xx here must be ACKed explicitly. We also can't use
+// diago's own ReInvite/Ack: ReInvite can't carry arbitrary headers, and Ack
+// re-ACKs the ORIGINAL InviteResponse (finalizing media again) rather than
+// this re-INVITE's response.
+//
+// Callers must NOT pass a "Content-Type" header — it's set automatically to
+// application/sdp. For RFC 4028 session-timer refresh, callers MUST include
+// a Session-Expires header: drachtio cancels its session-expiry timer on
+// any received re-INVITE and only re-arms it from that header, so omitting
+// it disables refresh.
+//
+// After a successful refresh, AnsweredResponse()/AnsweredStatus() report the
+// LAST INVITE 200 OK (this re-INVITE's), not the original negotiation —
+// read the initial answer before calling SendReinvite if you need it.
+func (c *Call) SendReinvite(ctx context.Context, headers H) (*sip.Response, error) {
+	if c.direction != Outbound {
+		return nil, fmt.Errorf("SendReinvite: outbound only")
+	}
+	if s := c.State(); s != StateAnswered {
+		return nil, invalidState("SendReinvite", s, StateAnswered)
+	}
+	contact := c.out.RemoteContact()
+	if contact == nil {
+		return nil, fmt.Errorf("SendReinvite: no remote contact on dialog")
+	}
+	sdp := c.mediaSession().LocalSDP()
+	if len(sdp) == 0 {
+		return nil, fmt.Errorf("SendReinvite: no local SDP on dialog")
+	}
+
+	req := sip.NewRequest(sip.INVITE, contact.Address)
+	req.AppendHeader(sip.HeaderClone(c.out.InviteRequest.Contact()))
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	for k, v := range headers {
+		req.AppendHeader(sip.NewHeader(k, v))
+	}
+	req.SetBody(sdp)
+
+	c.recordSent(newRequestMsg(MsgSent, req))
+	res, err := c.out.Do(ctx, req)
+	if res != nil {
+		c.recordReceived(newResponseMsg(MsgRecv, res))
+	}
+	if err != nil {
+		return res, fmt.Errorf("SendReinvite: %w", err)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		// Non-2xx final responses are auto-ACKed by the transaction layer;
+		// nothing more to do here.
+		return res, fmt.Errorf("reinvite rejected: %d %s", res.StatusCode, res.Reason)
+	}
+
+	ackTo := res.Contact()
+	if ackTo == nil {
+		ackTo = contact
+	}
+	ack := sip.NewRequest(sip.ACK, ackTo.Address)
+	c.recordSent(newRequestMsg(MsgSent, ack))
+	return res, c.out.WriteRequest(ack)
+}
+
 func (c *Call) doInDialog(ctx context.Context, method sip.RequestMethod, contentType string, body []byte, extra ...sip.Header) (*sip.Response, error) {
 	if s := c.State(); s != StateAnswered {
 		return nil, invalidState(method.String(), s, StateAnswered)
@@ -467,6 +534,73 @@ func (c *Call) AnsweredStatus() int {
 		}
 	}
 	return 0
+}
+
+// AwaitReceivedRequest polls the recorded-received-messages slice every
+// 200ms (under the same mutex the other recording accessors use) until a
+// recorded message matches one of `methods`, or ctx is cancelled/expires.
+//
+// StatusCode == 0 is the only reliable request/response discriminator here:
+// Message.Method is populated for RESPONSES too (copied from the CSeq
+// header, see newResponseMsg in messages.go), so a Method-only match would
+// also match the request's own reply (e.g. matching "INVITE" would match
+// the 200 OK we send back to it). Filtering StatusCode == 0 restricts the
+// match to actual requests.
+func (c *Call) AwaitReceivedRequest(ctx context.Context, methods ...string) (Message, error) {
+	match := func() (Message, bool) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, m := range c.recv {
+			if m.StatusCode != 0 {
+				continue
+			}
+			for _, method := range methods {
+				if strings.EqualFold(m.Method, method) {
+					return m, true
+				}
+			}
+		}
+		return Message{}, false
+	}
+	if m, ok := match(); ok {
+		return m, nil
+	}
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return Message{}, ctx.Err()
+		case <-ticker.C:
+			if m, ok := match(); ok {
+				return m, nil
+			}
+		}
+	}
+}
+
+// AnsweredResponse returns the recorded INVITE 200 OK for this call, if any.
+// bool is false if the call hasn't been answered (mirrors AnsweredStatus's
+// direction-aware scan of sent/recv).
+func (c *Call) AnsweredResponse() (Message, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.direction == Outbound {
+		for i := len(c.recv) - 1; i >= 0; i-- {
+			m := c.recv[i]
+			if m.StatusCode == 200 && m.Method == "INVITE" {
+				return m, true
+			}
+		}
+		return Message{}, false
+	}
+	for i := len(c.sent) - 1; i >= 0; i-- {
+		m := c.sent[i]
+		if m.StatusCode == 200 && m.Method == "INVITE" {
+			return m, true
+		}
+	}
+	return Message{}, false
 }
 
 // Received returns every SIP message the harness received for this call.
