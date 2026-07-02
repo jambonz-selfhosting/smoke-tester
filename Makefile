@@ -1,4 +1,4 @@
-.PHONY: help build test test-rest test-sip test-verbs test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive list-drachtio lint clean deps
+.PHONY: help build test test-rest test-sip test-verbs test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio lint clean deps
 
 # Parallelism: default to min(NumCPU, 4). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
@@ -58,6 +58,7 @@ help:
 	@echo "  make test-drachtio-uas   # shortcut: only the UAS-refresher (proactive re-INVITE) test"
 	@echo "  make test-drachtio-uac   # shortcut: only the UAC-expiry (timeout BYE) test"
 	@echo "  make test-drachtio-uac-keepalive  # shortcut: only the UAC-keepalive (proactive refresh, call stays up) test"
+	@echo "  make test-drachtio-none  # shortcut: only the default-refresher=none (no timer armed, call survives) test"
 	@echo "  make lint         # go vet ./..."
 	@echo "  make clean        # remove build artifacts"
 	@echo
@@ -178,6 +179,9 @@ test-drachtio-uac:
 
 test-drachtio-uac-keepalive:
 	go test -tags drachtio -count=1 -timeout 360s -parallel 2 -v -run "TestDrachtio_SessionTimer_UACRefresherKeepalive" ./tests/drachtio/
+
+test-drachtio-none:
+	go test -tags drachtio -count=1 -timeout 360s -parallel 2 -v -run "TestDrachtio_SessionTimer_NoneNoTimer" ./tests/drachtio/
 
 # List every available drachtio test name (requires -tags drachtio, same
 # reason as above: without it the package is empty). Use this to discover

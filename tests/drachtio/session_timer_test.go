@@ -290,3 +290,90 @@ func TestDrachtio_SessionTimer_UACRefresherKeepalive(t *testing.T) {
 	}
 	t.Logf("call stayed up through 2 refreshes over ~%ds with no session-timer BYE", delta)
 }
+
+// TestDrachtio_SessionTimer_NoneNoTimer — RFC 4028 default-refresher="none"
+// path.
+//
+// The harness offers Session-Expires with NO refresher param, leaving the
+// choice to the SBC's configured default. When that default is "none",
+// drachtio must accept the call but decline to run a session timer at all:
+// the 200 OK must omit the refresher (either no Session-Expires at all, or
+// one without a refresher param), no refresh re-INVITE or session-timer BYE
+// may ever appear, and the call must survive past the full negotiated
+// interval until the harness itself hangs up.
+//
+// Steps:
+//  1. UAC INVITEs with Session-Expires: 90 and Supported: timer, no
+//     refresher param.
+//  2. Assert the 200 OK.
+//  3. If the SBC negotiated a refresher (uac or uas), skip — this test only
+//     covers default-refresher=none.
+//  4. Wait past the full interval (interval+20s) and confirm the call is
+//     still up (no session-timer teardown).
+//  5. Confirm no BYE was received during the wait.
+//  6. Client hangs up; must succeed cleanly.
+func TestDrachtio_SessionTimer_NoneNoTimer(t *testing.T) {
+	t.Parallel()
+
+	ctx, cancel := context.WithTimeout(context.Background(), 150*time.Second)
+	defer cancel()
+
+	uas := claimUAS(t, ctx)
+
+	call, err := inviteApp(t, ctx, uas, jsip.H{
+		"Session-Expires": strconv.Itoa(sessionInterval),
+		"Supported":       "timer",
+	})
+	if err != nil {
+		t.Fatalf("inviteApp: %v", err)
+	}
+	defer call.Hangup()
+
+	if got := call.AnsweredStatus(); got != 200 {
+		t.Fatalf("answered status: got %d want 200", got)
+	}
+
+	resp, ok := call.AnsweredResponse()
+	if !ok {
+		t.Fatalf("no recorded 200 OK for INVITE")
+	}
+
+	se := resp.Header("Session-Expires")
+	if se != "" {
+		_, refresher, err := jsip.ParseSessionExpires(se)
+		if err == nil && refresher != "" {
+			t.Skipf("SBC negotiated refresher=%q (Session-Expires: %q); this test requires default-refresher=none (200 OK must omit refresher / Session-Expires). Set sip/session-timers/@default-refresher=none (or remove it) in drachtio.conf.xml.", refresher, se)
+		}
+	}
+	// Reaching here: 200 OK had no Session-Expires, or one without a
+	// refresher param — 'none' behavior. That's what we assert below.
+
+	// The call must NOT be torn down by a session timer. Wait PAST the full
+	// interval and confirm it's still up.
+	waitFor := time.Duration(sessionInterval+20) * time.Second
+	wctx, wcancel := context.WithTimeout(ctx, waitFor)
+	defer wcancel()
+	werr := call.WaitState(wctx, jsip.StateEnded)
+	if werr == nil {
+		byes := call.ReceivedByMethod("BYE")
+		reason := ""
+		if len(byes) > 0 {
+			reason = byes[0].Header("Reason")
+		}
+		t.Fatalf("call ended on its own after ~%ds (endReason=%q, BYE Reason=%q) — with default-refresher=none drachtio must NOT arm a session timer", sessionInterval+20, call.EndReason(), reason)
+	}
+	if !errors.Is(werr, context.DeadlineExceeded) {
+		t.Fatalf("WaitState returned unexpected error (want context.DeadlineExceeded == still alive): %v", werr)
+	}
+
+	// Confirm no drachtio-originated session-timer BYE arrived while we waited.
+	if n := len(call.ReceivedByMethod("BYE")); n > 0 {
+		t.Fatalf("received %d BYE(s) during the call; default-refresher=none must not produce a session-timer teardown (BYE Reason=%q)", n, call.ReceivedByMethod("BYE")[0].Header("Reason"))
+	}
+
+	// Now the CLIENT hangs up — must succeed cleanly.
+	if err := call.Hangup(); err != nil {
+		t.Fatalf("client Hangup failed: %v", err)
+	}
+	t.Logf("default-refresher=none: call survived ~%ds with no session-timer, client hung up cleanly", sessionInterval+20)
+}
