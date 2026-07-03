@@ -66,6 +66,12 @@ type Settings struct {
 	// runs without it.
 	OpenAIAPIKey string
 
+	// Optional — Murf.ai TTS API key. When set, TestMain provisions a Murf
+	// SpeechCredential under the ephemeral account and the Murf say test
+	// exercises it. When unset the Murf test skips (passes) with a
+	// credential-missing log — see HasMurf.
+	MurfAPIKey string
+
 	// Required — ngrok auth token. Phase-2 verb tests + Phase-1 status
 	// callbacks both need a public URL forwarded to the local webhook
 	// server. The whole verb suite gates on this.
@@ -92,6 +98,10 @@ func (s *Settings) HasDeepgram() bool { return s.DeepgramAPIKey != "" }
 func (s *Settings) HasDeepseek() bool { return s.DeepseekAPIKey != "" }
 
 func (s *Settings) HasOpenAI() bool { return s.OpenAIAPIKey != "" }
+
+// HasMurf reports whether the Murf.ai TTS say test can run. Optional: when
+// the key is unset the test skips (passes) with a credential-missing log.
+func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 
 var (
 	loadOnce sync.Once
@@ -150,6 +160,7 @@ func parse() (*Settings, error) {
 		DeepgramAPIKey: os.Getenv("DEEPGRAM_API_KEY"),
 		DeepseekAPIKey: os.Getenv("DEEPSEEK_API_KEY"),
 		OpenAIAPIKey:   os.Getenv("OPENAI_API_KEY"),
+		MurfAPIKey:     os.Getenv("MURF_API_KEY"),
 		NgrokAuthToken: os.Getenv("NGROK_AUTHTOKEN"),
 		NgrokDomain:    os.Getenv("NGROK_DOMAIN"),
 		RunID:          os.Getenv("RUN_ID"),

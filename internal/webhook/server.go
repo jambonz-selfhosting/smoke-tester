@@ -78,6 +78,7 @@ func New(registry *Registry, v *contract.Validator) (*Server, error) {
 	mux.HandleFunc("/status", s.handleStatusHook)
 	mux.HandleFunc("/action/", s.handleActionHook) // /action/<verb>
 	mux.HandleFunc("/ws/", s.handleWS)             // /ws/<session-id>
+	mux.HandleFunc("/appws/", s.handleAppWS)       // /appws/<test-id> (jambonz WS app protocol)
 	mux.HandleFunc("/health", func(w http.ResponseWriter, _ *http.Request) {
 		_, _ = w.Write([]byte("ok"))
 	})

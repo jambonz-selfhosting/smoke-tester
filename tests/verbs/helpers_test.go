@@ -348,6 +348,36 @@ func placeWebhookCallToWithSID(ctx context.Context, t *testing.T, uas *UAS, sess
 	return submitAndAwaitOnWithSID(ctx, t, body, uas)
 }
 
+// placeWSCallTo (WS app) — POSTs /Calls with application_sid=wsApp targeting
+// uas. The wsApp's call_hook is a wss:// URL, so feature-server drives the
+// whole call over the jambonz WebSocket API (appIsUsingWebsockets == true),
+// which streaming-only verbs require. Verb scripts/assertions work exactly
+// like placeWebhookCallTo — set them via session.ScriptCallHook. Correlation
+// rides the same `tag` → x_test_id path the WS app handler resolves on.
+func placeWSCallTo(ctx context.Context, t *testing.T, uas *UAS, session *webhook.Session, extras ...func(*provision.CallCreate)) *jsip.Call {
+	t.Helper()
+	requireWebhook(t)
+	if wsApp == "" {
+		helperFatalf(t, "place-ws-call", "wsApp not provisioned")
+	}
+	body := provision.CallCreate{
+		ApplicationSID: wsApp,
+		From:           "441514533212",
+		To: provision.CallTarget{
+			Type: "user",
+			Name: fmt.Sprintf("%s@%s", uas.Username, suite.SIPRealm),
+		},
+		Tag: map[string]any{
+			webhook.CorrelationKey: session.ID(),
+		},
+		TimeLimit: 30,
+	}
+	for _, e := range extras {
+		e(&body)
+	}
+	return submitAndAwaitOn(ctx, t, body, uas)
+}
+
 // WarmupPause is the duration we tell jambonz to pause right after it
 // answers the call, before any media-producing or DTMF-detecting verb
 // runs. Gives the harness time to:
