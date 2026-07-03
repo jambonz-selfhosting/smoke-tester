@@ -13,6 +13,8 @@ bin/
 !tests/verbs/testdata/listen/*.wav
 *.pcap
 .DS_Store
+# per-leg call recording archives (RECORD_LEGS, ADR-0016)
+recordings/
 coverage.out
 report.xml
 report.html

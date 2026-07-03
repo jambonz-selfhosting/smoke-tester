@@ -11,12 +11,31 @@
 
 ---
 
-## State as of 2026-06-30
+## State as of 2026-07-03
 
 > **Orientation:** for the harness ↔ jambonz component diagram + traffic
 > breakdown, see [docs/architecture/components.md](docs/architecture/components.md).
 
 ### Now (in progress)
+
+- **Per-leg call recording as playable WAV (2026-07-03,
+  [ADR-0016](docs/adr/0016-per-leg-call-recording.md)).** `RECORD_LEGS=true`
+  archives every recorded call leg as `recordings/<test-name>/<leg>.wav`
+  (8 kHz mono 16-bit; playable in Finder/browser) so a developer can hear
+  back each leg after a run. Off by default (release gate unaffected).
+  Zero per-test wiring: the owning test comes from `sip.Config.Owner`
+  (stamped once in `claimUAS` with `t.Name()`), the leg name from the
+  recording file's basename (`dial-caller.pcm` → `dial-caller.wav`).
+  Filenames are stable across runs — re-running a test overwrites that
+  test's own subfolder (wiped on the test's first archive of a run), so
+  disk stays bounded to the latest run. New: `internal/recording`
+  (archiver + unit tests), `sip.SetArchiveHook` (installed in verbs
+  TestMain when the flag is on; `internal/sip` imports neither config nor
+  recording). Also fixed a latent hole this surfaced: on **remote BYE**
+  nothing ever closed the recording file — `setState(StateEnded)` now
+  fires `go stopMedia()`, so recordings finalize on peer-initiated
+  teardown too. Relative `RECORD_DIR` is anchored at the repo root (found
+  via go.mod walk-up), since `go test` sets CWD to the package dir.
 
 - **`listen` verb `mark` feature green (2026-06-30): 2 tests.**
   `TestVerb_Listen_Mark_Playout` and `TestVerb_Listen_Mark_Cleared` in
@@ -287,6 +306,65 @@ None.
 ---
 
 ## Session log (reverse-chronological)
+
+### 2026-07-03 — Per-leg call recording as playable WAV (ADR-0016)
+
+**Scope:** user wants to *hear back* each leg of each call after a test
+run when developing/debugging, controlled by an env var, organised so
+the test + leg are obvious from the path. WAV over MP3 (already-decoded
+LPCM + 44-byte RIFF header = zero CPU, zero deps; MP3 needs an encoder
+for an irrelevant size win at 8 kHz mono).
+
+**Done:**
+- `RECORD_LEGS=true` (+ optional `RECORD_DIR`, default `recordings/`
+  at repo root) archives every recorded leg as
+  `recordings/<test-name>/<leg>.wav`. Off by default; release gate
+  unaffected. `.env.example` documents it; `recordings/` gitignored.
+- **Zero per-test wiring** (v1 used an explicit
+  `Call.SetArchiveMeta(test, role)` at all 13 StartRecording sites;
+  user pushed back — rightly — and it was replaced): test name inherits
+  from `sip.Config.Owner` (stamped once in each `claimUAS` with
+  `t.Name()`; every Call born on the per-test stack carries it), leg
+  name derives from the recording file's basename
+  (`dial-caller.pcm` → `dial-caller.wav`). Rejected alternatives are
+  ADR-0016 options A–E.
+- New `internal/recording` package (Archiver: stable paths, wipe test
+  dir on first archive of a run, collision suffixes, RIFF wrap;
+  5 unit tests). Wired via package-level `sip.SetArchiveHook` in verbs
+  TestMain — `internal/sip` imports neither config nor recording.
+- **Latent bug found & fixed:** on remote BYE nothing ever closed the
+  recording file (`stopMedia` was only called from `Hangup()`), so
+  recordings were never flushed/finalized for peer-ended calls.
+  `setState(StateEnded)` now fires `go stopMedia()`.
+- Relative `RECORD_DIR` anchored at repo root via go.mod walk-up
+  (`go test` sets CWD to the package dir — first e2e run scattered
+  recordings under `tests/verbs/`).
+
+**Verified:** unit tests green (`internal/recording`, `-race` incl.
+sip); e2e single tests archive on the remote-BYE path; full verbs suite
+with the flag produced 36 valid WAVs (`afinfo`: 8 kHz mono PCM) across
+say/play/dial/conference/enqueue/transfer/llm/listen/dub/dtmf/agent.
+Full-suite run had 11 agent-family failures — **exonerated**: identical
+subset passes with flag on (44s) and off (43s); failures are
+LLM-under-parallel-load flakiness on this wip branch (see below), not
+the recording change.
+
+**Watch out:** full `-parallel 8` suite currently flakes on agent-family
+tests (Deepseek/OpenAI latency + the new handoff/OpenAI tests on
+`feat/handoff-test-finalize`) — failures like "SendWAV invalid in state
+ended", greeting 0 PCM, action-hook deadline, and 480s on
+`sip:app-...` INVITEs. Pre-existing; investigate separately before
+using the full parallel run as a release gate.
+
+**Files:** new `internal/recording/{archive.go,archive_test.go}`,
+`docs/adr/0016-per-leg-call-recording.md`; modified
+`internal/config/config.go` (RecordLegs/RecordDir + findRepoRoot),
+`internal/sip/{call,uas,uac}.go` (Owner, ArchiveHook, finalize,
+stopMedia-on-ended), `tests/verbs/{helpers,verbsmain}_test.go`,
+`tests/drachtio/helpers_test.go` (Owner stamp), `.env.example`,
+`.gitignore`, `docs/adr/README.md`.
+
+---
 
 ### 2026-06-30 — `listen` verb `mark` feature (bidirectional playout sync)
 

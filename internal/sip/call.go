@@ -8,6 +8,7 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
 	"strings"
 	"sync"
 	"time"
@@ -59,17 +60,38 @@ type Call struct {
 	rmsIn         float64
 	rawPCMPath    string
 	dtmf          []DTMFEvent
+
+	// owner is the name of the test that owns this call (ADR-0016).
+	// Inherited from Stack.Config.Owner at construction — immutable, so
+	// reads need no lock. When the package-level ArchiveHook is installed,
+	// each finalized recording is archived under <owner>/<role>.wav where
+	// role is the recording file's basename.
+	owner string
 }
 
 type recordingSession struct {
-	file   *os.File
-	cancel context.CancelFunc
-	done   chan struct{}
+	file     *os.File
+	path     string
+	cancel   context.CancelFunc
+	done     chan struct{}
+	archived bool // guards double-archive across StopRecording + stopMedia
 }
+
+// ArchiveHook, when set, is invoked once per finalized recording with the
+// owning test's name, the leg's role (the recording file's basename, e.g.
+// "dial-caller"), and the path to the captured raw PCM. It is installed by
+// TestMain (see internal/recording) so the sip package needs no dependency
+// on config/recording. nil = no archiving (release-gate default).
+var ArchiveHook func(test, role, pcmPath string)
+
+// SetArchiveHook installs the per-leg recording archive hook. Pass nil to
+// disable. Not safe to call concurrently with active recordings — call once
+// in TestMain before any test runs.
+func SetArchiveHook(fn func(test, role, pcmPath string)) { ArchiveHook = fn }
 
 // --- construction (called by UAS/UAC internals) ---
 
-func newInboundCall(d *diago.DialogServerSession) *Call {
+func newInboundCall(d *diago.DialogServerSession, owner string) *Call {
 	c := &Call{
 		direction: Inbound,
 		created:   time.Now(),
@@ -77,6 +99,7 @@ func newInboundCall(d *diago.DialogServerSession) *Call {
 		state:     StateInit,
 		stateCh:   make(chan struct{}, 1),
 		doneCh:    make(chan struct{}),
+		owner:     owner,
 	}
 	c.recordReceived(newRequestMsg(MsgRecv, d.InviteRequest))
 	// Route in-dialog requests (BYE, INFO, re-INVITE, ...) back to this Call
@@ -90,7 +113,7 @@ func newInboundCall(d *diago.DialogServerSession) *Call {
 	return c
 }
 
-func newOutboundCall(d *diago.DialogClientSession) *Call {
+func newOutboundCall(d *diago.DialogClientSession, owner string) *Call {
 	c := &Call{
 		direction: Outbound,
 		created:   time.Now(),
@@ -98,6 +121,7 @@ func newOutboundCall(d *diago.DialogClientSession) *Call {
 		state:     StateInit,
 		stateCh:   make(chan struct{}, 1),
 		doneCh:    make(chan struct{}),
+		owner:     owner,
 	}
 	// Record the INVITE we sent.
 	if d.InviteRequest != nil {
@@ -132,6 +156,13 @@ func (c *Call) setState(s State, reason string) {
 	c.mu.Unlock()
 	if endedNow {
 		registry.unregister(c.CallID())
+		// Finalize media on remote-initiated teardown too (BYE from
+		// jambonz). Local Hangup() already ran stopMedia before signalling;
+		// this path covers calls the peer ends, where nothing else closes
+		// the recording file — without it the recording is never flushed/
+		// archived (ADR-0016). Async: setState runs on diago's dialog-state
+		// callback and stopMedia blocks until the audio pump drains.
+		go c.stopMedia()
 	}
 	// wake all WaitState watchers
 	for i := 0; i < 4; i++ {
@@ -708,7 +739,7 @@ func (c *Call) StartRecording(path string) error {
 	c.codec = props.Codec.Name
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sess := &recordingSession{file: f, cancel: cancel, done: make(chan struct{})}
+	sess := &recordingSession{file: f, path: path, cancel: cancel, done: make(chan struct{})}
 	c.recording = sess
 	c.rawPCMPath = path
 
@@ -728,6 +759,30 @@ func (c *Call) StopRecording() {
 	sess.cancel()
 	<-sess.done
 	_ = sess.file.Close()
+	c.finalizeRecording(sess)
+}
+
+// finalizeRecording archives the just-closed recording as WAV (ADR-0016),
+// exactly once per session. Identity needs no per-test wiring: the owning
+// test comes from the Stack the call was born on, and the role is the
+// recording file's basename (e.g. ".../dial-caller.pcm" → "dial-caller"),
+// which every recording site already names meaningfully. Must be called
+// only after sess.file is closed so the PCM is fully flushed to disk.
+func (c *Call) finalizeRecording(sess *recordingSession) {
+	if sess == nil || ArchiveHook == nil || c.owner == "" || sess.path == "" {
+		return
+	}
+	c.mediaMu.Lock()
+	if sess.archived {
+		c.mediaMu.Unlock()
+		return
+	}
+	sess.archived = true
+	c.mediaMu.Unlock()
+
+	role := filepath.Base(sess.path)
+	role = strings.TrimSuffix(role, filepath.Ext(role))
+	ArchiveHook(c.owner, role, sess.path)
 }
 
 func (c *Call) pumpAudio(ctx context.Context, r io.Reader, w io.Writer, done chan<- struct{}) {
@@ -1072,6 +1127,7 @@ func (c *Call) stopMedia() {
 		rec.cancel()
 		<-rec.done
 		_ = rec.file.Close()
+		c.finalizeRecording(rec)
 	}
 }
 

@@ -36,6 +36,7 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/config"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/contract"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/provision"
+	"github.com/jambonz-selfhosting/smoke-tester/internal/recording"
 	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
@@ -94,6 +95,17 @@ const wsSharedPathID = "shared"
 
 func TestMain(m *testing.M) {
 	cfg = config.MustLoad()
+
+	// Per-leg call recording (ADR-0016). When RECORD_LEGS is set, install an
+	// archiver so each recorded leg is also written as a playable WAV under
+	// <RECORD_DIR>/<test>/<leg>.wav. The test comes from the per-test stack's
+	// Owner (claimUAS) and the leg name from the recording file's basename —
+	// no per-test wiring. Off by default (nil hook = no-op).
+	if cfg.RecordLegs {
+		arch := recording.New(cfg.RecordDir)
+		jsip.SetArchiveHook(arch.Hook)
+		log.Printf("tests/verbs: RECORD_LEGS on — archiving call legs to %s/<test>/<leg>.wav", cfg.RecordDir)
+	}
 
 	schemasRoot, err := contract.ResolveSchemasRoot()
 	if err != nil {

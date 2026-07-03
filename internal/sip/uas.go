@@ -26,6 +26,13 @@ type Config struct {
 	Transport string // "tcp" (default) or "udp"
 	LogLevel  string // "info" | "debug"
 
+	// Owner names the test that owns this stack (t.Name()). Every *Call
+	// born on the stack — inbound via dispatch, outbound via Invite —
+	// inherits it, so per-leg recording archives (ADR-0016) know which
+	// test a recording belongs to without any per-test wiring. Empty is
+	// fine: archiving is skipped for ownerless calls.
+	Owner string
+
 	// Resolver, if non-nil, replaces the default *net.Resolver in sipgo's
 	// transport layer. Use this to make synthetic SIP realms (no real DNS)
 	// resolve to the cluster's SBC public IP. See
@@ -196,7 +203,7 @@ func (s *Stack) register() error {
 // dispatchInbound wraps each inbound dialog in a *Call and hands it to the
 // configured handler.
 func (s *Stack) dispatchInbound(d *diago.DialogServerSession) {
-	call := newInboundCall(d)
+	call := newInboundCall(d, s.cfg.Owner)
 	slog.Info("sip: inbound call",
 		"call_id", call.CallID(),
 		"from", call.From(),

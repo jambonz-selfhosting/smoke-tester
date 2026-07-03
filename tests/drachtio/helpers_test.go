@@ -30,6 +30,9 @@ func claimUAS(t *testing.T, ctx context.Context) *jsip.Stack {
 		Transport: "tcp",
 		LogLevel:  cfg.LogLevel,
 		Resolver:  sipResolver.Resolver(),
+		// Owner ties calls on this per-test stack to t for per-leg
+		// recording archives (RECORD_LEGS, ADR-0016).
+		Owner: t.Name(),
 	}, func(_ context.Context, call *jsip.Call) error {
 		// This suite never expects an inbound INVITE from jambonz — reject
 		// anything that lands here rather than leak the goroutine.

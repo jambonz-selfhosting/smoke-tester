@@ -99,6 +99,10 @@ func claimUAS(t *testing.T, ctx context.Context) *UAS {
 		Transport: "tcp",
 		LogLevel:  cfg.LogLevel,
 		Resolver:  sipResolver.Resolver(),
+		// Owner ties every call on this per-test stack to t, so per-leg
+		// recording archives (RECORD_LEGS, ADR-0016) land under
+		// recordings/<test>/<leg>.wav with zero per-test wiring.
+		Owner: t.Name(),
 	}, func(_ context.Context, call *jsip.Call) error {
 		// Best-effort handoff: if the test's select has already picked up
 		// or the test ended, drop the call rather than leak the goroutine.
