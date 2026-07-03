@@ -47,6 +47,13 @@ import (
 // and the ws client rejects the handshake.
 const jambonzWSSubprotocol = "ws.jambonz.org"
 
+// appWSWriteTimeout bounds a single ack write. Without it, a peer that stops
+// reading (jambonz crash, half-open TCP after a middlebox drop) fills the
+// kernel send buffer and conn.WriteMessage blocks forever — wedging the
+// per-connection goroutine so it never reaches defer conn.Close(). A short
+// deadline turns that into an error we log and move on from.
+const appWSWriteTimeout = 10 * time.Second
+
 // appWSUpgrader echoes the jambonz subprotocol.
 var appWSUpgrader = websocket.Upgrader{
 	ReadBufferSize:  4096,
@@ -241,6 +248,7 @@ func (s *Server) ackVerbs(conn *websocket.Conn, testID, msgid string, out HookOu
 		s.logger.Error("webhook: appWS marshal ack failed", "id", testID, "err", err)
 		return
 	}
+	_ = conn.SetWriteDeadline(time.Now().Add(appWSWriteTimeout))
 	if err := conn.WriteMessage(websocket.TextMessage, b); err != nil {
 		s.logger.Debug("webhook: appWS write ack failed", "id", testID, "err", err)
 	}
