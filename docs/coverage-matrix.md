@@ -111,7 +111,7 @@ Each row is: place a call that triggers the verb, assert webhook events + audio/
 | # | Verb | Hooks involved | Feature | Contract | Schema source | Notes |
 |---|---|---|---|---|---|---|
 | 4.1 | `transcribe` | `transcriptionHook` | ☑ | ☐ | local | Google STT; hook payload asserted via pinned Deepgram truth. |
-| 4.2 | `listen` | `actionHook`, WSS stream | ☑ | ☐ | local | WS endpoint in webhook.Server captures binary audio + opening metadata. |
+| 4.2 | `listen` | `actionHook`, WSS stream | ☑ | ☐ | local | WS endpoint in webhook.Server captures binary audio + opening metadata. `mark` feature covered (`TestVerb_Listen_Mark_{Playout,Cleared}`): bidirectional streaming audio (`bidirectionalAudio.streaming`) + `{type:mark}` command → asserts `{type:mark,event:playout}` returns once the marked audio reaches the caller (verified via caller-leg recording RMS) and `{type:mark,event:cleared}` returns when `killAudio` discards buffered audio. Protocol is mod_audio_fork-side (lws_glue.cpp), not feature-server JS. |
 | 4.3 | `conference` | `waitHook`, `enterHook` | ☑ | ☐ | local | Two legs join same room; speaker streams WAV, listener records through mix. |
 | 4.4 | `enqueue` | `waitHook`, `actionHook` | ☑ | ☐ | local | Paired with dequeue; audio passes through queue bridge. |
 | 4.5 | `dequeue` | `actionHook` | ☑ | ☐ | local | Dequeues waiting enqueuer, bridges + Deepgram-verified audio. |
@@ -138,6 +138,7 @@ Each row requires provider credentials; tests skip with a clear reason if absent
 | 5.2 | `lex` | AWS access key + secret | ☐ | ☐ | local | Lex V2 session; intents + transcription. |
 | 5.3 | `dialogflow` | Google service-account JSON | ☐ | ☐ | local | Welcome event; intent event; actionHook on end. |
 | 5.4 | `rasa` | Rasa server URL | ☐ | ☐ | local | REST channel; prompt played; user/bot messages. |
+| 5.5 | built-in `hangup` (agent + llm) | OPENAI_API_KEY (inline auth) + Deepgram (in-jambonz cred + caller-utterance TTS) | ☑ | ☑ | upstream | 2 tests (`builtin_hangup_test.go`). Sibling of built-in `handoff`. Verb carries a `hangup:{reason}` block → runtime injects a `hangup` tool. Agent (cascaded, forced first-turn call) + llm (OpenAI s2s, conversational "I'm done" trigger). Asserts the observable contract: server-initiated BYE (`EndReason=="remote-bye"`, test never calls Hangup), `X-Reason` header on the BYE carries the reason, and the verb actionHook reports `completion_reason=="hangup"`. |
 
 ---
 

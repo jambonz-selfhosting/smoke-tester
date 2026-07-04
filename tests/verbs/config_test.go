@@ -50,10 +50,15 @@ func TestVerb_Config_SessionSynthesizer(t *testing.T) {
 
 	_, sess := claimSession(t)
 
-	// Distinctive markers (alpha/bravo/charlie/delta) so the assertion
-	// fails if jambonz produced wrong audio while still passing on
-	// duration alone.
-	const phrase = "configuration applied alpha bravo charlie delta."
+	// A natural, keyword-rich sentence rather than the phonetic alphabet:
+	// under parallel load the recognizer mangled the NATO markers
+	// ("alpha"→"house of", "delta"→"dell"), failing a 3-of-4 marker
+	// assertion on otherwise-correct audio. Common words transcribe far
+	// more reliably at telephony quality, and a longer sentence survives
+	// prefix clipping — so the assertion still fails on wrong/empty audio
+	// but is robust to STT drift on any single word.
+	const phrase = "The session configuration was applied successfully and " +
+		"the system is now ready to process the incoming request."
 
 	s := Step(t, "script-config-say-hangup")
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
@@ -77,11 +82,16 @@ func TestVerb_Config_SessionSynthesizer(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "assert-config-say-output")
-	AssertAudioDuration(s, call, 1*time.Second, 8*time.Second, "config-say")
-	// At least 3 of 4 phonetic markers must land. Ignoring config and
+	// Upper bound covers the spoken markers (~4-5s) plus the ~1.5s
+	// streaming-TTS startup overhead (warmup pause + vendor dial) that
+	// AudioDuration counts as leading silence — see say_test.go for the
+	// sizing rationale. Guards against runaway playback, not exact length.
+	AssertAudioDuration(s, call, 1*time.Second, 12*time.Second, "config-say")
+	// At least 3 distinctive words must land. Ignoring config and
 	// producing NO audio fails on duration; producing wrong/empty
-	// content fails on markers; correct application passes.
+	// content fails here; correct application passes. Tolerant to STT
+	// drift on any single word under load.
 	AssertTranscriptHasMost(s, ctx, wav, 3,
-		"alpha", "bravo", "charlie", "delta")
+		"session", "configuration", "applied", "system", "ready", "process", "request")
 	s.Done()
 }

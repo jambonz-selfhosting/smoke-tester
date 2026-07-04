@@ -117,7 +117,7 @@ func (s *Stack) Invite(ctx context.Context, dest string, opts InviteOptions) (*C
 		}
 		return nil, fmt.Errorf("invite: %w", err)
 	}
-	call := newOutboundCall(dialog)
+	call := newOutboundCall(dialog, s.cfg.Owner)
 	// The dialog is already in the "answered" state after a blocking Invite.
 	call.setState(StateAnswered, "")
 	// Record the final 2xx response from the peer so tests can assert on

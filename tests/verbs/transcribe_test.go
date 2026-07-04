@@ -18,8 +18,19 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
+
+// transcribeText is the phrase the caller streams for the cluster's recognizer
+// to transcribe. The old fixture ("The sun is shining.") was only ~1.3s — under
+// parallel load the system-under-test STT routinely lost the prefix and
+// returned just "shining", failing a 2-of-4 word assertion on a noisy but
+// non-broken transcription. A longer, common-word sentence gives the recognizer
+// more material and survives prefix clipping, so the assertion still fails on a
+// missing/empty transcript but is robust to STT drift on individual words.
+const transcribeText = "The weather report says it will be sunny tomorrow " +
+	"with clear skies and a gentle breeze across the coastal region."
 
 // TestVerb_Transcribe_Basic — `transcribe` runs continuous STT and posts
 // each utterance to transcriptionHook.
@@ -34,6 +45,7 @@ import (
 //  7. post-speech-silence — trailing silence to trigger end-of-utterance
 //  8. collect-transcription-hook — drain per-test + anon sessions for transcript
 //  9. assert-transcript-sun-shining — transcript contains both words
+//
 // 10. hangup — best-effort tear-down
 //
 // Test     --POST /Calls-->                       Jambonz
@@ -85,13 +97,23 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "wait-for-recognizer")
-	// Same pattern as gather_speech — leading silence lets the recognizer
-	// arm before the WAV starts.
-	time.Sleep(RecognizerArmDelay)
+	// Leading silence lets the recognizer arm before the WAV starts. We use
+	// the LONG pad here (not the shared RecognizerArmDelay) because
+	// singleUtterance:true finalizes on the first end-of-speech: if the
+	// recognizer isn't fully armed when the first syllable arrives it drops
+	// "the sun is" and keeps only "shining".
+	time.Sleep(RecognizerArmDelayLong)
 	s.Done()
 
 	s = Step(t, "send-wav")
-	wavPath := resolveFixture(t, speechWAV)
+	// Synthesize a long, common-word sentence (cached under testdata/transcribe)
+	// rather than the short fixture — see transcribeText for why.
+	wavPath, err := tts.EnsureWAV(ctx, "testdata/transcribe", transcribeText, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
+	}
 	if err := call.SendWAV(wavPath); err != nil {
 		s.Fatalf("SendWAV: %v", err)
 	}
@@ -110,8 +132,15 @@ func TestVerb_Transcribe_Basic(t *testing.T) {
 	// routes them to the anon session). Same quirk we documented for
 	// other ancillary hooks.
 	deadline := time.Now().Add(30 * time.Second)
-	var transcript string
-Collect:
+	// Accumulate ALL transcription hooks, not just the first non-empty one.
+	// With singleUtterance:true the recognizer can finalize the clip in more
+	// than one utterance ("the sun is" then "shining"); grabbing only the
+	// first delivered final is a coin-flip on which segment we assert
+	// against. Concatenating every final transcript we see in the window
+	// reconstructs the full phrase regardless of segmentation. We keep
+	// collecting until we have all four content words or the window closes.
+	var parts []string
+	transcript := ""
 	for time.Now().Before(deadline) {
 		for _, sess := range sessionsToDrain(sess) {
 			if cb, err := tryPop(sess); err == nil {
@@ -119,11 +148,14 @@ Collect:
 					continue
 				}
 				s.Logf("action/transcription body: %s", string(cb.Body))
-				transcript = strings.ToLower(extractTranscript(cb))
-				if transcript != "" {
-					break Collect
+				if seg := strings.ToLower(extractTranscript(cb)); seg != "" {
+					parts = append(parts, seg)
+					transcript = strings.Join(parts, " ")
 				}
 			}
+		}
+		if transcript != "" && transcriptHits(transcript) >= 2 {
+			break
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
@@ -133,26 +165,39 @@ Collect:
 	if transcript == "" {
 		s.Fatalf("no transcript received within timeout")
 	}
-	// Cluster-side STT (the system under test, not Deepgram REST) on a
-	// 1.3s telephony-quality clip is noisy; it routinely mishears "the
-	// sun" as "is it" / "the sun is" / "sun is" depending on prosody.
-	// Require at least 2 of 4 content words — strong enough to fail a
-	// regression that returns no transcript or a wrong one entirely.
-	hits := 0
-	for _, want := range []string{"the", "sun", "is", "shining"} {
-		if strings.Contains(transcript, want) {
-			hits++
-		}
-	}
-	if hits < 2 {
-		s.Errorf("transcript %q matched only %d of [the,sun,is,shining]; want >= 2",
-			transcript, hits)
+	// Cluster-side STT (the system under test, not Deepgram REST) at
+	// telephony quality is noisy and drops/mishears individual words,
+	// especially under load. Require at least 2 distinctive content words —
+	// strong enough to fail a regression that returns no transcript or a
+	// wrong one entirely, robust to single-word drift.
+	if hits := transcriptHits(transcript); hits < 2 {
+		s.Errorf("transcript %q matched only %d of %v; want >= 2",
+			transcript, hits, transcribeWords)
 	}
 	s.Done()
 
 	s = Step(t, "hangup")
 	_ = call.Hangup()
 	s.Done()
+}
+
+// transcriptHits counts how many of the reference phrase's content words
+// appear in the (lower-cased) transcript. Shared by the collect loop's
+// early-exit and the final assertion so both use one definition of "good
+// enough".
+// transcribeWords are distinctive content words from transcribeText. We
+// require a couple to land — enough to fail an empty/wrong transcript while
+// tolerating cluster-side STT drift on any individual word under load.
+var transcribeWords = []string{"weather", "sunny", "tomorrow", "clear", "skies", "breeze", "coastal", "region"}
+
+func transcriptHits(transcript string) int {
+	hits := 0
+	for _, want := range transcribeWords {
+		if strings.Contains(transcript, want) {
+			hits++
+		}
+	}
+	return hits
 }
 
 // sessionsToDrain returns the per-test session plus the anon session if

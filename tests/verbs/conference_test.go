@@ -18,8 +18,19 @@ import (
 	"time"
 
 	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
+	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
+
+// confSpeechText is the phrase the speaker leg streams into the room. It is
+// deliberately long and keyword-rich: the short fixture WAV ("The sun is
+// shining.") gave the recognizer too little to work with once the conference
+// mixer + bridge latch clipped the leading words, so a marginal capture
+// transcribed to noise ("my name") and the single-keyword assertion failed.
+// A longer utterance survives prefix clipping — even if the first second is
+// lost, several distinctive keywords remain for STT to land.
+const confSpeechText = "The quick brown fox jumps over the lazy dog while the " +
+	"sun is shining brightly over the green valley and the river flows."
 
 // TestVerb_Conference_TwoParty — two legs join the same conference room.
 // One streams the reference WAV; the other records mixed audio from the
@@ -69,7 +80,14 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "resolve-fixture")
-	wavPath := resolveFixture(t, speechWAV)
+	// Synthesize a long, keyword-rich utterance (cached under testdata/conf)
+	// rather than the short fixture WAV — see confSpeechText for why.
+	wavPath, err := tts.EnsureWAV(ctx, "testdata/conf", confSpeechText, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
+	}
 	s.Done()
 
 	s = Step(t, "script-conference-both-legs")
@@ -188,7 +206,11 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "assert-conference-audio-transcript")
-	AssertTranscriptHasMost(s, ctx, res.wavPath, 1, "sun", "shining")
+	// At least 2 distinctive keywords from the long utterance must survive
+	// the mix → proves audio traversed the conference mixer. Tolerant to
+	// prefix clipping and STT drift on any single word.
+	AssertTranscriptHasMost(s, ctx, res.wavPath, 2,
+		"quick", "brown", "fox", "sun", "shining", "valley", "river")
 	s.Done()
 }
 

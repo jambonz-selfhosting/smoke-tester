@@ -1,6 +1,9 @@
 package sip
 
 import (
+	"fmt"
+	"strconv"
+	"strings"
 	"time"
 
 	"github.com/emiago/sipgo/sip"
@@ -78,6 +81,41 @@ func newResponseMsg(dir MessageDirection, res *sip.Response) Message {
 		m.Method = cs.MethodName.String() // method the response is for
 	}
 	return m
+}
+
+// Header does a case-insensitive lookup of m.Headers. Returns "" if the
+// header is absent. If multiple headers with different casing somehow ended
+// up as distinct keys, the first match encountered is returned.
+func (m Message) Header(name string) string {
+	for k, v := range m.Headers {
+		if strings.EqualFold(k, name) {
+			return v
+		}
+	}
+	return ""
+}
+
+// ParseSessionExpires parses an RFC 4028 Session-Expires header value, e.g.
+// "90" or "90;refresher=uas". Returns the delta-seconds and the lowercased
+// refresher param ("uac"/"uas"/"" if absent). Errors on a missing or
+// non-integer delta-seconds token.
+func ParseSessionExpires(v string) (delta int, refresher string, err error) {
+	parts := strings.Split(v, ";")
+	deltaStr := strings.TrimSpace(parts[0])
+	delta, err = strconv.Atoi(deltaStr)
+	if err != nil {
+		return 0, "", fmt.Errorf("ParseSessionExpires(%q): invalid delta-seconds: %w", v, err)
+	}
+	for _, p := range parts[1:] {
+		kv := strings.SplitN(p, "=", 2)
+		if len(kv) != 2 {
+			continue
+		}
+		if strings.EqualFold(strings.TrimSpace(kv[0]), "refresher") {
+			refresher = strings.ToLower(strings.TrimSpace(kv[1]))
+		}
+	}
+	return delta, refresher, nil
 }
 
 // headerSliceToMap flattens headers into a map; repeated headers concatenate.

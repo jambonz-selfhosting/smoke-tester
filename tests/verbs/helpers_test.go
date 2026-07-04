@@ -99,6 +99,10 @@ func claimUAS(t *testing.T, ctx context.Context) *UAS {
 		Transport: "tcp",
 		LogLevel:  cfg.LogLevel,
 		Resolver:  sipResolver.Resolver(),
+		// Owner ties every call on this per-test stack to t, so per-leg
+		// recording archives (RECORD_LEGS, ADR-0016) land under
+		// recordings/<test>/<leg>.wav with zero per-test wiring.
+		Owner: t.Name(),
 	}, func(_ context.Context, call *jsip.Call) error {
 		// Best-effort handoff: if the test's select has already picked up
 		// or the test ended, drop the call rather than leak the goroutine.
@@ -268,23 +272,8 @@ func statusCallbacks(t *testing.T, within time.Duration) []webhook.Callback {
 // the correlation rationale.
 func placeWebhookCallTo(ctx context.Context, t *testing.T, uas *UAS, session *webhook.Session, extras ...func(*provision.CallCreate)) *jsip.Call {
 	t.Helper()
-	requireWebhook(t)
-	body := provision.CallCreate{
-		ApplicationSID: webhookApp,
-		From:           "441514533212",
-		To: provision.CallTarget{
-			Type: "user",
-			Name: fmt.Sprintf("%s@%s", uas.Username, suite.SIPRealm),
-		},
-		Tag: map[string]any{
-			webhook.CorrelationKey: session.ID(),
-		},
-		TimeLimit: 30,
-	}
-	for _, e := range extras {
-		e(&body)
-	}
-	return submitAndAwaitOn(ctx, t, body, uas)
+	_, call := placeWebhookCallToWithSID(ctx, t, uas, session, extras...)
+	return call
 }
 
 // placeWebhookCallToNoWait is placeWebhookCallTo without the inbound-INVITE
@@ -320,15 +309,77 @@ func placeWebhookCallToNoWait(ctx context.Context, t *testing.T, uas *UAS, sessi
 // resulting INVITE. Common tail of placeCallTo + placeWebhookCallTo.
 func submitAndAwaitOn(ctx context.Context, t *testing.T, body provision.CallCreate, uas *UAS) *jsip.Call {
 	t.Helper()
+	_, call := submitAndAwaitOnWithSID(ctx, t, body, uas)
+	return call
+}
+
+// submitAndAwaitOnWithSID is submitAndAwaitOn but also returns the jambonz
+// call_sid — needed by Live Call Control tests that issue updateCall against
+// the in-progress call.
+func submitAndAwaitOnWithSID(ctx context.Context, t *testing.T, body provision.CallCreate, uas *UAS) (string, *jsip.Call) {
+	t.Helper()
 	sid := client.ManagedCall(t, ctx, body)
 	t.Logf("created call sid=%s -> sip:%s@%s", sid, uas.Username, suite.SIPRealm)
 	select {
 	case call := <-uas.Inbound:
-		return call
+		return sid, call
 	case <-ctx.Done():
 		helperFatalf(t, "await-inbound", "uas=%s: %v", uas.Username, ctx.Err())
-		return nil
+		return "", nil
 	}
+}
+
+// placeWebhookCallToWithSID is placeWebhookCallTo that also returns the jambonz
+// call_sid (for Live Call Control / updateCall tests).
+func placeWebhookCallToWithSID(ctx context.Context, t *testing.T, uas *UAS, session *webhook.Session, extras ...func(*provision.CallCreate)) (string, *jsip.Call) {
+	t.Helper()
+	requireWebhook(t)
+	body := provision.CallCreate{
+		ApplicationSID: webhookApp,
+		From:           "441514533212",
+		To: provision.CallTarget{
+			Type: "user",
+			Name: fmt.Sprintf("%s@%s", uas.Username, suite.SIPRealm),
+		},
+		Tag: map[string]any{
+			webhook.CorrelationKey: session.ID(),
+		},
+		TimeLimit: 30,
+	}
+	for _, e := range extras {
+		e(&body)
+	}
+	return submitAndAwaitOnWithSID(ctx, t, body, uas)
+}
+
+// placeWSCallTo (WS app) — POSTs /Calls with application_sid=wsApp targeting
+// uas. The wsApp's call_hook is a wss:// URL, so feature-server drives the
+// whole call over the jambonz WebSocket API (appIsUsingWebsockets == true),
+// which streaming-only verbs require. Verb scripts/assertions work exactly
+// like placeWebhookCallTo — set them via session.ScriptCallHook. Correlation
+// rides the same `tag` → x_test_id path the WS app handler resolves on.
+func placeWSCallTo(ctx context.Context, t *testing.T, uas *UAS, session *webhook.Session, extras ...func(*provision.CallCreate)) *jsip.Call {
+	t.Helper()
+	requireWebhook(t)
+	if wsApp == "" {
+		helperFatalf(t, "place-ws-call", "wsApp not provisioned")
+	}
+	body := provision.CallCreate{
+		ApplicationSID: wsApp,
+		From:           "441514533212",
+		To: provision.CallTarget{
+			Type: "user",
+			Name: fmt.Sprintf("%s@%s", uas.Username, suite.SIPRealm),
+		},
+		Tag: map[string]any{
+			webhook.CorrelationKey: session.ID(),
+		},
+		TimeLimit: 30,
+	}
+	for _, e := range extras {
+		e(&body)
+	}
+	return submitAndAwaitOn(ctx, t, body, uas)
 }
 
 // WarmupPause is the duration we tell jambonz to pause right after it
@@ -447,6 +498,15 @@ func SessionAckEmpty(sess *webhook.Session, verbs ...string) {
 // 700ms is the smallest pad that reliably captures the full phrase
 // while shaving ~800ms per arm site (used 11+ times across the suite).
 const RecognizerArmDelay = 700 * time.Millisecond
+
+// RecognizerArmDelayLong is a longer prime pad for verbs that finalize
+// aggressively. The `transcribe` verb with singleUtterance:true closes the
+// utterance on the first end-of-speech it detects, so a marginally-armed
+// recognizer drops everything but the trailing word ("the sun is shining"
+// -> "shining"). 700ms is enough for gather (which keeps listening); the
+// stricter single-utterance path needs the recognizer fully armed before
+// the first syllable. 1500ms captures the whole phrase reliably.
+const RecognizerArmDelayLong = 1500 * time.Millisecond
 
 // LLMReplyWindow is how long we wait after sending the user prompt for
 // the LLM round-trip + TTS streaming to complete and the recording to

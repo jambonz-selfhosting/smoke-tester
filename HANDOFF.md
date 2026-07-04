@@ -11,12 +11,59 @@
 
 ---
 
-## State as of 2026-05-01
+## State as of 2026-07-03
 
 > **Orientation:** for the harness ↔ jambonz component diagram + traffic
 > breakdown, see [docs/architecture/components.md](docs/architecture/components.md).
 
 ### Now (in progress)
+
+- **Per-leg call recording as playable WAV (2026-07-03,
+  [ADR-0016](docs/adr/0016-per-leg-call-recording.md)).** `RECORD_LEGS=true`
+  archives every recorded call leg as `recordings/<test-name>/<leg>.wav`
+  (8 kHz mono 16-bit; playable in Finder/browser) so a developer can hear
+  back each leg after a run. Off by default (release gate unaffected).
+  Zero per-test wiring: the owning test comes from `sip.Config.Owner`
+  (stamped once in `claimUAS` with `t.Name()`), the leg name from the
+  recording file's basename (`dial-caller.pcm` → `dial-caller.wav`).
+  Filenames are stable across runs — re-running a test overwrites that
+  test's own subfolder (wiped on the test's first archive of a run), so
+  disk stays bounded to the latest run. New: `internal/recording`
+  (archiver + unit tests), `sip.SetArchiveHook` (installed in verbs
+  TestMain when the flag is on; `internal/sip` imports neither config nor
+  recording). Also fixed a latent hole this surfaced: on **remote BYE**
+  nothing ever closed the recording file — `setState(StateEnded)` now
+  fires `go stopMedia()`, so recordings finalize on peer-initiated
+  teardown too. Relative `RECORD_DIR` is anchored at the repo root (found
+  via go.mod walk-up), since `go test` sets CWD to the package dir.
+
+- **`listen` verb `mark` feature green (2026-06-30): 2 tests.**
+  `TestVerb_Listen_Mark_Playout` and `TestVerb_Listen_Mark_Cleared` in
+  `tests/verbs/listen_mark_test.go`. The mark protocol is a
+  bidirectional-audio synchronization mechanism handled entirely in
+  **mod_audio_fork** (`lws_glue.cpp`), NOT feature-server JS — the JS
+  only handles non-streaming `playAudio`/`killAudio`; mark/playout/
+  cleared live in mod_audio_fork's *streaming* playout buffer path
+  (`bidirectionalAudio.streaming: true`). Flow: our WS server sends raw
+  linear16 PCM as **binary** frames → buffered in the playout buffer;
+  sends `{type:"mark",data:{name}}` → next binary frame inserts an
+  `AUDIO_MARKER` sentinel at the buffer tail; as the buffer drains to
+  the caller and hits the sentinel, mod_audio_fork sends
+  `{type:"mark",data:{name,event:"playout"}}` back. `killAudio`/
+  `clearMarks` discard buffered audio → pending marks return
+  `event:"cleared"`. The Playout test additionally records the caller
+  leg and asserts real audio (rms≈17700, 6.26s) reached the caller —
+  the mark fires because audio played, not by accident. The Cleared
+  test bursts a long (~12s) audio block unpaced so `killAudio` arrives
+  while the marked position is still deep in the undrained buffer.
+  New infra: `webhook.Session.WSConnected(ctx)` (block until jambonz
+  dials /ws/<id>), `webhook.Session.WaitWSMark(ctx, name)` +
+  `webhook.WSMark{Name,Event}`. Playback audio synthesized via
+  `tts.EnsureWAV` (Deepgram), raw PCM extracted by stripping the
+  44-byte RIFF header; fixtures cached under
+  `tests/verbs/testdata/listen/*.wav` (gitignore-allowlisted, same
+  policy as agent). Stable across 3 consecutive runs; no regression in
+  the listen/stream suite.
 
 - **Self-provisioning ephemeral suite accounts (2026-05-01).** TestMain
   no longer touches any pre-existing account on the cluster. It uses
@@ -260,6 +307,131 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-07-03 — Per-leg call recording as playable WAV (ADR-0016)
+
+**Scope:** user wants to *hear back* each leg of each call after a test
+run when developing/debugging, controlled by an env var, organised so
+the test + leg are obvious from the path. WAV over MP3 (already-decoded
+LPCM + 44-byte RIFF header = zero CPU, zero deps; MP3 needs an encoder
+for an irrelevant size win at 8 kHz mono).
+
+**Done:**
+- `RECORD_LEGS=true` (+ optional `RECORD_DIR`, default `recordings/`
+  at repo root) archives every recorded leg as
+  `recordings/<test-name>/<leg>.wav`. Off by default; release gate
+  unaffected. `.env.example` documents it; `recordings/` gitignored.
+- **Zero per-test wiring** (v1 used an explicit
+  `Call.SetArchiveMeta(test, role)` at all 13 StartRecording sites;
+  user pushed back — rightly — and it was replaced): test name inherits
+  from `sip.Config.Owner` (stamped once in each `claimUAS` with
+  `t.Name()`; every Call born on the per-test stack carries it), leg
+  name derives from the recording file's basename
+  (`dial-caller.pcm` → `dial-caller.wav`). Rejected alternatives are
+  ADR-0016 options A–E.
+- New `internal/recording` package (Archiver: stable paths, wipe test
+  dir on first archive of a run, collision suffixes, RIFF wrap;
+  5 unit tests). Wired via package-level `sip.SetArchiveHook` in verbs
+  TestMain — `internal/sip` imports neither config nor recording.
+- **Latent bug found & fixed:** on remote BYE nothing ever closed the
+  recording file (`stopMedia` was only called from `Hangup()`), so
+  recordings were never flushed/finalized for peer-ended calls.
+  `setState(StateEnded)` now fires `go stopMedia()`.
+- Relative `RECORD_DIR` anchored at repo root via go.mod walk-up
+  (`go test` sets CWD to the package dir — first e2e run scattered
+  recordings under `tests/verbs/`).
+
+**Verified:** unit tests green (`internal/recording`, `-race` incl.
+sip); e2e single tests archive on the remote-BYE path; full verbs suite
+with the flag produced 36 valid WAVs (`afinfo`: 8 kHz mono PCM) across
+say/play/dial/conference/enqueue/transfer/llm/listen/dub/dtmf/agent.
+Full-suite run had 11 agent-family failures — **exonerated**: identical
+subset passes with flag on (44s) and off (43s); failures are
+LLM-under-parallel-load flakiness on this wip branch (see below), not
+the recording change.
+
+**Watch out:** full `-parallel 8` suite currently flakes on agent-family
+tests (Deepseek/OpenAI latency + the new handoff/OpenAI tests on
+`feat/handoff-test-finalize`) — failures like "SendWAV invalid in state
+ended", greeting 0 PCM, action-hook deadline, and 480s on
+`sip:app-...` INVITEs. Pre-existing; investigate separately before
+using the full parallel run as a release gate.
+
+**Files:** new `internal/recording/{archive.go,archive_test.go}`,
+`docs/adr/0016-per-leg-call-recording.md`; modified
+`internal/config/config.go` (RecordLegs/RecordDir + findRepoRoot),
+`internal/sip/{call,uas,uac}.go` (Owner, ArchiveHook, finalize,
+stopMedia-on-ended), `tests/verbs/{helpers,verbsmain}_test.go`,
+`tests/drachtio/helpers_test.go` (Owner stamp), `.env.example`,
+`.gitignore`, `docs/adr/README.md`.
+
+---
+
+### 2026-06-30 — `listen` verb `mark` feature (bidirectional playout sync)
+
+**Scope:** implement tests for the `mark` feature of the `listen` verb
+(https://docs.jambonz.org/verbs/verbs/listen#mark).
+
+**Investigation:** the docs are thin; the authoritative protocol was
+read from `mod_audio_fork/lws_glue.cpp`. Key finding: `mark`/`clearMarks`
+and the `playout`/`cleared` events are **not** in feature-server JS at
+all (`listen.js` only wires `playAudio`/`killAudio`). They operate on
+mod_audio_fork's *streaming* playout buffer, which only exists when
+`bidirectionalAudio.streaming: true` and the WS server sends raw audio
+as **binary** frames (not the `playAudio` JSON-with-base64 path, which
+goes through `ep.play()` and bypasses the buffer/marks entirely).
+
+**Done — 2 tests (`tests/verbs/listen_mark_test.go`):**
+
+- **`TestVerb_Listen_Mark_Playout`** — listen with
+  `bidirectionalAudio{enabled,streaming,sampleRate:8000}`; after WS
+  connect, stream paced linear16 PCM binary frames, send
+  `{type:mark,name}`, flush a trailing burst. Asserts the returned
+  mark has `event:"playout"` AND the caller-leg recording is real
+  audio (rms≈17700, 6.26s) — proving the marked audio actually reached
+  the caller.
+- **`TestVerb_Listen_Mark_Cleared`** — bursts a long (~12s) audio block
+  unpaced, sends `{type:mark,name}` + one frame, then `{type:killAudio}`
+  immediately. Asserts the returned mark has `event:"cleared"`. The
+  burst keeps the marked position deep in the undrained buffer so the
+  kill wins the race; an early version that paced the stream got
+  `playout` because the audio drained before the kill arrived.
+
+**New infra:**
+- `webhook.Session.WSConnected(ctx)` — block until jambonz dials our
+  `/ws/<id>` (bidi sends race call setup otherwise).
+- `webhook.Session.WaitWSMark(ctx, name)` + `webhook.WSMark{Name,Event}`
+  + `parseMark` — drain text frames for a matching `{type:mark}`.
+- Test helpers `marksRawPCM` (EnsureWAV → strip 44-byte RIFF header),
+  `marksStreamPCM(sess, pcm, paced)`, `marksMarkMsg`,
+  `marksKillAudioMsg`, `marksAnswerRecord`.
+- Distinct playback text per test so `EnsureWAV` cache keys differ
+  (parallel tests sharing one cache file caused a 0-byte partial-read
+  race in the first run).
+- `.gitignore` allowlist `tests/verbs/testdata/listen/*.wav`.
+
+**Surprises:**
+- First run: the two tests shared `markPlayAudioText` → same EnsureWAV
+  cache path → parallel read-during-write yielded a 0-byte WAV. Fixed
+  by giving each test distinct text (distinct sha1 cache key).
+- First run cleared test got `playout` not `cleared`: paced streaming
+  let the marked audio drain to the caller before `killAudio` landed.
+  Fixed by bursting a long undrained block before the kill.
+- `clearMarks` and `killAudio` both produce `event:"cleared"`; this
+  test exercises the `killAudio` path (also clears the buffer).
+  `clearMarks` (no buffer flush) is left for a future depth pass.
+
+**Verified runs:** mark pair ~15s parallel, 3 consecutive green; full
+`TestVerb_(Listen|Stream)` suite ~15s green (no regression).
+
+**Files touched:**
+- new: `tests/verbs/listen_mark_test.go`,
+  `tests/verbs/testdata/listen/{d252370b21acbcb8,f5f010e7f47f7f40}.wav`
+- `internal/webhook/ws.go` — `WSConnected`, `WaitWSMark`, `WSMark`,
+  `parseMark`
+- `.gitignore`, `docs/coverage-matrix.md` (row 4.2)
+
+---
+
 ### 2026-05-01 — Self-provisioning ephemeral suite accounts + `dial` bridge fix + ergonomics overhaul
 
 **Scope:** the harness used to depend on a long-lived account-scope
@@ -447,10 +619,15 @@ verified by re-uploading recordings to Deepgram.
   there's inbound RTP. Krisp is internal to jambonz (mod_krisp) — no
   client-side handle — so the test scope is "did the verb run", not
   "did Krisp emit EOT".
-- **`TestVerb_Agent_NoiseIsolation/{krisp_shorthand,rnnoise_shorthand,krisp_object_form}`**
-  — three sub-tests covering shorthand strings + the
-  `{mode, level, direction}` object form. Same "param accepted, RTP
-  flowed" smoke level as Krisp.
+- **`TestVerb_Agent_NoiseIsolation`** — exercises the
+  `{mode, level, direction}` object form (the most expressive shape; if
+  it parses, the shorthand strings do too — same validator). Same
+  "param accepted, RTP flowed" smoke level as Krisp: noiseIsolation is
+  media-server-internal (FreeSWITCH mod_krisp; mediajam's own path) with
+  no client-side handle, so we don't assert the LLM echoed the prompt —
+  on a pass-through media server (no Krisp) that flakes under load
+  without signalling a defect. Runs on every cluster (no skip);
+  audio-path round-trip is covered by Agent_Echo.
 
 **Self-hosted architecture (no external deploy needed):**
 

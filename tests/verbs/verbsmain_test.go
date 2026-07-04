@@ -36,6 +36,7 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/config"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/contract"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/provision"
+	"github.com/jambonz-selfhosting/smoke-tester/internal/recording"
 	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
@@ -62,6 +63,14 @@ var (
 	// Default TTS voice when speaking through Deepgram.
 	deepgramVoice = "aura-asteria-en"
 
+	// Murf TTS speech credential provisioned at TestMain IF MURF_API_KEY is
+	// set (optional vendor). When unset, murfLabel stays "" and the Murf say
+	// test skips (passes) with a credential-missing log.
+	murfLabel string
+	murfSID   string
+	// Default Murf voice (verified live against api.murf.ai/v1/speech/voices).
+	murfVoice = "en-US-alina"
+
 	// Webhook server + ngrok tunnel + Application bound to the suite
 	// account. The webhook always runs (NGROK_AUTHTOKEN is mandatory in
 	// the new model).
@@ -70,10 +79,33 @@ var (
 	webhookTun *webhook.Tunnel
 	webhookApp string // application_sid of the webhook-bound Application
 	webhookOn  bool
+
+	// wsApp is a second Application whose call_hook is a wss:// URL pointing
+	// at the webhook server's /appws/ endpoint. Calls placed against it run
+	// the whole verb script over the jambonz WebSocket API, which turns on
+	// feature-server's appIsUsingWebsockets — required by streaming-only
+	// verbs (e.g. `say` with stream:true). Provisioned at TestMain.
+	wsApp string
 )
+
+// wsSharedPathID mirrors webhook.wsSharedPathID — the sentinel path segment
+// of the shared WS Application's call_hook. The real test is resolved from
+// the frame's x_test_id (the POST /Calls tag).
+const wsSharedPathID = "shared"
 
 func TestMain(m *testing.M) {
 	cfg = config.MustLoad()
+
+	// Per-leg call recording (ADR-0016). When RECORD_LEGS is set, install an
+	// archiver so each recorded leg is also written as a playable WAV under
+	// <RECORD_DIR>/<test>/<leg>.wav. The test comes from the per-test stack's
+	// Owner (claimUAS) and the leg name from the recording file's basename —
+	// no per-test wiring. Off by default (nil hook = no-op).
+	if cfg.RecordLegs {
+		arch := recording.New(cfg.RecordDir)
+		jsip.SetArchiveHook(arch.Hook)
+		log.Printf("tests/verbs: RECORD_LEGS on — archiving call legs to %s/<test>/<leg>.wav", cfg.RecordDir)
+	}
 
 	schemasRoot, err := contract.ResolveSchemasRoot()
 	if err != nil {
@@ -124,13 +156,24 @@ func TestMain(m *testing.M) {
 	log.Printf("tests/verbs: Deepgram credential label=%s sid=%s",
 		deepgramLabel, deepgramSID)
 
+	// 3b. Murf TTS speech credential — optional. Only provisioned when
+	// MURF_API_KEY is set; otherwise the Murf say test skips with a log.
+	if cfg.HasMurf() {
+		if err := provisionMurfCredential(); err != nil {
+			log.Fatalf("tests/verbs: Murf credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: Murf credential label=%s sid=%s", murfLabel, murfSID)
+	} else {
+		log.Printf("tests/verbs: MURF_API_KEY not set — Murf say test will skip")
+	}
+
 	// 4. Webhook server + ngrok tunnel + Application bound to the suite.
 	if err := setupWebhook(v); err != nil {
 		log.Fatalf("tests/verbs: webhook setup failed: %v", err)
 	}
 	webhookOn = true
-	log.Printf("tests/verbs: webhook ready app_sid=%s tunnel=%s",
-		webhookApp, webhookTun.URL())
+	log.Printf("tests/verbs: webhook ready app_sid=%s ws_app_sid=%s tunnel=%s",
+		webhookApp, wsApp, webhookTun.URL())
 
 	// Heartbeat (see helpers_test.go for full rationale).
 	stopHeartbeat := StartHeartbeat(5 * time.Second)
@@ -145,6 +188,7 @@ func TestMain(m *testing.M) {
 	// cascade doesn't have to fight FK constraints.
 	teardownWebhook()
 	teardownDeepgramCredential()
+	teardownMurfCredential()
 	if sipResolver != nil {
 		_ = sipResolver.Close()
 	}
@@ -187,6 +231,38 @@ func teardownDeepgramCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, deepgramSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete Deepgram credential %s: %v", deepgramSID, err)
+	}
+}
+
+// provisionMurfCredential creates a Murf TTS speech credential under the
+// suite account, labelled `it-murf-<runID>`. TTS-only (Murf is a synthesis
+// vendor). Called only when MURF_API_KEY is set.
+func provisionMurfCredential() error {
+	murfLabel = "it-murf-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "murf",
+		Label:     murfLabel,
+		APIKey:    cfg.MurfAPIKey,
+		UseForTTS: true,
+		UseForSTT: false,
+	})
+	if err != nil {
+		return err
+	}
+	murfSID = sid
+	return nil
+}
+
+func teardownMurfCredential() {
+	if murfSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, murfSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete Murf credential %s: %v", murfSID, err)
 	}
 }
 
@@ -240,10 +316,51 @@ func setupWebhook(v *contract.Validator) error {
 		return fmt.Errorf("provision webhook app: %w", err)
 	}
 	webhookApp = sid
+
+	// Second Application driven over the jambonz WebSocket API. Its
+	// call_hook is a wss:// URL (method WS); feature-server builds a
+	// WsRequestor for it and fetches the verb script over the socket, which
+	// is what streaming-only verbs (say stream:true) require. The path
+	// carries the shared sentinel id; the real test is resolved from the
+	// per-call x_test_id tag inside session:new.
+	wsHookURL := wssURL(tun.URL(), "/appws/"+wsSharedPathID)
+	wsSID, err := client.CreateApplication(ctx, provision.ApplicationCreate{
+		Name:       provision.Name("ws-app"),
+		AccountSID: suite.AccountSID,
+		// No Method: the DB's webhook.method column only accepts GET/POST.
+		// feature-server keys WS off the URL scheme (lib/middleware.js:
+		// url.startsWith('wss://')), so a wss:// call_hook alone builds a
+		// WsRequestor and sets appIsUsingWebsockets.
+		CallHook: provision.Webhook{
+			URL: wsHookURL,
+		},
+		// call_status over WS rides the same socket; give a status hook
+		// anyway so the Application validates identically to the HTTP one.
+		CallStatusHook: provision.Webhook{
+			URL:    tun.URL() + "/status",
+			Method: "POST",
+		},
+		SpeechSynthesisVendor:    "deepgram",
+		SpeechSynthesisLabel:     deepgramLabel,
+		SpeechSynthesisVoice:     deepgramVoice,
+		SpeechRecognizerVendor:   "deepgram",
+		SpeechRecognizerLabel:    deepgramLabel,
+		SpeechRecognizerLanguage: "en-US",
+	})
+	if err != nil {
+		_ = tun.Close()
+		return fmt.Errorf("provision ws app: %w", err)
+	}
+	wsApp = wsSID
 	return nil
 }
 
 func teardownWebhook() {
+	if wsApp != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		_ = client.DeleteApplication(ctx, wsApp)
+	}
 	if webhookApp != "" {
 		ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()

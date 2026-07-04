@@ -21,23 +21,41 @@ import (
 	"time"
 
 	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
+	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
 // handoffForcePrompt makes the model call the injected transfer_to_human tool
-// on its very first turn, with no speech. Determinism strategy for a live LLM:
-// be explicit and tool-first. brief:"none" means the tool takes no required
-// args, so the model only has to emit the call.
+// on its very first turn, with no speech. Used by the cascaded agent verb
+// (chat-completions), which honors a forced first-turn tool call reliably.
 const handoffForcePrompt = "You are a call-routing assistant. On your very first turn, " +
 	"before saying anything else, immediately call the transfer_to_human function to hand the " +
 	"caller to a human agent. Do not greet the caller. Do not speak. Call the tool first."
 
-// answerAndIdleTarget is the target/human UAS goroutine for the handoff dial
-// bridge: answer the inbound INVITE, send silence, then wait for the leg to end
-// (jambonz BYEs it when the parent call ends) or ctx to expire. Its only job is
-// to ANSWER (100/180/200) so the dial bridges and the handoff resolves bridged.
-// It publishes the received Call via *out so the main goroutine can assert the
-// SIP wire after the leg ends (Call must not be copied — it holds a mutex).
+// handoffRealtimePrompt is for the realtime (s2s) llm verb. Per the canonical
+// jambonz openai-s2s example, the realtime model is driven conversationally:
+// it greets, the caller speaks, and the model calls the tool IN RESPONSE to the
+// caller — its natural, reliable mode. (Forcing a cold first-turn tool call with
+// no audio makes gpt-realtime emit the args as text, not a function_call.)
+const handoffRealtimePrompt = "You are a call-routing assistant for a support line. " +
+	"When the caller asks to speak to a human, a person, or an agent — or says they want a " +
+	"transfer — immediately call the transfer_to_human function. Keep spoken replies very short."
+
+// handoffCallerUtterance is the caller speech that should trigger the realtime
+// model to call transfer_to_human. Synthesized to a WAV via Deepgram TTS.
+const handoffCallerUtterance = "I need to speak to a human agent please, can you transfer me to a person."
+
+// targetHoldAfterAnswer is how long the target/human leg stays up after
+// answering before it hangs up. The bridged dial holds the agent verb alive
+// until the bridge tears down, so the agent's actionHook (completion_reason=
+// "transferred") only fires once this leg ends. A short hold proves the bridge
+// formed without serializing the whole test behind the 90s call timeLimit.
+const targetHoldAfterAnswer = 4 * time.Second
+
+// answerAndIdleTarget answers the bridged target INVITE (100/180/200), sends
+// silence to prove media flows, briefly holds, then hangs up to release the
+// bridge so the agent/llm verb completes and fires its actionHook. Publishes
+// the Call via *out for the main goroutine (Call holds a mutex — pointer, no copy).
 func answerAndIdleTarget(t *testing.T, ctx context.Context, targetUAS *UAS, done chan<- struct{}, out **jsip.Call) func() {
 	return func() {
 		defer close(done)
@@ -63,40 +81,53 @@ func answerAndIdleTarget(t *testing.T, ctx context.Context, targetUAS *UAS, done
 				GoroutineFailf(t, "target:silence", "SendSilence: %v", err)
 				return
 			}
+			// Hold briefly to prove the bridge, then hang up to release it so
+			// the agent/llm verb completes and fires its actionHook.
 			select {
+			case <-time.After(targetHoldAfterAnswer):
+				t.Logf("[target] hanging up to release bridge")
+				if err := c.Hangup(); err != nil {
+					t.Logf("[target] hangup: %v", err)
+				}
 			case <-c.Done():
 				t.Logf("[target] leg ended")
 			case <-ctx.Done():
 				t.Logf("[target] ctx done")
 			}
 		case <-ctx.Done():
-			GoroutineFailf(t, "target", "never received INVITE: %v", ctx.Err())
+			// Only a genuine timeout is a failure. context.Canceled means the
+			// main goroutine already returned (e.g. an earlier step failed and
+			// the test is tearing down) — logging via t.Errorf then would panic
+			// ("Log after test completed"), so exit quietly.
+			if ctx.Err() == context.DeadlineExceeded {
+				GoroutineFailf(t, "target", "never received INVITE: %v", ctx.Err())
+			}
 		}
 	}
 }
 
-// TestVerb_LLM_OpenAI_Handoff — Layer-1 handoff on the `llm` verb, OpenAI vendor.
-// The model is prompted to call transfer_to_human on its first turn; jambonz
-// dials + bridges the target UAS, the handoff resolves "bridged", and the llm
-// verb's actionHook reports completion_reason=="transferred".
+// TestVerb_LLM_OpenAI_Handoff — Layer-1 handoff on the `llm` verb, OpenAI vendor
+// (s2s realtime / gpt-realtime). Driven CONVERSATIONALLY, matching the canonical
+// jambonz openai-s2s example: response_create greets, tool_choice is "auto", and
+// the model calls transfer_to_human IN RESPONSE to the caller asking for a human.
 //
-// Steps:
-//  1. preflight-skips             — skip unless OPENAI_API_KEY set
-//  2. script-llm-openai-handoff   — [llm openai + handoff(dial,target), hangup] + empty action ack
-//  3. spawn-target-goroutine      — async: target answers (100/180/200) so the bridge forms
-//  4. place-caller                — POST /Calls, answer caller, send silence
-//  5. wait-target-done            — target leg ended
-//  6. assert-target-answered      — target received INVITE, sent 100/180/200 (bridge formed)
-//  7. wait-action-llm-callback    — block on /action/llm
-//  8. assert-completion-transferred — completion_reason=="transferred"
+// Why conversational, not a forced first-turn call: gpt-realtime, when forced
+// (tool_choice:{type:function,...}) to call a tool cold on turn 1 with no audio
+// and a "don't speak" prompt, returns the tool ARGUMENTS as a text message
+// (response.output_text) instead of a function_call output item — so jambonz
+// never sees a tool call. Given real caller audio it emits a proper function_call
+// reliably. This mirrors the example, which only calls get_weather after the
+// caller asks; it never forces a tool call.
 func TestVerb_LLM_OpenAI_Handoff(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
 
 	s := Step(t, "preflight-skips")
-	if !cfg.HasOpenAI() {
+	// Needs OpenAI (the realtime LLM) + Deepgram (to synthesize the caller's
+	// spoken request — the realtime model needs real audio to call the tool).
+	if !cfg.HasOpenAI() || !cfg.HasDeepgram() {
 		s.Done()
-		t.Skip("llm OpenAI handoff test needs OPENAI_API_KEY (passed inline as llm.auth.apiKey)")
+		t.Skip("llm OpenAI handoff test needs OPENAI_API_KEY (llm.auth) + DEEPGRAM_API_KEY (caller TTS)")
 	}
 	s.Done()
 
@@ -104,29 +135,33 @@ func TestVerb_LLM_OpenAI_Handoff(t *testing.T) {
 	callerUAS, targetUAS := claimUAS2(t, ctx)
 	_, sess := claimSession(t)
 
+	s = Step(t, "ensure-caller-wav")
+	callerWAV, err := tts.EnsureWAV(ctx, "testdata/handoff", handoffCallerUtterance, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV caller utterance: %v", err)
+	}
+	s.Logf("caller utterance wav: %s", callerWAV)
+	s.Done()
+
 	s = Step(t, "script-llm-openai-handoff")
 	target := fmt.Sprintf("%s@%s", targetUAS.Username, suite.SIPRealm)
-	// response_create is required by openai_s2s; session_update must exist for
-	// the handoff tool to be injected into the realtime session's tool list.
+	// Matches the openai-s2s example shape: response_create greets (speaks),
+	// session_update carries instructions + tools; the handoff tool is injected
+	// by the feature-server. tool_choice defaults to "auto" — we do NOT force it,
+	// so the realtime model emits a real function_call when the caller asks.
 	llmVerb := V("llm",
 		"vendor", "openai",
 		"auth", map[string]any{"apiKey": cfg.OpenAIAPIKey},
 		"actionHook", SessionURL(sess, "llm"),
 		"llmOptions", map[string]any{
-			// session_update is applied BEFORE the initial response.create (verb
-			// orders them session→response), so tool_choice here forces the model
-			// to emit the transfer_to_human function call on its first turn rather
-			// than an empty text response (observed live with tool_choice:auto).
 			"response_create": map[string]any{
-				"instructions": handoffForcePrompt,
+				"instructions": "Greet the caller in one short sentence and ask how you can help.",
 			},
 			"session_update": map[string]any{
 				"type":         "realtime",
-				"instructions": handoffForcePrompt,
-				"tool_choice": map[string]any{
-					"type": "function",
-					"name": "transfer_to_human",
-				},
+				"instructions": handoffRealtimePrompt,
 			},
 		},
 		"handoff", map[string]any{
@@ -154,9 +189,22 @@ func TestVerb_LLM_OpenAI_Handoff(t *testing.T) {
 
 	s = Step(t, "place-caller")
 	call := placeWebhookCallTo(ctx, t, callerUAS, sess, withTimeLimit(90))
-	// No caller audio needed: the forced prompt makes the model call the tool on
-	// its first turn. Answer + send silence; jambonz ends the leg on bridge.
-	_ = AnswerRecordAndWaitEnded(s, ctx, call, WithSilence())
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	// Let the realtime session connect and the model deliver its greeting, then
+	// speak the request. Trailing silence lets server-VAD detect end-of-utterance
+	// so the model takes its turn and calls transfer_to_human.
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (pre): %v", err)
+	}
+	WaitFor(t, "let-model-greet", RecognizerArmDelay)
+	if err := call.SendWAV(callerWAV); err != nil {
+		s.Fatalf("SendWAV caller utterance: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
 	s.Done()
 
 	s = Step(t, "wait-target-done")
@@ -199,16 +247,6 @@ func TestVerb_LLM_OpenAI_Handoff(t *testing.T) {
 // to act on turn 1; the force prompt makes it call transfer_to_human; jambonz
 // dials + bridges the target, and the agent actionHook reports
 // completion_reason=="transferred".
-//
-// Steps:
-//  1. preflight-skips                — skip unless OPENAI_API_KEY + DEEPGRAM (+ label) present
-//  2. script-agent-openai-handoff    — [agent(deepgram stt/tts, openai llm) + handoff(dial,target), hangup] + acks
-//  3. spawn-target-goroutine         — async: target answers so the bridge forms
-//  4. place-caller                   — POST /Calls, answer caller, send silence
-//  5. wait-target-done               — target leg ended
-//  6. assert-target-answered         — target received INVITE, 100/180/200
-//  7. wait-action-agent-callback     — block on /action/agent-complete
-//  8. assert-completion-transferred  — completion_reason=="transferred"
 func TestVerb_Agent_OpenAI_Handoff(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)

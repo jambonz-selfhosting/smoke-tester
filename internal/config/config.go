@@ -66,6 +66,12 @@ type Settings struct {
 	// runs without it.
 	OpenAIAPIKey string
 
+	// Optional — Murf.ai TTS API key. When set, TestMain provisions a Murf
+	// SpeechCredential under the ephemeral account and the Murf say test
+	// exercises it. When unset the Murf test skips (passes) with a
+	// credential-missing log — see HasMurf.
+	MurfAPIKey string
+
 	// Required — ngrok auth token. Phase-2 verb tests + Phase-1 status
 	// callbacks both need a public URL forwarded to the local webhook
 	// server. The whole verb suite gates on this.
@@ -80,6 +86,13 @@ type Settings struct {
 	LogLevel       string // "info" | "debug"
 	OrphanTTL      time.Duration
 	ContractStrict bool // ADR-0015: schema violations fail tests
+
+	// Per-leg call recording (ADR-0016). When RecordLegs is true, every
+	// recorded call leg is additionally archived as a playable WAV under
+	// RecordDir/<test-name>/<role>.wav so a developer can hear each leg
+	// after a run. Off by default (release-gate posture, ADR-0010).
+	RecordLegs bool
+	RecordDir  string // base dir for WAV archives; default "./recordings"
 }
 
 // HasDeepgram reports whether Deepgram-backed flows can run. With the
@@ -92,6 +105,10 @@ func (s *Settings) HasDeepgram() bool { return s.DeepgramAPIKey != "" }
 func (s *Settings) HasDeepseek() bool { return s.DeepseekAPIKey != "" }
 
 func (s *Settings) HasOpenAI() bool { return s.OpenAIAPIKey != "" }
+
+// HasMurf reports whether the Murf.ai TTS say test can run. Optional: when
+// the key is unset the test skips (passes) with a credential-missing log.
+func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 
 var (
 	loadOnce sync.Once
@@ -150,6 +167,7 @@ func parse() (*Settings, error) {
 		DeepgramAPIKey: os.Getenv("DEEPGRAM_API_KEY"),
 		DeepseekAPIKey: os.Getenv("DEEPSEEK_API_KEY"),
 		OpenAIAPIKey:   os.Getenv("OPENAI_API_KEY"),
+		MurfAPIKey:     os.Getenv("MURF_API_KEY"),
 		NgrokAuthToken: os.Getenv("NGROK_AUTHTOKEN"),
 		NgrokDomain:    os.Getenv("NGROK_DOMAIN"),
 		RunID:          os.Getenv("RUN_ID"),
@@ -218,7 +236,52 @@ func parse() (*Settings, error) {
 		s.ContractStrict = b
 	}
 
+	// per-leg recording (ADR-0016): off by default
+	if v := os.Getenv("RECORD_LEGS"); v != "" {
+		switch strings.ToLower(strings.TrimSpace(v)) {
+		case "on", "yes":
+			s.RecordLegs = true
+		case "off", "no":
+			s.RecordLegs = false
+		default:
+			b, err := strconv.ParseBool(v)
+			if err != nil {
+				return nil, fmt.Errorf("RECORD_LEGS must be true/false (or 1/0, on/off, yes/no): %w", err)
+			}
+			s.RecordLegs = b
+		}
+	}
+	// A relative RECORD_DIR is anchored at the repo root, not the CWD: `go
+	// test` runs each test binary with CWD = the package dir (tests/verbs),
+	// which would scatter recordings/ trees across packages.
+	s.RecordDir = firstNonEmpty(os.Getenv("RECORD_DIR"), "recordings")
+	if !filepath.IsAbs(s.RecordDir) {
+		if root, ok := findRepoRoot(); ok {
+			s.RecordDir = filepath.Join(root, s.RecordDir)
+		}
+	}
+
 	return s, nil
+}
+
+// findRepoRoot walks up from CWD looking for go.mod — the module root. Same
+// walk as findDotEnv, but keyed on a file that always exists in a checkout
+// (a .env may be absent when config comes from process env alone).
+func findRepoRoot() (string, bool) {
+	dir, err := os.Getwd()
+	if err != nil {
+		return "", false
+	}
+	for {
+		if fi, err := os.Stat(filepath.Join(dir, "go.mod")); err == nil && !fi.IsDir() {
+			return dir, true
+		}
+		parent := filepath.Dir(dir)
+		if parent == dir {
+			return "", false
+		}
+		dir = parent
+	}
 }
 
 // loadDotEnv reads KEY=VALUE lines from path into os env, without overriding

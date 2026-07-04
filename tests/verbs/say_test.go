@@ -6,6 +6,18 @@
 //
 // earlyMedia coverage is deferred — needs diago media-session init plumbing
 // we don't yet expose.
+//
+// maxDur sizing: AudioDuration() counts every inbound RTP sample from answer
+// to BYE — including the silence the media server sends before speech starts.
+// With WithWarmup the script is [answer, pause 1s, say], and a streaming-TTS
+// media server then spends ~0.5s dialing the vendor before first audio, so
+// every recording carries ~1.5s of leading silence on top of the spoken
+// length (measured on the mediajam cluster: dial ~510ms, vendor ttfb ~190ms,
+// + the deliberate 1s warmup pause). The upper bounds below are therefore the
+// spoken length plus generous headroom for that fixed startup overhead and
+// per-run jitter — they exist to catch runaway/looping playback, not to pin
+// exact duration. Lower bounds + transcript assertions are the real content
+// guards.
 package verbs
 
 import (
@@ -13,6 +25,7 @@ import (
 	"time"
 
 	"github.com/jambonz-selfhosting/smoke-tester/internal/provision"
+	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
 // TestVerb_Say_Basic — plain text utterance. Transcript should echo the text.
@@ -22,7 +35,8 @@ func TestVerb_Say_Basic(t *testing.T) {
 		ctxTimeout: 30 * time.Second,
 		tag:        "say-basic",
 		minDur:     1 * time.Second,
-		maxDur:     6 * time.Second,
+		// ~2s spoken + ~1.5s startup overhead; 9s leaves headroom for jitter.
+		maxDur: 9 * time.Second,
 		verb:      V("say", "text", "Hello from jambonz integration tests."),
 		wantWords: []string{"hello", "jambonz", "integration"},
 	})
@@ -40,9 +54,10 @@ func TestVerb_Say_SSML(t *testing.T) {
 		ctxTimeout: 30 * time.Second,
 		tag:        "say-ssml",
 		// "Hello" + 500ms break + "world" → observed ~900ms on this cluster;
-		// TTS voices compress short utterances.
-		minDur:    500 * time.Millisecond,
-		maxDur:    6 * time.Second,
+		// TTS voices compress short utterances. Upper bound covers the ~1.5s
+		// streaming-TTS startup overhead on top of the short utterance.
+		minDur: 500 * time.Millisecond,
+		maxDur: 9 * time.Second,
 		verb:      V("say", "text", "<speak>Hello <break time='500ms'/> world.</speak>"),
 		wantWords: []string{"hello", "world"},
 		// We asked for 500ms of silence in the middle. TTS engines often
@@ -93,7 +108,8 @@ func TestVerb_Say_ArrayRandom(t *testing.T) {
 		ctxTimeout: 45 * time.Second,
 		tag:        "say-array",
 		minDur:     1 * time.Second,
-		maxDur:     12 * time.Second,
+		// Three concatenated phrases (~10s spoken) + ~1.5s startup overhead.
+		maxDur: 16 * time.Second,
 		verb: V("say", "text", []any{
 			"Number one apple.",
 			"Number two banana.",
@@ -117,9 +133,9 @@ func TestVerb_Say_Loop2(t *testing.T) {
 		ctxTimeout: 45 * time.Second,
 		tag:        "say-loop2",
 		// "one two three" ≈ 1s → loop=2 ≈ 2s + gap. Wide window for codec +
-		// network variance.
+		// network variance, plus ~1.5s streaming-TTS startup overhead.
 		minDur: 1500 * time.Millisecond,
-		maxDur: 8 * time.Second,
+		maxDur: 11 * time.Second,
 		verb:   V("say", "text", "one two three.", "loop", 2),
 		// Asserting the second pass's phrase is distinctive enough; if the
 		// loop didn't run twice, we'd only see one copy and miss this.
@@ -136,7 +152,8 @@ func TestVerb_Say_SynthesizerOverride(t *testing.T) {
 		ctxTimeout: 30 * time.Second,
 		tag:        "say-override",
 		minDur:     1 * time.Second,
-		maxDur:     5 * time.Second,
+		// ~1.5s spoken + ~1.5s startup overhead; 8s leaves headroom.
+		maxDur: 8 * time.Second,
 		verb: V("say", "text", "Override voice test.",
 			"synthesizer", map[string]any{
 				"vendor":   "deepgram",
@@ -145,6 +162,135 @@ func TestVerb_Say_SynthesizerOverride(t *testing.T) {
 				"language": "en-US",
 			}),
 		wantWords: []string{"override voice test"},
+	})
+}
+
+// TestVerb_Say_Stream — `say` with `stream: true` (incremental streaming
+// TTS). feature-server rejects streaming say unless the application runs
+// over the jambonz WebSocket API (lib/tasks/say.js: "streaming say verb
+// requires applications to use the websocket API"), so this test drives the
+// call through the WS app (placeWSCallTo → wsApp with a wss:// call_hook)
+// rather than the HTTP paths the other say tests use.
+//
+// The suite's Deepgram credential supports streaming synthesis. Content
+// verification is the guard: the streamed audio must transcribe to the
+// spoken text, proving the streaming path produced real speech (a broken
+// stream yields silence / empty transcript — the failure mode we saw when
+// this ran over HTTP).
+func TestVerb_Say_Stream(t *testing.T) {
+	t.Parallel()
+	// Pin the vendor explicitly (Deepgram, which supports streaming
+	// synthesis) so a pass proves the streaming path ran through a known
+	// vendor rather than whatever the wsApp default happens to be.
+	runStreamingSay(t, "say-stream", map[string]any{
+		"vendor":   "deepgram",
+		"label":    deepgramLabel,
+		"voice":    deepgramVoice,
+		"language": "en-US",
+	})
+}
+
+// TestVerb_Say_Stream_Murf — the same streaming say path as
+// TestVerb_Say_Stream, but pinned to the Murf.ai vendor (which has its own
+// WebSocket streaming module). Optional vendor: skips (passes) with a
+// credential-missing log when MURF_API_KEY is unset, exactly like
+// TestVerb_Say_Murf. When the key is set it drives real Murf streaming over
+// the WS app and asserts the transcript.
+func TestVerb_Say_Stream_Murf(t *testing.T) {
+	t.Parallel()
+	if !cfg.HasMurf() || murfLabel == "" {
+		t.Skip("Murf streaming say test needs MURF_API_KEY (credential missing — skipping, not a failure)")
+	}
+	runStreamingSay(t, "say-stream-murf", map[string]any{
+		"vendor":   "murf",
+		"label":    murfLabel,
+		"voice":    murfVoice,
+		"language": "en-US",
+	})
+}
+
+// runStreamingSay drives a `say` with stream:true over the WS app (required
+// for streaming synthesis — see TestVerb_Say_Stream doc) using the given
+// synthesizer override, then asserts the streamed audio transcribes to the
+// spoken text. Shared by the per-vendor streaming say tests.
+//
+// Steps:
+//  1. script-streaming-say — [answer, pause, say stream:true <synth>, hangup]
+//  2. place-ws-call — place against wsApp (wss:// call_hook)
+//  3. answer-record-and-wait-end — record PCM, send silence, block on end
+//  4. assert-audio-duration — non-trivial audio in [1s, 9s]
+//  5. assert-transcript — Deepgram transcript contains the spoken words
+func runStreamingSay(t *testing.T, tag string, synth map[string]any) {
+	t.Helper()
+	ctx := WithTimeout(t, 30*time.Second)
+	uas := claimUAS(t, ctx)
+	_, sess := claimSession(t)
+
+	s := Step(t, "script-streaming-say")
+	// closeStreamOnEmpty defaults true, and we send a single plain-text say
+	// (no further tokens), so the stream drains and the verb completes;
+	// hangup then ends the call deterministically.
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		V("say",
+			"text", "Streaming synthesis is working correctly.",
+			"stream", true,
+			"synthesizer", synth),
+		V("hangup"),
+	}))
+	s.Done()
+
+	s = Step(t, "place-ws-call")
+	call := placeWSCallTo(ctx, t, uas, sess, withTimeLimit(30))
+	s.Done()
+
+	s = Step(t, "answer-record-and-wait-end")
+	wav := AnswerRecordAndWaitEnded(s, ctx, call, WithRecord(tag), WithSilence())
+	s.Done()
+
+	s = Step(t, "assert-audio-duration")
+	// ~2s spoken + ~1.5s streaming-TTS startup overhead; 9s headroom.
+	AssertAudioDuration(s, call, 1*time.Second, 9*time.Second, tag)
+	s.Done()
+
+	if wav != "" {
+		s = Step(t, "assert-transcript")
+		AssertTranscriptContains(s, ctx, wav, "streaming", "working correctly")
+		s.Done()
+	}
+}
+
+// TestVerb_Say_Murf — speak through the Murf.ai TTS vendor via a
+// synthesizer override, using the Murf speech credential provisioned at
+// TestMain. Murf is an optional vendor: when MURF_API_KEY is not set no
+// credential is provisioned, and this test skips (which counts as a pass)
+// with a credential-missing log rather than failing.
+//
+// Transcript verifies the override didn't break content; Murf voice
+// identity isn't checkable via STT. Startup overhead / duration bounds
+// mirror the Deepgram override test.
+func TestVerb_Say_Murf(t *testing.T) {
+	t.Parallel()
+	if !cfg.HasMurf() || murfLabel == "" {
+		t.Skip("Murf say test needs MURF_API_KEY (credential missing — skipping, not a failure)")
+	}
+	runSay(t, sayOpts{
+		ctxTimeout: 30 * time.Second,
+		tag:        "say-murf",
+		minDur:     1 * time.Second,
+		// ~1.5s spoken + ~1.5s startup overhead; 9s leaves headroom.
+		maxDur: 9 * time.Second,
+		// Plain prose only — no "Murf" brand word: telephony-quality STT
+		// mangles the coined name ("mers"), which is a transcription
+		// artifact, not a synthesis failure. The words below transcribe
+		// reliably and still prove the Murf voice spoke the text.
+		verb: V("say", "text", "This voice test is working correctly.",
+			"synthesizer", map[string]any{
+				"vendor":   "murf",
+				"label":    murfLabel,
+				"voice":    murfVoice,
+				"language": "en-US",
+			}),
+		wantWords: []string{"voice test", "working correctly"},
 	})
 }
 

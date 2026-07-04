@@ -8,6 +8,8 @@ import (
 	"io"
 	"log/slog"
 	"os"
+	"path/filepath"
+	"strings"
 	"sync"
 	"time"
 
@@ -58,17 +60,38 @@ type Call struct {
 	rmsIn         float64
 	rawPCMPath    string
 	dtmf          []DTMFEvent
+
+	// owner is the name of the test that owns this call (ADR-0016).
+	// Inherited from Stack.Config.Owner at construction — immutable, so
+	// reads need no lock. When the package-level ArchiveHook is installed,
+	// each finalized recording is archived under <owner>/<role>.wav where
+	// role is the recording file's basename.
+	owner string
 }
 
 type recordingSession struct {
-	file   *os.File
-	cancel context.CancelFunc
-	done   chan struct{}
+	file     *os.File
+	path     string
+	cancel   context.CancelFunc
+	done     chan struct{}
+	archived bool // guards double-archive across StopRecording + stopMedia
 }
+
+// ArchiveHook, when set, is invoked once per finalized recording with the
+// owning test's name, the leg's role (the recording file's basename, e.g.
+// "dial-caller"), and the path to the captured raw PCM. It is installed by
+// TestMain (see internal/recording) so the sip package needs no dependency
+// on config/recording. nil = no archiving (release-gate default).
+var ArchiveHook func(test, role, pcmPath string)
+
+// SetArchiveHook installs the per-leg recording archive hook. Pass nil to
+// disable. Not safe to call concurrently with active recordings — call once
+// in TestMain before any test runs.
+func SetArchiveHook(fn func(test, role, pcmPath string)) { ArchiveHook = fn }
 
 // --- construction (called by UAS/UAC internals) ---
 
-func newInboundCall(d *diago.DialogServerSession) *Call {
+func newInboundCall(d *diago.DialogServerSession, owner string) *Call {
 	c := &Call{
 		direction: Inbound,
 		created:   time.Now(),
@@ -76,6 +99,7 @@ func newInboundCall(d *diago.DialogServerSession) *Call {
 		state:     StateInit,
 		stateCh:   make(chan struct{}, 1),
 		doneCh:    make(chan struct{}),
+		owner:     owner,
 	}
 	c.recordReceived(newRequestMsg(MsgRecv, d.InviteRequest))
 	// Route in-dialog requests (BYE, INFO, re-INVITE, ...) back to this Call
@@ -89,7 +113,7 @@ func newInboundCall(d *diago.DialogServerSession) *Call {
 	return c
 }
 
-func newOutboundCall(d *diago.DialogClientSession) *Call {
+func newOutboundCall(d *diago.DialogClientSession, owner string) *Call {
 	c := &Call{
 		direction: Outbound,
 		created:   time.Now(),
@@ -97,6 +121,7 @@ func newOutboundCall(d *diago.DialogClientSession) *Call {
 		state:     StateInit,
 		stateCh:   make(chan struct{}, 1),
 		doneCh:    make(chan struct{}),
+		owner:     owner,
 	}
 	// Record the INVITE we sent.
 	if d.InviteRequest != nil {
@@ -131,6 +156,13 @@ func (c *Call) setState(s State, reason string) {
 	c.mu.Unlock()
 	if endedNow {
 		registry.unregister(c.CallID())
+		// Finalize media on remote-initiated teardown too (BYE from
+		// jambonz). Local Hangup() already ran stopMedia before signalling;
+		// this path covers calls the peer ends, where nothing else closes
+		// the recording file — without it the recording is never flushed/
+		// archived (ADR-0016). Async: setState runs on diago's dialog-state
+		// callback and stopMedia blocks until the audio pump drains.
+		go c.stopMedia()
 	}
 	// wake all WaitState watchers
 	for i := 0; i < 4; i++ {
@@ -256,6 +288,72 @@ func (c *Call) SendRefer(ctx context.Context, target sip.Uri) error {
 		return c.in.Refer(ctx, target)
 	}
 	return c.out.Refer(ctx, target)
+}
+
+// SendReinvite sends an in-dialog re-INVITE carrying custom headers, waits
+// for the final response, and ACKs a 2xx. Outbound (UAC) calls only.
+//
+// diago's DialogClientSession only auto-ACKs re-INVITEs it RECEIVES
+// in-dialog (see handleReInviteACK); a re-INVITE this side SENDS is not
+// auto-ACKed, so the 2xx here must be ACKed explicitly. We also can't use
+// diago's own ReInvite/Ack: ReInvite can't carry arbitrary headers, and Ack
+// re-ACKs the ORIGINAL InviteResponse (finalizing media again) rather than
+// this re-INVITE's response.
+//
+// Callers must NOT pass a "Content-Type" header — it's set automatically to
+// application/sdp. For RFC 4028 session-timer refresh, callers MUST include
+// a Session-Expires header: drachtio cancels its session-expiry timer on
+// any received re-INVITE and only re-arms it from that header, so omitting
+// it disables refresh.
+//
+// After a successful refresh, AnsweredResponse()/AnsweredStatus() report the
+// LAST INVITE 200 OK (this re-INVITE's), not the original negotiation —
+// read the initial answer before calling SendReinvite if you need it.
+func (c *Call) SendReinvite(ctx context.Context, headers H) (*sip.Response, error) {
+	if c.direction != Outbound {
+		return nil, fmt.Errorf("SendReinvite: outbound only")
+	}
+	if s := c.State(); s != StateAnswered {
+		return nil, invalidState("SendReinvite", s, StateAnswered)
+	}
+	contact := c.out.RemoteContact()
+	if contact == nil {
+		return nil, fmt.Errorf("SendReinvite: no remote contact on dialog")
+	}
+	sdp := c.mediaSession().LocalSDP()
+	if len(sdp) == 0 {
+		return nil, fmt.Errorf("SendReinvite: no local SDP on dialog")
+	}
+
+	req := sip.NewRequest(sip.INVITE, contact.Address)
+	req.AppendHeader(sip.HeaderClone(c.out.InviteRequest.Contact()))
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	for k, v := range headers {
+		req.AppendHeader(sip.NewHeader(k, v))
+	}
+	req.SetBody(sdp)
+
+	c.recordSent(newRequestMsg(MsgSent, req))
+	res, err := c.out.Do(ctx, req)
+	if res != nil {
+		c.recordReceived(newResponseMsg(MsgRecv, res))
+	}
+	if err != nil {
+		return res, fmt.Errorf("SendReinvite: %w", err)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		// Non-2xx final responses are auto-ACKed by the transaction layer;
+		// nothing more to do here.
+		return res, fmt.Errorf("reinvite rejected: %d %s", res.StatusCode, res.Reason)
+	}
+
+	ackTo := res.Contact()
+	if ackTo == nil {
+		ackTo = contact
+	}
+	ack := sip.NewRequest(sip.ACK, ackTo.Address)
+	c.recordSent(newRequestMsg(MsgSent, ack))
+	return res, c.out.WriteRequest(ack)
 }
 
 func (c *Call) doInDialog(ctx context.Context, method sip.RequestMethod, contentType string, body []byte, extra ...sip.Header) (*sip.Response, error) {
@@ -469,6 +567,73 @@ func (c *Call) AnsweredStatus() int {
 	return 0
 }
 
+// AwaitReceivedRequest polls the recorded-received-messages slice every
+// 200ms (under the same mutex the other recording accessors use) until a
+// recorded message matches one of `methods`, or ctx is cancelled/expires.
+//
+// StatusCode == 0 is the only reliable request/response discriminator here:
+// Message.Method is populated for RESPONSES too (copied from the CSeq
+// header, see newResponseMsg in messages.go), so a Method-only match would
+// also match the request's own reply (e.g. matching "INVITE" would match
+// the 200 OK we send back to it). Filtering StatusCode == 0 restricts the
+// match to actual requests.
+func (c *Call) AwaitReceivedRequest(ctx context.Context, methods ...string) (Message, error) {
+	match := func() (Message, bool) {
+		c.mu.Lock()
+		defer c.mu.Unlock()
+		for _, m := range c.recv {
+			if m.StatusCode != 0 {
+				continue
+			}
+			for _, method := range methods {
+				if strings.EqualFold(m.Method, method) {
+					return m, true
+				}
+			}
+		}
+		return Message{}, false
+	}
+	if m, ok := match(); ok {
+		return m, nil
+	}
+	ticker := time.NewTicker(200 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return Message{}, ctx.Err()
+		case <-ticker.C:
+			if m, ok := match(); ok {
+				return m, nil
+			}
+		}
+	}
+}
+
+// AnsweredResponse returns the recorded INVITE 200 OK for this call, if any.
+// bool is false if the call hasn't been answered (mirrors AnsweredStatus's
+// direction-aware scan of sent/recv).
+func (c *Call) AnsweredResponse() (Message, bool) {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.direction == Outbound {
+		for i := len(c.recv) - 1; i >= 0; i-- {
+			m := c.recv[i]
+			if m.StatusCode == 200 && m.Method == "INVITE" {
+				return m, true
+			}
+		}
+		return Message{}, false
+	}
+	for i := len(c.sent) - 1; i >= 0; i-- {
+		m := c.sent[i]
+		if m.StatusCode == 200 && m.Method == "INVITE" {
+			return m, true
+		}
+	}
+	return Message{}, false
+}
+
 // Received returns every SIP message the harness received for this call.
 func (c *Call) Received() []Message {
 	c.mu.Lock()
@@ -574,7 +739,7 @@ func (c *Call) StartRecording(path string) error {
 	c.codec = props.Codec.Name
 
 	ctx, cancel := context.WithCancel(context.Background())
-	sess := &recordingSession{file: f, cancel: cancel, done: make(chan struct{})}
+	sess := &recordingSession{file: f, path: path, cancel: cancel, done: make(chan struct{})}
 	c.recording = sess
 	c.rawPCMPath = path
 
@@ -594,6 +759,30 @@ func (c *Call) StopRecording() {
 	sess.cancel()
 	<-sess.done
 	_ = sess.file.Close()
+	c.finalizeRecording(sess)
+}
+
+// finalizeRecording archives the just-closed recording as WAV (ADR-0016),
+// exactly once per session. Identity needs no per-test wiring: the owning
+// test comes from the Stack the call was born on, and the role is the
+// recording file's basename (e.g. ".../dial-caller.pcm" → "dial-caller"),
+// which every recording site already names meaningfully. Must be called
+// only after sess.file is closed so the PCM is fully flushed to disk.
+func (c *Call) finalizeRecording(sess *recordingSession) {
+	if sess == nil || ArchiveHook == nil || c.owner == "" || sess.path == "" {
+		return
+	}
+	c.mediaMu.Lock()
+	if sess.archived {
+		c.mediaMu.Unlock()
+		return
+	}
+	sess.archived = true
+	c.mediaMu.Unlock()
+
+	role := filepath.Base(sess.path)
+	role = strings.TrimSuffix(role, filepath.Ext(role))
+	ArchiveHook(c.owner, role, sess.path)
 }
 
 func (c *Call) pumpAudio(ctx context.Context, r io.Reader, w io.Writer, done chan<- struct{}) {
@@ -938,6 +1127,7 @@ func (c *Call) stopMedia() {
 		rec.cancel()
 		<-rec.done
 		_ = rec.file.Close()
+		c.finalizeRecording(rec)
 	}
 }
 
