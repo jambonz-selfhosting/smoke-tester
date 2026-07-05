@@ -139,6 +139,19 @@ func (s *Session) ScriptActionHookBody(verbName string, body []byte) *Session {
 	return s
 }
 
+// ScriptActionHookBodyFunc sets a response-body computer for the named
+// action hook: fn is evaluated per-request against the just-parsed Callback
+// on the webhook server goroutine, and its return value overrides a static
+// Body. Used when the response must echo a value from the incoming request
+// — most notably the agent verb's toolHook, where the reply must carry back
+// the live tool_call_id jambonz just sent.
+func (s *Session) ScriptActionHookBodyFunc(verbName string, fn func(Callback) []byte) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.actionHooks[verbName] = HookOutcome{Status: 200, BodyFunc: fn}
+	return s
+}
+
 // outcomeForCallHook returns what the server should reply to a call_hook
 // request for this session.
 func (s *Session) outcomeForCallHook() HookOutcome {

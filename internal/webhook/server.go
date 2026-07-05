@@ -182,7 +182,7 @@ func (s *Server) handleActionHook(w http.ResponseWriter, r *http.Request) {
 
 	s.validateInbound(verb, body)
 	sess := s.sessionFor(testID, extractCallSid(body))
-	s.captureCallback(sess, Callback{
+	cb := Callback{
 		Hook:      "action/" + verb,
 		Transport: TransportHTTP,
 		Received:  time.Now(),
@@ -191,8 +191,12 @@ func (s *Server) handleActionHook(w http.ResponseWriter, r *http.Request) {
 		Body:      body,
 		JSON:      decodeJSON(body),
 		TestID:    testID,
-	})
+	}
+	s.captureCallback(sess, cb)
 	out := sess.outcomeForActionHook(verb)
+	if out.BodyFunc != nil {
+		out.Body = out.BodyFunc(cb)
+	}
 	s.writeOutcome(w, out, "action/"+verb)
 }
 

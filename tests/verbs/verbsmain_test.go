@@ -71,6 +71,15 @@ var (
 	// Default Murf voice (verified live against api.murf.ai/v1/speech/voices).
 	murfVoice = "en-US-alina"
 
+	// xai speech credential (dual-use STT+TTS) provisioned at TestMain IF
+	// XAI_API_KEY is set (optional vendor). When unset, xaiLabel stays "" and
+	// the xai gather/transcribe/say tests pass without exercising xai.
+	xaiLabel string
+	xaiSID   string
+	// Default xai TTS voice.
+	xaiVoice    = "eve"
+	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
+
 	// Webhook server + ngrok tunnel + Application bound to the suite
 	// account. The webhook always runs (NGROK_AUTHTOKEN is mandatory in
 	// the new model).
@@ -167,6 +176,18 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: MURF_API_KEY not set — Murf say test will skip")
 	}
 
+	// 3c. xai STT speech credential — optional. Only provisioned when
+	// XAI_API_KEY is set; otherwise the xai gather/transcribe tests pass
+	// without exercising xai STT.
+	if cfg.HasXai() {
+		if err := provisionXaiCredential(); err != nil {
+			log.Fatalf("tests/verbs: xai credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: xai credential label=%s sid=%s", xaiLabel, xaiSID)
+	} else {
+		log.Printf("tests/verbs: XAI_API_KEY not set — xai STT tests will pass without exercising xai")
+	}
+
 	// 4. Webhook server + ngrok tunnel + Application bound to the suite.
 	if err := setupWebhook(v); err != nil {
 		log.Fatalf("tests/verbs: webhook setup failed: %v", err)
@@ -189,6 +210,7 @@ func TestMain(m *testing.M) {
 	teardownWebhook()
 	teardownDeepgramCredential()
 	teardownMurfCredential()
+	teardownXaiCredential()
 	if sipResolver != nil {
 		_ = sipResolver.Close()
 	}
@@ -263,6 +285,39 @@ func teardownMurfCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, murfSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete Murf credential %s: %v", murfSID, err)
+	}
+}
+
+// provisionXaiCredential creates an xai speech credential under the suite
+// account, labelled `it-xai-<runID>`. Dual-use (xai supports both TTS and
+// STT); the xai TTS say tests reuse this same credential. Called only when
+// XAI_API_KEY is set.
+func provisionXaiCredential() error {
+	xaiLabel = "it-xai-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "xai",
+		Label:     xaiLabel,
+		APIKey:    cfg.XaiAPIKey,
+		UseForTTS: true,
+		UseForSTT: true,
+	})
+	if err != nil {
+		return err
+	}
+	xaiSID = sid
+	return nil
+}
+
+func teardownXaiCredential() {
+	if xaiSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, xaiSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete xai credential %s: %v", xaiSID, err)
 	}
 }
 

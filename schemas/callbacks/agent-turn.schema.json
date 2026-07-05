@@ -94,6 +94,16 @@
             }
           },
           "additionalProperties": false
+        },
+        "vendor_metadata": {
+          "type": "object",
+          "description": "DRIFT (TODO upstream): feature-server emits vendor-side LLM diagnostics (request id, rate-limit remaining, region/routing, cache token counts, etc.) on turn_end events via @jambonz/llm's vendorMetadata; not declared in the upstream schema. Shape is vendor-specific.",
+          "additionalProperties": true
+        },
+        "stt_metadata": {
+          "type": "object",
+          "description": "DRIFT (TODO upstream): feature-server emits STT recognizer metadata (detected languages, language hints) on turn_end events; not declared in the upstream schema. Shape is vendor-specific.",
+          "additionalProperties": true
         }
       },
       "required": ["type", "transcript", "response", "interrupted", "latency"],
