@@ -77,7 +77,8 @@ var (
 	xaiLabel string
 	xaiSID   string
 	// Default xai TTS voice.
-	xaiVoice = "eve"
+	xaiVoice    = "eve"
+	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
 
 	// Webhook server + ngrok tunnel + Application bound to the suite
 	// account. The webhook always runs (NGROK_AUTHTOKEN is mandatory in

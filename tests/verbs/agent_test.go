@@ -92,17 +92,20 @@ func agentSkipPreflight(t *testing.T, s *StepCtx) bool {
 
 // agentVerbOpts parameterise the agent verb a test wants jambonz to run.
 type agentVerbOpts struct {
-	SystemPrompt       string
-	Greeting           bool   // false → user speaks first; true → agent greets first
-	ActionURL          string // POST target when agent ends (call kill)
-	EventURL           string // POST target for user_transcript / llm_response / turn_end / user_interruption
-	ToolURL            string // POST target when LLM calls a function/tool (set when Tools is non-empty)
-	Tools              []map[string]any
-	BargeIn            bool          // default false: easier to test deterministic round-trips
-	NoResponseTimeout  *int          // pointer so 0 means "explicitly disable"
-	EarlyGeneration    bool          // require turnDetection=krisp with this
-	TurnDetection      string        // "stt" (default), "krisp"
-	NoiseIsolation     string        // "" (off), "krisp", "rnnoise"
+	SystemPrompt      string
+	Greeting          bool   // false → user speaks first; true → agent greets first
+	ActionURL         string // POST target when agent ends (call kill)
+	EventURL          string // POST target for user_transcript / llm_response / turn_end / user_interruption
+	ToolURL           string // POST target when LLM calls a function/tool (set when Tools is non-empty)
+	Tools             []map[string]any
+	BargeIn           bool   // default false: easier to test deterministic round-trips
+	NoResponseTimeout *int   // pointer so 0 means "explicitly disable"
+	EarlyGeneration   bool   // require turnDetection=krisp with this
+	TurnDetection     string // "stt" (default), "krisp"
+	NoiseIsolation    string // "" (off), "krisp", "rnnoise"
+	LLMVendor         string // default "deepseek" when empty
+	LLMModel          string // default "deepseek-chat" when empty
+	LLMApiKey         string // default cfg.DeepseekAPIKey when empty
 }
 
 // buildAgentVerb builds the verb-map jambonz will run. Centralised here so
@@ -127,12 +130,12 @@ func buildAgentVerb(opts agentVerbOpts) map[string]any {
 			"voice":  deepgramVoice,
 		},
 		"llm", map[string]any{
-			"vendor": "deepseek",
-			"model":  "deepseek-chat",
+			"vendor": firstNonEmpty(opts.LLMVendor, "deepseek"),
+			"model":  firstNonEmpty(opts.LLMModel, "deepseek-chat"),
 			// Inline auth — feature-server skips the DB credential lookup
 			// when auth is set on the verb (lib/tasks/agent/index.js:446).
 			"auth": map[string]any{
-				"apiKey": cfg.DeepseekAPIKey,
+				"apiKey": firstNonEmpty(opts.LLMApiKey, cfg.DeepseekAPIKey),
 			},
 			"llmOptions": llmOptions,
 		},
