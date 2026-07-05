@@ -168,6 +168,16 @@ type HookOutcome struct {
 	Status int   // HTTP status code; default 200
 	Verbs  Script // verb array written back as response body (if non-nil)
 	Body   []byte // raw body override (wins over Verbs if set)
+
+	// BodyFunc computes the response body from the just-parsed Callback,
+	// evaluated per-request on the webhook server goroutine. When non-nil it
+	// OVERRIDES a static Body. Used when a test needs to echo a value from
+	// the incoming callback (e.g. a live tool_call_id) back to jambonz.
+	//
+	// The closure MUST be pure/thread-safe — it runs on the server goroutine
+	// concurrently with the test goroutine, so it must NOT touch *testing.T,
+	// StepCtx, or any test assertion. It closes over locals only.
+	BodyFunc func(cb Callback) []byte
 }
 
 // ContextWithError is used internally when a handler encounters an

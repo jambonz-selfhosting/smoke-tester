@@ -18,6 +18,30 @@
 
 ### Now (in progress)
 
+- **Tool-calling depth for `agent` + `llm` verbs (2026-07-05).** Two new
+  tests, both PASS live against `jambonz.me`. `TestVerb_Agent_ToolHook_Arguments`
+  (`tests/verbs/agent_test.go`) extends the existing parameterless-tool
+  coverage (`TestVerb_Agent_ToolHook`) to a `get_weather(location)` tool
+  — proves the LLM populates `arguments.location` from real user speech
+  ("What is the weather in Chicago?" → `arguments.location=="Chicago"`),
+  corroborated by `turn_end.tool_calls` naming `get_weather` and the
+  agent speaking the tool result. `TestVerb_LLM_Deepgram_ToolHook`
+  (`tests/verbs/llm_test.go`) is the **first tool-calling test for the
+  `llm` verb** (Deepgram Voice Agent): declares `get_weather` under
+  `Settings.agent.think.functions`, wires a verb-level `toolHook`,
+  asserts the Voice Agent emits a function call (`args.location=="Chicago"`
+  — note the `llm` verb uses field `args`, not `arguments`) and that a
+  dynamic `FunctionCallResponse` envelope round-trips to a spoken reply.
+  New infra: `webhook.Session.ScriptActionHookBodyFunc` (per-request
+  dynamic response body — needed because the `llm` verb's tool result
+  must echo the live `tool_call_id`, which a static body can't do). New
+  local schemas `schemas/callbacks/agent-tool.schema.json` (requires
+  `arguments`) and `schemas/callbacks/llm-tool.schema.json` (requires
+  `args`), both `TODO: upstream`. **Still out of scope:** `mcpServers`
+  discovery, the WS `sendToolOutput` path, `toolFiller`, and
+  multi-tool/multi-round tool chains — none of those are covered by
+  this change. See `docs/coverage-matrix.md` rows 5.0/5.1.
+
 - **Per-leg call recording as playable WAV (2026-07-03,
   [ADR-0016](docs/adr/0016-per-leg-call-recording.md)).** `RECORD_LEGS=true`
   archives every recorded call leg as `recordings/<test-name>/<leg>.wav`
@@ -254,6 +278,10 @@ incident before assuming flake.
    - Tier 4 — advanced verbs (most are vendor-gated)
    - Tier 6 — `PUT /Calls/{sid}` matrix
    - Tier 7 — WebSocket API tests over the existing `/ws` endpoint
+   - Tier 5 tool-calling depth (2026-07-05 added arguments-extraction for
+     `agent` + first `llm` toolHook test) — remaining gaps still open:
+     `mcpServers` discovery, WS `sendToolOutput` path, `toolFiller`,
+     multi-tool/multi-round tool chains. See coverage-matrix rows 5.0/5.1.
 
 3. **Decide on schema URL-ref strategy (issue #3).** Either:
    - Write a `jsonschema.Loader` that maps `https://jambonz.org/schema/<path>` → `file://<repo>/schemas/<path>`, or
@@ -306,6 +334,62 @@ None.
 ---
 
 ## Session log (reverse-chronological)
+
+### 2026-07-05 — Tool-calling depth: agent argument extraction + first llm-verb toolHook test
+
+**Scope:** the existing `TestVerb_Agent_ToolHook` only proved a
+PARAMETERLESS tool call round-trip; it didn't prove the LLM extracts
+real argument values from user speech. Separately, the `llm` verb
+(row 5.1) had zero tool-calling coverage. Close both gaps.
+
+**Done — 2 new tests, both PASS live against `jambonz.me`:**
+
+- **`TestVerb_Agent_ToolHook_Arguments`** (`tests/verbs/agent_test.go`)
+  — a `get_weather(location)` tool. Proves the LLM populates
+  `arguments.location` from real user speech ("What is the weather in
+  Chicago?" → `arguments.location=="Chicago"`), corroborated by
+  `turn_end.tool_calls` naming `get_weather` and the agent speaking the
+  returned tool result. Extends `TestVerb_Agent_ToolHook` (parameterless
+  tool) to prove argument extraction — tool-calling working together
+  with the verb's NL-understanding feature.
+- **`TestVerb_LLM_Deepgram_ToolHook`** (`tests/verbs/llm_test.go`) —
+  first tool-calling coverage for the `llm` verb (Deepgram Voice
+  Agent). Declares `get_weather` under `Settings.agent.think.functions`,
+  wires a verb-level `toolHook`. Proves the Voice Agent emits a
+  function call (`args.location=="Chicago"` — the `llm` verb uses field
+  `args`, NOT `arguments`) and that a `FunctionCallResponse` envelope
+  returned via a dynamic per-request responder round-trips to a spoken
+  reply.
+
+**New infra:**
+
+- **`webhook.Session.ScriptActionHookBodyFunc`** (`internal/webhook`) —
+  per-request dynamic response body. Needed because the `llm` verb's
+  tool result must echo the live `tool_call_id` back in the vendor
+  envelope; a static body (the existing `ScriptActionHookBody`) can't
+  do that.
+- **New local request schemas**: `schemas/callbacks/agent-tool.schema.json`
+  (requires `arguments`) and `schemas/callbacks/llm-tool.schema.json`
+  (requires `args`), both marked `$comment: TODO: upstream`.
+
+**Drift found:** the `agent` verb's toolHook payload uses field
+`arguments`; the `llm` verb's toolHook payload uses field `args` for
+the same concept (function-call parameters). Candidate for an upstream
+doc/schema clarification — noted on coverage-matrix rows 5.0/5.1.
+
+**Still out of scope (not touched by this change):** `mcpServers`
+discovery, the WS `sendToolOutput` path, `toolFiller`, and
+multi-tool/multi-round tool chains.
+
+**Files touched:**
+- `tests/verbs/agent_test.go` — `TestVerb_Agent_ToolHook_Arguments`
+- `tests/verbs/llm_test.go` — `TestVerb_LLM_Deepgram_ToolHook`
+- `internal/webhook/registry.go` — `ScriptActionHookBodyFunc`
+- `schemas/callbacks/agent-tool.schema.json`, `schemas/callbacks/llm-tool.schema.json` — new
+- `docs/coverage-matrix.md` — rows 5.0, 5.1
+- `HANDOFF.md` — this entry
+
+---
 
 ### 2026-07-03 — Per-leg call recording as playable WAV (ADR-0016)
 

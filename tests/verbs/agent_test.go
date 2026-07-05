@@ -30,6 +30,7 @@ package verbs
 
 import (
 	"context"
+	"encoding/json"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -1007,6 +1008,244 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	// Tolerance 1/1: the secret word must come through. If LLM verbosely
 	// adds commentary, fine — but it has to include "kingfisher".
 	AssertTranscriptHasMost(s, ctx, recPath, 1, secretWord)
+	s.Done()
+}
+
+// TestVerb_Agent_ToolHook_Arguments — proves the agent verb's LLM doesn't
+// just fire a parameterless tool (see TestVerb_Agent_ToolHook); it must
+// extract a real value from the user's speech and populate the tool's
+// declared argument with it. We declare a `get_weather` tool that requires
+// a `location` argument, ask "What is the weather in Chicago right now?",
+// and assert:
+//   - the toolHook payload's `name`/`tool_call_id` are present (base
+//     shape, same as TestVerb_Agent_ToolHook)
+//   - the toolHook payload's `arguments.location` actually contains
+//     "chicago" — proves the LLM parsed the city out of REAL STT output
+//     and populated the argument, not a canned/empty call (the core,
+//     non-negotiable assertion for this test)
+//   - the turn_end eventHook summary's `tool_calls` array independently
+//     records the same tool by name — corroboration from a second,
+//     differently-shaped callback
+//   - the agent speaks the tool's returned conditions back to the caller
+//     — round-trip corroboration, NOT the sole proof
+//
+// Steps:
+//  1. preflight-skips
+//  2. ensure-prompt-wav (asks for the weather in Chicago)
+//  3. register-webhook-session
+//  4. script-agent-verb-with-tool — toolHook returns a static JSON weather report
+//  5. place-call
+//  6. answer-record-and-silence
+//  7. wait-for-stt
+//  8. send-prompt-wav
+//  9. wait-for-tool-call — block on /action/agent-tool callback
+// 10. assert-tool-payload — name + tool_call_id present
+// 11. assert-tool-arguments — arguments.location contains "chicago"
+// 12. wait-for-llm-reply — silence while agent speaks the weather report
+// 13. hangup-and-wait-ended
+// 14. drain-trailing-callbacks — collect turn_end after hangup
+// 15. assert-turn-end-tool-calls — turn_end.tool_calls includes get_weather
+// 16. assert-weather-spoken — recording contains the tool result word "hail"
+func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	s := Step(t, "preflight-skips")
+	if !agentSkipPreflight(t, s) {
+		return
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 150*time.Second)
+	uas := claimUAS(t, ctx)
+
+	const promptText = "What is the weather in Chicago right now?"
+
+	s = Step(t, "ensure-prompt-wav")
+	wavPath, err := tts.EnsureWAV(ctx, "testdata/agent", promptText, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
+	}
+	s.Done()
+
+	_, sess := claimSession(t)
+
+	s = Step(t, "script-agent-verb-with-tool")
+	tool := map[string]any{
+		"name":        "get_weather",
+		"description": "Get the current weather conditions for a city. Call this whenever the user asks about weather.",
+		"parameters": map[string]any{
+			"type": "object",
+			"properties": map[string]any{
+				"location": map[string]any{
+					"type":        "string",
+					"description": "the city name",
+				},
+			},
+			"required": []string{"location"},
+		},
+	}
+	systemPrompt := "You are a voice assistant. You don't know the weather yourself. " +
+		"When the user asks for the weather in a city, you MUST call the get_weather tool " +
+		"with that city as the `location` argument. " +
+		"After the tool returns, tell the user the returned conditions and stop."
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt: systemPrompt,
+		Tools:        []map[string]any{tool},
+	})
+	// agent-tool gets a JSON body (not a verb array): feature-server takes
+	// our response body verbatim and feeds it to the LLM as the tool result.
+	toolBody := []byte(`{"conditions":"heavy hail","temperature":"seventy one degrees"}`)
+	sess.ScriptActionHookBody("agent-tool", toolBody)
+	SessionAckEmpty(sess, "agent-complete", "agent-turn")
+	s.Done()
+
+	s = Step(t, "place-call")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(120))
+	s.Done()
+
+	s = Step(t, "answer-record-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	recPath := t.TempDir() + "/agent-tool-args-reply.pcm"
+	if err := call.StartRecording(recPath); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-stt")
+	time.Sleep(1500 * time.Millisecond)
+	s.Done()
+
+	s = Step(t, "send-prompt-wav")
+	if err := call.SendWAV(wavPath); err != nil {
+		s.Fatalf("SendWAV: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-tool-call")
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	// Tool call typically fires within 2-4s of the user transcript landing
+	// (LLM emits tool_call as its first chunk). Routes back to THIS
+	// session via the X-Test-Id query param we appended to the toolHook
+	// URL — no _anon contention with parallel agent tests.
+	waitCtx, wcancel := context.WithTimeout(ctx, 30*time.Second)
+	defer wcancel()
+	toolCB, err := sess.WaitCallbackFor(waitCtx, "action/agent-tool")
+	if err != nil {
+		s.Fatalf("WaitCallbackFor action/agent-tool: %v", err)
+	}
+	s.Logf("action/agent-tool body: %s", string(toolCB.Body))
+	s.Done()
+
+	s = Step(t, "assert-tool-payload")
+	if got := toolCB.String("name"); got != "get_weather" {
+		s.Errorf("tool name = %q, want %q", got, "get_weather")
+	}
+	if got := toolCB.String("tool_call_id"); got == "" {
+		s.Errorf("tool_call_id missing in payload: %s", string(toolCB.Body))
+	}
+	s.Done()
+
+	s = Step(t, "assert-tool-arguments")
+	// The core assertion: the LLM must have parsed "Chicago" out of the
+	// user's REAL speech and populated the `location` argument with it —
+	// not just fired a bare tool call. Accept both shapes the toolHook
+	// `arguments` field can arrive in (a nested object, or a JSON-encoded
+	// string) — same tolerance TestVerb_Agent_ToolHook applies, since LLM
+	// vendors serialize differently. Never exact-equal: STT/LLM may yield
+	// "Chicago, IL" or similar — Contains is the right bar.
+	args := toolCB.NestedAny("arguments")
+	if args == nil {
+		s.Errorf("arguments missing in payload: %s", string(toolCB.Body))
+	} else {
+		var location string
+		switch v := args.(type) {
+		case map[string]any:
+			location, _ = v["location"].(string)
+		case string:
+			var parsed map[string]any
+			if err := json.Unmarshal([]byte(v), &parsed); err != nil {
+				s.Errorf("arguments string %q is not valid JSON: %v", v, err)
+			} else {
+				location, _ = parsed["location"].(string)
+			}
+		default:
+			s.Errorf("arguments has unexpected type %T: %v", args, args)
+		}
+		if !strings.Contains(strings.ToLower(location), "chicago") {
+			s.Errorf("arguments.location = %q, want it to contain %q; full payload: %s",
+				location, "chicago", string(toolCB.Body))
+		} else {
+			s.Logf("arguments.location = %q", location)
+		}
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-llm-reply")
+	// Tool result fed back to LLM → second LLM round-trip → TTS streams the
+	// weather report. Allow ~10s for the full second pass.
+	time.Sleep(12 * time.Second)
+	s.Done()
+
+	HangupAndWaitEnded(t, ctx, call)
+
+	s = Step(t, "drain-trailing-callbacks")
+	// The tool-calling turn's turn_end summary may land right around
+	// hangup; drain the session briefly so it's captured before we assert
+	// on it.
+	cbs := DrainCallbacks(sess, 5*time.Second)
+	s.Logf("captured %d agent events after hangup", len(cbs))
+	s.Done()
+
+	s = Step(t, "assert-turn-end-tool-calls")
+	// Independent corroboration from a second callback (eventHook, not
+	// toolHook): the turn_end summary's `tool_calls` array must also name
+	// get_weather. agent-turn.schema.json declares `tool_calls` as DRIFT,
+	// so this is contract-safe even though it's not yet upstreamed.
+	turnEnds := findAgentEvents(cbs, "turn_end")
+	if len(turnEnds) == 0 {
+		s.Errorf("no turn_end event in %d agent events", len(cbs))
+	} else {
+		found := false
+		for _, te := range turnEnds {
+			toolCalls, ok := te.JSON["tool_calls"].([]any)
+			if !ok {
+				continue
+			}
+			for _, tc := range toolCalls {
+				m, ok := tc.(map[string]any)
+				if !ok {
+					continue
+				}
+				if m["name"] == "get_weather" {
+					found = true
+					break
+				}
+			}
+			if found {
+				break
+			}
+		}
+		if !found {
+			s.Errorf("no turn_end event has tool_calls containing get_weather: %d turn_end events", len(turnEnds))
+		}
+	}
+	s.Done()
+
+	s = Step(t, "assert-weather-spoken")
+	// Round-trip corroboration only — the arguments + turn_end assertions
+	// above are the strong proofs that the LLM understood and populated
+	// the tool call correctly.
+	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail")
 	s.Done()
 }
 

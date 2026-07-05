@@ -55,6 +55,8 @@
 package verbs
 
 import (
+	"context"
+	"encoding/json"
 	"path/filepath"
 	"strconv"
 	"strings"
@@ -332,6 +334,257 @@ func TestVerb_LLM_Deepgram(t *testing.T) {
 			s.Errorf("no Welcome event among %d events: %v", len(events), types)
 		}
 	}
+	s.Done()
+}
+
+// llmWeatherUserPrompt is what the UA speaks to trigger the tool call. The
+// city name ("Chicago") is the argument value the toolHook responder later
+// asserts on.
+const llmWeatherUserPrompt = "What is the weather in Chicago right now?"
+
+// llmWeatherSystemPrompt instructs the Voice Agent's think stage to call
+// the declared get_weather function whenever the user asks about weather,
+// then relay the function's result back to the caller.
+const llmWeatherSystemPrompt = "You are a weather assistant. When the user asks about the weather in a city, call the get_weather function with that city as the location argument. After you receive the function's result, tell the user the weather conditions it returned."
+
+// llmWeatherToolResult is the canned answer the test's toolHook responder
+// returns for every get_weather call. "hail" is the distinctive word the
+// final transcript assertion looks for — it can only appear in the agent's
+// spoken reply if the FunctionCallResponse envelope round-tripped back
+// through the Voice Agent and was spoken by the speak stage.
+const llmWeatherToolResult = "The weather is heavy hail with a temperature of seventy one degrees."
+
+// TestVerb_LLM_Deepgram_ToolHook proves the `llm` verb's Deepgram Voice
+// Agent path supports app-declared LLM tool/function calling end-to-end:
+// the agent's think stage calls a declared function (get_weather) with an
+// argument parsed from the caller's speech, the test's toolHook responds
+// with the vendor-native FunctionCallResponse envelope (echoing the live
+// tool_call_id, which is only known at call time), and the agent speaks
+// the tool's result back to the caller.
+//
+// Unlike TestVerb_LLM_Deepgram (an echo round-trip via the actionHook),
+// this test exercises the verb-level toolHook and the Settings.agent.
+// think.functions declaration — see feature-server
+// lib/tasks/llm/llms/voice_agent_s2s.js for the vendor contract: the
+// function must be declared under Settings.agent.think.functions (not a
+// top-level tools array), the toolHook request carries the live
+// tool_call_id + name + parsed args (field name "args", not "arguments"),
+// and the response must be the vendor-native envelope, not a jambonz verb
+// array.
+//
+// Steps:
+//  1. preflight-skips
+//  2. ensure-prompt-wav
+//  3. script-llm-verb — declares get_weather under think.functions and
+//     wires a verb-level toolHook to a dynamic BodyFunc responder
+//  4. place-call
+//  5. answer-and-silence
+//  6. wait-for-stt — let the Voice Agent's STT arm
+//  7. record-and-speak — start recording, send the weather question, pad
+//     with silence so STT finalizes the utterance
+//  8. wait-for-tool-call — WaitCallbackFor(action/llm-tool); assert
+//     name == "get_weather" and tool_call_id is non-empty
+//  9. assert-tool-args — assert args.location contains "chicago"
+// 10. wait-for-reply-and-stop — let the agent speak the tool result back,
+//     then stop recording
+// 11. hangup-and-wait-ended
+// 12. assert-tool-result-spoken — independently STT the recording and
+//     assert it contains the tool result's distinctive word ("hail"),
+//     proving the FunctionCallResponse envelope round-tripped
+func TestVerb_LLM_Deepgram_ToolHook(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	s := Step(t, "preflight-skips")
+	if !cfg.HasDeepgram() {
+		s.Done()
+		t.Skip("llm tool-hook test needs DEEPGRAM_API_KEY (used inline as the Voice Agent api key, and to pre-gen the prompt WAV + STT the recording)")
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 180*time.Second)
+	uas := claimUAS(t, ctx)
+
+	s = Step(t, "ensure-prompt-wav")
+	promptWAV, err := tts.EnsureWAV(ctx, "testdata/llm", llmWeatherUserPrompt, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
+	}
+	s.Logf("prompt wav: %s", promptWAV)
+	s.Done()
+
+	_, sess := claimSession(t)
+
+	s = Step(t, "script-llm-verb")
+	llmVerb := V("llm",
+		"vendor", "deepgram",
+		"model", "voice-agent",
+		"auth", map[string]any{
+			"apiKey": cfg.DeepgramAPIKey,
+		},
+		// /action/llm has a schema (schemas/callbacks/llm.schema.json) so the
+		// completion payload gets contract-validated on arrival.
+		"actionHook", webhookSrv.PublicURL()+"/action/llm",
+		// toolHook payloads carry no callInfo (see
+		// lib/tasks/llm/llms/voice_agent_s2s.js), so X-Test-Id MUST ride the
+		// query param for the webhook server's correlation layer to route
+		// the request to this session instead of the shared `_anon` bag.
+		"toolHook", SessionURL(sess, "llm-tool"),
+		// Deliberately no eventHook here: keeping the callback stream to
+		// just action/llm + action/llm-tool avoids racing
+		// WaitCallbackFor("action/llm-tool") against event traffic.
+		"llmOptions", map[string]any{
+			"Settings": map[string]any{
+				"type": "Settings",
+				"agent": map[string]any{
+					// No greeting: the user speaks first so the function
+					// call is unambiguously triggered by our prompt.
+					"listen": map[string]any{
+						"provider": map[string]any{
+							"type":  "deepgram",
+							"model": "nova-2",
+						},
+					},
+					"think": map[string]any{
+						"provider": map[string]any{
+							"type":  "open_ai",
+							"model": "gpt-4o-mini",
+						},
+						"prompt": llmWeatherSystemPrompt,
+						// Function declared under Settings.agent.think.functions
+						// per voice_agent_s2s.js — NOT a top-level "tools" array
+						// (that's the agent verb's shape, not this verb's).
+						"functions": []map[string]any{
+							{
+								"name":        "get_weather",
+								"description": "Get the current weather conditions for a city. Call this whenever the user asks about weather.",
+								"parameters": map[string]any{
+									"type": "object",
+									"properties": map[string]any{
+										"location": map[string]any{
+											"type":        "string",
+											"description": "the city name",
+										},
+									},
+									"required": []string{"location"},
+								},
+							},
+						},
+					},
+					"speak": map[string]any{
+						"provider": map[string]any{
+							"type":  "deepgram",
+							"model": "aura-2-thalia-en",
+						},
+					},
+				},
+			},
+		},
+	)
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		llmVerb,
+		V("hangup"),
+	}))
+	// /action/llm is the test-owned actionHook; ack with empty so jambonz
+	// doesn't try to chain follow-up verbs after the LLM session ends.
+	SessionAckEmpty(sess, "llm")
+	// The toolHook response must echo the LIVE tool_call_id jambonz just
+	// sent — a static body cannot work because the id is only known at
+	// call time. This closure runs on the webhook server goroutine, so it
+	// must stay pure: no t/s/StepCtx/assertions inside it.
+	sess.ScriptActionHookBodyFunc("llm-tool", func(cb webhook.Callback) []byte {
+		id := cb.String("tool_call_id")
+		name := cb.String("name")
+		resp := map[string]any{
+			"type":    "FunctionCallResponse",
+			"id":      id,
+			"name":    name,
+			"content": llmWeatherToolResult,
+		}
+		b, _ := json.Marshal(resp)
+		return b
+	})
+	s.Done()
+
+	s = Step(t, "place-call")
+	// Budget: warmup (1s) + prompt (~2s) + tool round-trip + reply (~15s) +
+	// drain. 90s mirrors TestVerb_LLM_Deepgram's headroom.
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	s.Done()
+
+	s = Step(t, "answer-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	WaitFor(t, "wait-for-stt", RecognizerArmDelay)
+
+	recPath := filepath.Join(t.TempDir(), "llm-tool-reply.pcm")
+
+	s = Step(t, "record-and-speak")
+	if err := call.StartRecording(recPath); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	// Brief silence so the recording opens before the reply audio arrives.
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (pre): %v", err)
+	}
+	if err := call.SendWAV(promptWAV); err != nil {
+		s.Fatalf("SendWAV: %v", err)
+	}
+	// Trail with silence so the agent's STT detects end-of-utterance and
+	// triggers the function call.
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-tool-call")
+	toolCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+	toolCB, err := sess.WaitCallbackFor(toolCtx, "action/llm-tool")
+	cancel()
+	if err != nil {
+		s.Fatalf("WaitCallbackFor(action/llm-tool): %v", err)
+	}
+	s.Logf("action/llm-tool body: %s", string(toolCB.Body))
+	if got := toolCB.String("name"); got != "get_weather" {
+		s.Errorf("tool call name=%q want %q; body=%s", got, "get_weather", string(toolCB.Body))
+	}
+	toolCallID := toolCB.String("tool_call_id")
+	if toolCallID == "" {
+		s.Errorf("tool call missing tool_call_id; body=%s", string(toolCB.Body))
+	}
+	s.Done()
+
+	s = Step(t, "assert-tool-args")
+	// The llm verb sends parsed function arguments under "args", NOT
+	// "arguments" (unlike the agent verb) — see voice_agent_s2s.js.
+	location := strings.ToLower(toolCB.NestedString("args.location"))
+	if !strings.Contains(location, "chicago") {
+		s.Errorf("args.location=%q does not contain %q; body=%s", location, "chicago", string(toolCB.Body))
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-reply-and-stop")
+	// Give the agent time to speak the FunctionCallResponse content back
+	// before we stop capturing.
+	time.Sleep(LLMReplyWindow)
+	call.StopRecording()
+	s.Done()
+
+	HangupAndWaitEnded(t, ctx, call)
+
+	s = Step(t, "assert-tool-result-spoken")
+	// "hail" only appears in the agent's spoken reply if our
+	// FunctionCallResponse envelope round-tripped through the Voice Agent
+	// and was relayed to the caller — proving the full tool-call loop.
+	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail")
 	s.Done()
 }
 
