@@ -21,7 +21,7 @@
 # Or to debug serially:
 #   make test PARALLEL=1
 NUM_CPU := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
-PARALLEL ?= $(shell echo $$(( $(NUM_CPU) < 4 ? $(NUM_CPU) : 4 )))
+PARALLEL ?= $(shell echo $$(( $(NUM_CPU) < 8 ? $(NUM_CPU) : 8 )))
 
 help:
 	@echo "smoke-tester — release-gate harness"
