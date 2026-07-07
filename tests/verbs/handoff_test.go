@@ -184,7 +184,22 @@ func TestVerb_LLM_OpenAI_Handoff(t *testing.T) {
 	s = Step(t, "spawn-target-goroutine")
 	targetDone := make(chan struct{})
 	var targetCall *jsip.Call
-	go answerAndIdleTarget(t, ctx, targetUAS, targetDone, &targetCall)()
+	// Dedicated context so the cleanup below can unblock the goroutine
+	// independently of the test's WithTimeout ctx (whose cancel cleanup runs
+	// last, LIFO). Passing targetCtx into answerAndIdleTarget makes its
+	// internal <-ctx.Done()/ctx.Err() lifetime guards bind to this child.
+	targetCtx, targetCancel := context.WithCancel(ctx)
+	go answerAndIdleTarget(t, targetCtx, targetUAS, targetDone, &targetCall)()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit join below). Registered after spawn so
+	// it runs (LIFO) before WithTimeout's ctx-cancel cleanup, while t is still
+	// valid: cancel unblocks the goroutine, then we wait for it to exit —
+	// preventing a "Log in goroutine after test completed" panic on a
+	// place-call fatal (e.g. "480 no available feature servers").
+	t.Cleanup(func() {
+		targetCancel()
+		<-targetDone
+	})
 	s.Done()
 
 	s = Step(t, "place-caller")
@@ -303,7 +318,22 @@ func TestVerb_Agent_OpenAI_Handoff(t *testing.T) {
 	s = Step(t, "spawn-target-goroutine")
 	targetDone := make(chan struct{})
 	var targetCall *jsip.Call
-	go answerAndIdleTarget(t, ctx, targetUAS, targetDone, &targetCall)()
+	// Dedicated context so the cleanup below can unblock the goroutine
+	// independently of the test's WithTimeout ctx (whose cancel cleanup runs
+	// last, LIFO). Passing targetCtx into answerAndIdleTarget makes its
+	// internal <-ctx.Done()/ctx.Err() lifetime guards bind to this child.
+	targetCtx, targetCancel := context.WithCancel(ctx)
+	go answerAndIdleTarget(t, targetCtx, targetUAS, targetDone, &targetCall)()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit join below). Registered after spawn so
+	// it runs (LIFO) before WithTimeout's ctx-cancel cleanup, while t is still
+	// valid: cancel unblocks the goroutine, then we wait for it to exit —
+	// preventing a "Log in goroutine after test completed" panic on a
+	// place-call fatal (e.g. "480 no available feature servers").
+	t.Cleanup(func() {
+		targetCancel()
+		<-targetDone
+	})
 	s.Done()
 
 	s = Step(t, "place-caller")

@@ -11,12 +11,86 @@
 
 ---
 
-## State as of 2026-07-03
+## State as of 2026-07-07
 
 > **Orientation:** for the harness ↔ jambonz component diagram + traffic
 > breakdown, see [docs/architecture/components.md](docs/architecture/components.md).
 
 ### Now (in progress)
+
+- **Tier 4 AMD (answering machine detection) on the `dial` verb (2026-07-07).**
+  New `tests/verbs/amd_test.go` (coverage-matrix row 4.15). AMD is not a
+  standalone verb — it's the `amd` object on `dial`, runs on the dialed
+  (B) leg, and is **STT-driven** (feature-server `lib/utils/amd-utils.js`
+  word-count heuristics). Our callee UAS drives each outcome.
+  - **Green on jambonz.me (2 tests):** `TestVerb_Dial_AMD_NoSpeechDetected`
+    (silent callee → `amd_no_speech_detected`+`amd_stopped`) and
+    `TestVerb_Dial_AMD_DecisionTimeout` (silent callee +
+    `timers{noSpeechTimeoutMs:60000, decisionTimeoutMs:3000}` →
+    `amd_decision_timeout`+`amd_stopped`). These prove AMD runs and the
+    `amd.actionHook`, X-Test-Id correlation (via `SessionURL(sess,"amd")`),
+    and `callbacks/amd` contract validation all work. AMD's timers are
+    pure `setTimeout`, so they fire regardless of STT.
+  - **Green on jambonz.me (2 tests) — after a feature-server fix (2026-07-07):**
+    `TestVerb_Dial_AMD_HumanDetected` (short greeting → `amd_human_detected`
+    reason "short greeting" + `amd_stopped`) and `_MachineDetected` (long
+    greeting → `amd_machine_detected` reason "long greeting" +
+    `amd_machine_stopped_speaking`). **This test found a real feature-server
+    bug and we fixed it.** Initially neither fired: the STT-driven detections
+    produced NO transcripts while the timer events did. Root-caused live via
+    `ssh bastion` (mediajam log + `pm2 logs 49` + control-frame log): mediajam
+    (the media server — Go, NOT FreeSWITCH) transcribed the greeting fine and
+    sent `stt.transcription` (bugname `amd_bug`) to feature-server, but AMD's
+    handler never ran. Cause: the FreeSWITCH→mediajam migration renamed
+    transcription events to a normalized vocab (`stt.transcription`) and
+    migrated gather/transcribe/listen via `sttEvents()`
+    (`lib/utils/media-events.js`), but **`amd-utils.js` was never migrated** —
+    it still registered the legacy `deepgram_transcribe::transcription`
+    listener, which mediajam never emits (`media-events.js` even flagged it:
+    `// … AmdEvents follow as their adapters land`). AMD's `setTimeout` timers
+    fired regardless, which is why no-speech/decision-timeout "worked" while
+    human/machine never did. **Fix:** route AMD's listener registration
+    through `sttEvents()` in `feature-server/lib/utils/amd-utils.js` (also
+    fixed the paired teardown to `removeCustomEventListener`, and a latent
+    `${this.vendor}` → `${vendor}` bug). Deployed as a hotfix to jambonz.me
+    and verified all four pass. `amd_stopped` is intentionally NOT asserted on
+    the machine path (AMD keeps avmd running for a beep post-machine, so it's
+    deferred past the drain window).
+  - **Skip-stubs (2):** `TestVerb_Dial_AMD_ToneDetected` — the beep path is
+    acoustic and independent of the STT gap. mediajam DOES have a Go
+    mod_avmd port (`internal/audiofx/avmd.go`, DESA-2 beep detector), so
+    it's implementable, but a probe playing a clean 1000Hz sine (8kHz mono,
+    silence-tone-silence) on the callee leg did NOT fire `amd_tone_detected`
+    — likely because the beep is sent as G.711 µ-law and companding noise
+    raises the amplitude variance the detector keys on. Needs a µ-law-robust
+    beep fixture tuned against mediajam's avmd thresholds. `TestVerb_Dial_AMD_Error`
+    — **feature-server bug:** `amd-utils.js` emits the error via
+    `task.emit(AmdEvents.Error, err)` (event name `"amd_error"`) but
+    `dial.js` only wires `this.on('amd', …)`; every delivered event uses
+    `task.emit('amd', {type:…})`, so `amd_error` never reaches the
+    actionHook. The credential-missing path also just throws in the `Amd`
+    constructor and is caught+logged in `dial.js:946`. Needs an upstream fix.
+  - Schema `schemas/callbacks/amd.schema.json` was already vendored; the
+    webhook server auto-validates every `/action/amd` payload against it.
+    New `.gitignore` allowlist `tests/verbs/testdata/amd/*.wav` (TTS
+    greetings, same policy as agent/listen).
+  - **Operational follow-ups (feature-server / cluster):**
+    (a) The AMD fix is a **hotfix on the deployed tree** (`/home/admin/apps/feature-server`,
+    which `jambonz-feature-server` symlinks to) — mirror it in the
+    feature-server git repo so it survives a redeploy. Local copy with the
+    change: `~/private_jambonz/feature-server/lib/utils/amd-utils.js`;
+    backup of the original on the box at `/tmp/amd-utils.bak.js`.
+    (b) **pm2 launch caveat (caused a brief outage this session):** pm2 id 49
+    must run under **nvm Node v22.22.1** (the app's `undici` needs Node 21+'s
+    `webidl.util.markAsUncloneable`). `pm2 restart 49 --update-env` from a
+    shell without that node on PATH relaunches it under system Node 20 →
+    crash-loop. It's currently running with an explicit
+    `--interpreter ~/.nvm/versions/node/v22.22.1/bin/node`; run `pm2 save` to
+    persist, and avoid `--update-env` unless nvm node22 is on PATH.
+    (c) `amd_tone_detected` (mediajam avmd): a µ-law-transmitted clean sine
+    didn't trip it — need a codec-robust beep fixture, or confirm avmd
+    thresholds. (d) `amd_error` wrong-event-channel bug (`amd-utils.js` emits
+    on `amd_error`, `dial.js` listens on `amd`) still needs its own fix.
 
 - **Tool-calling depth for `agent` + `llm` verbs (2026-07-05).** Two new
   tests, both PASS live against `jambonz.me`. `TestVerb_Agent_ToolHook_Arguments`

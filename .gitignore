@@ -11,6 +11,10 @@ bin/
 # TTS-generated, re-creatable from internal/tts, safe to commit so CI
 # without DEEPGRAM_API_KEY can run the bidirectional-audio path.
 !tests/verbs/testdata/listen/*.wav
+# AMD test greetings (short/long) — same policy as agent/listen: TTS-generated,
+# re-creatable from internal/tts, safe to commit so CI without DEEPGRAM_API_KEY
+# can run the amd human/machine detection tests.
+!tests/verbs/testdata/amd/*.wav
 *.pcap
 .DS_Store
 # per-leg call recording archives (RECORD_LEGS, ADR-0016)

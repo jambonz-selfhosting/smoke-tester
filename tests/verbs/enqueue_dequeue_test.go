@@ -1,13 +1,14 @@
 // Tests for `enqueue` + `dequeue` + `leave` — the queue trio.
 //
 // Schema: schemas/verbs/enqueue  — required `name`. Caller sits in the
-//                                  named queue until dequeued.
-//         schemas/verbs/dequeue  — required `name`. Pulls the next caller
-//                                  off the queue and bridges to the current
-//                                  call. `actionHook` fires when the
-//                                  bridged call ends.
-//         schemas/verbs/leave    — no required fields. Exits the caller's
-//                                  current enqueue/conference.
+//
+//	                         named queue until dequeued.
+//	schemas/verbs/dequeue  — required `name`. Pulls the next caller
+//	                         off the queue and bridges to the current
+//	                         call. `actionHook` fires when the
+//	                         bridged call ends.
+//	schemas/verbs/leave    — no required fields. Exits the caller's
+//	                         current enqueue/conference.
 //
 // Test shape mirrors dial: one side streams the reference WAV, the other
 // records from the bridged call, Deepgram verifies content made it
@@ -18,6 +19,7 @@
 package verbs
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -42,6 +44,7 @@ import (
 //  7. place-agent-call — POST /Calls to=callee-uas; dequeue matches enqueuer
 //  8. spawn-agent-goroutine — async: answer, record, wait for end
 //  9. wait-bridge-settles — 4s so jambonz's queue bridge fully forms
+//
 // 10. enqueuer-sends-wav — stream testdata/test_audio.wav from caller leg
 // 11. post-speech-silence-and-hangup — trailing silence, enqueuer hangs up
 // 12. stop-agent-call — DELETE /Calls/<agentSID> to flush recording
@@ -55,7 +58,8 @@ import (
 // Jambonz  --bridges both legs (same as dial)-->
 // UAS (enqueuer) ==test_audio.wav==>               Jambonz ==> UAS2 (agent)
 // UAS2 records PCM16 from queue bridge
-//                                                   // Deepgram: sun + shining
+//
+//	// Deepgram: sun + shining
 func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -123,6 +127,12 @@ func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 	// (i.e. the queue has dequeued and bridged us). Lets the bridge-
 	// settle step block on that event instead of a fixed 4s sleep.
 	agentAnsweredCh := make(chan struct{}, 1)
+	// Dedicated context so the cleanup below can unblock the goroutine (LIFO,
+	// before WithTimeout's ctx-cancel cleanup) and guarantee it is joined even
+	// if a Step between spawn and wait-agent-done fatals — otherwise the
+	// orphaned goroutine calls Step/Errorf on t after the test completes →
+	// "Log in goroutine after test completed" panic that crashes the binary.
+	agentCtx, agentCancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -130,8 +140,8 @@ func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 		var c *jsip.Call
 		select {
 		case c = <-agentUAS.Inbound:
-		case <-ctx.Done():
-			agentResultCh <- agentResult{err: ctx.Err()}
+		case <-agentCtx.Done():
+			agentResultCh <- agentResult{err: agentCtx.Err()}
 			return
 		}
 		as := Step(t, "agent:answer-record-and-wait-end")
@@ -153,10 +163,17 @@ func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 		if err := c.SendSilence(); err != nil {
 			as.Errorf("SendSilence: %v", err)
 		}
-		_ = c.WaitState(ctx, jsip.StateEnded)
+		_ = c.WaitState(agentCtx, jsip.StateEnded)
 		as.Done()
 		agentResultCh <- agentResult{wav: wav}
 	}()
+	// Always join the goroutine, even if a later Step fatals (see agentCtx
+	// comment above). Runs before WithTimeout's ctx-cancel cleanup while t is
+	// still valid: cancel unblocks the goroutine, then wg.Wait joins it.
+	t.Cleanup(func() {
+		agentCancel()
+		wg.Wait()
+	})
 	s.Done()
 
 	s = Step(t, "wait-bridge-settles")
@@ -221,11 +238,12 @@ func TestVerb_Enqueue_Dequeue_Bridge(t *testing.T) {
 // Test     --POST /Calls-->           Jambonz
 // Webhook  --[enqueue Q, say]-->      Jambonz
 // (caller enters queue, `leave` in waitHook would pop them back to the
-//  main script; we assert by round-tripping through an empty waitHook
-//  verb list — jambonz interprets "no verbs" as "keep waiting". Rather
-//  than implement a full leave-from-waithook scenario we test `leave`
-//  with a simpler shape: enqueue, then immediately leave on waitHook,
-//  continue to the next verb.)
+//
+//	main script; we assert by round-tripping through an empty waitHook
+//	verb list — jambonz interprets "no verbs" as "keep waiting". Rather
+//	than implement a full leave-from-waithook scenario we test `leave`
+//	with a simpler shape: enqueue, then immediately leave on waitHook,
+//	continue to the next verb.)
 //
 // The `leave` verb's integration surface is minimal — it's a control
 // statement that only makes sense inside a waitHook. We verify it runs

@@ -101,6 +101,10 @@ func TestVerb_Transfer_Blind(t *testing.T) {
 	// the tail of the phrase before BYE tears down media.
 	targetDone := make(chan struct{})
 	var targetCall *jsip.Call
+	// Dedicated context so the cleanup below can unblock the goroutine
+	// independently of the test's WithTimeout ctx (whose cancel cleanup runs
+	// last, LIFO). See the t.Cleanup after the goroutine for why.
+	targetCtx, targetCancel := context.WithCancel(ctx)
 	go func() {
 		defer close(targetDone)
 		// sub-step prefix [target:*] identifies the goroutine's steps
@@ -150,10 +154,20 @@ func TestVerb_Transfer_Blind(t *testing.T) {
 			}
 			<-c.Done()
 			t.Logf("[target] done")
-		case <-ctx.Done():
-			GoroutineFailf(t, "target", "never received INVITE: %v", ctx.Err())
+		case <-targetCtx.Done():
+			GoroutineFailf(t, "target", "never received INVITE: %v", targetCtx.Err())
 		}
 	}()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit join below). Registered after spawn so
+	// it runs (LIFO) before WithTimeout's ctx-cancel cleanup, while t is still
+	// valid: cancel unblocks the goroutine, then we wait for it to exit —
+	// preventing a "Log in goroutine after test completed" panic on a
+	// place-call fatal (e.g. "480 no available feature servers").
+	t.Cleanup(func() {
+		targetCancel()
+		<-targetDone
+	})
 	s.Done()
 
 	s = Step(t, "place-caller-and-record")
@@ -309,6 +323,10 @@ func TestVerb_Transfer_WarmParked(t *testing.T) {
 	targetDone := make(chan struct{})
 	var targetCall *jsip.Call
 	var targetRecPath string
+	// Dedicated context so the cleanup below can unblock the goroutine
+	// independently of the test's WithTimeout ctx (whose cancel cleanup runs
+	// last, LIFO). See the t.Cleanup after the goroutine for why.
+	targetCtx, targetCancel := context.WithCancel(ctx)
 	go func() {
 		defer close(targetDone)
 		// sub-step prefix [target:*] identifies the goroutine's steps
@@ -371,10 +389,20 @@ func TestVerb_Transfer_WarmParked(t *testing.T) {
 			}
 			<-c.Done()
 			t.Logf("[target] done")
-		case <-ctx.Done():
-			GoroutineFailf(t, "target", "never received INVITE: %v", ctx.Err())
+		case <-targetCtx.Done():
+			GoroutineFailf(t, "target", "never received INVITE: %v", targetCtx.Err())
 		}
 	}()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit join below). Registered after spawn so
+	// it runs (LIFO) before WithTimeout's ctx-cancel cleanup, while t is still
+	// valid: cancel unblocks the goroutine, then we wait for it to exit —
+	// preventing a "Log in goroutine after test completed" panic on a
+	// place-call fatal (e.g. "480 no available feature servers").
+	t.Cleanup(func() {
+		targetCancel()
+		<-targetDone
+	})
 	s.Done()
 
 	s = Step(t, "place-caller-and-record")
@@ -552,6 +580,10 @@ func TestVerb_Transfer_WarmThreeWay(t *testing.T) {
 	// brief first, then bridge audio, with no overlap.
 	targetDone := make(chan struct{})
 	var targetCall *jsip.Call
+	// Dedicated context so the cleanup below can unblock the goroutine
+	// independently of the test's WithTimeout ctx (whose cancel cleanup runs
+	// last, LIFO). See the t.Cleanup after the goroutine for why.
+	targetCtx, targetCancel := context.WithCancel(ctx)
 	go func() {
 		defer close(targetDone)
 		select {
@@ -601,10 +633,20 @@ func TestVerb_Transfer_WarmThreeWay(t *testing.T) {
 			}
 			<-c.Done()
 			t.Logf("[target] done")
-		case <-ctx.Done():
-			GoroutineFailf(t, "target", "never received INVITE: %v", ctx.Err())
+		case <-targetCtx.Done():
+			GoroutineFailf(t, "target", "never received INVITE: %v", targetCtx.Err())
 		}
 	}()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit join below). Registered after spawn so
+	// it runs (LIFO) before WithTimeout's ctx-cancel cleanup, while t is still
+	// valid: cancel unblocks the goroutine, then we wait for it to exit —
+	// preventing a "Log in goroutine after test completed" panic on a
+	// place-call fatal (e.g. "480 no available feature servers").
+	t.Cleanup(func() {
+		targetCancel()
+		<-targetDone
+	})
 	s.Done()
 
 	s = Step(t, "place-caller-and-record")
@@ -745,6 +787,10 @@ func TestVerb_Transfer_NoAnswerReturn(t *testing.T) {
 	// to end. We do NOT Answer().
 	targetDone := make(chan struct{})
 	var targetCall *jsip.Call
+	// Dedicated context so the cleanup below can unblock the goroutine
+	// independently of the test's WithTimeout ctx (whose cancel cleanup runs
+	// last, LIFO). See the t.Cleanup after the goroutine for why.
+	targetCtx, targetCancel := context.WithCancel(ctx)
 	go func() {
 		defer close(targetDone)
 		select {
@@ -766,13 +812,23 @@ func TestVerb_Transfer_NoAnswerReturn(t *testing.T) {
 			select {
 			case <-c.Done():
 				t.Logf("[target] leg ended (canceled by jambonz)")
-			case <-ctx.Done():
+			case <-targetCtx.Done():
 				t.Logf("[target] ctx done while awaiting cancel")
 			}
-		case <-ctx.Done():
-			GoroutineFailf(t, "target", "never received INVITE: %v", ctx.Err())
+		case <-targetCtx.Done():
+			GoroutineFailf(t, "target", "never received INVITE: %v", targetCtx.Err())
 		}
 	}()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit join below). Registered after spawn so
+	// it runs (LIFO) before WithTimeout's ctx-cancel cleanup, while t is still
+	// valid: cancel unblocks the goroutine, then we wait for it to exit —
+	// preventing a "Log in goroutine after test completed" panic on a
+	// place-call fatal (e.g. "480 no available feature servers").
+	t.Cleanup(func() {
+		targetCancel()
+		<-targetDone
+	})
 	s.Done()
 
 	s = Step(t, "place-caller-and-record")

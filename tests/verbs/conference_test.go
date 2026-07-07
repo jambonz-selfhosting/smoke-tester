@@ -11,6 +11,7 @@
 package verbs
 
 import (
+	"context"
 	"fmt"
 	"path/filepath"
 	"sync"
@@ -46,6 +47,7 @@ const confSpeechText = "The quick brown fox jumps over the lazy dog while the " 
 //  7. wait-listener-settles — 2s so listener is in room before speaker joins
 //  8. place-speaker-call — POST /Calls to=caller-uas; answer, stream WAV, hangup
 //  9. stop-listener-call — DELETE /Calls/<listenerSID> to end conference
+//
 // 10. wait-listener-done — wait for listener goroutine to finish recording
 // 11. assert-conference-audio-transcript — Deepgram transcript has "sun" + "shining"
 //
@@ -56,9 +58,10 @@ const confSpeechText = "The quick brown fox jumps over the lazy dog while the " 
 // Jambonz  --INVITE-->                            UAS, UAS2   (both answered)
 // UAS      ==test_audio.wav==>                    Jambonz ==> (mixed into room) ==> UAS2
 // UAS2     records PCM16 from conference bridge
-//                                                             // Deepgram:
-//                                                             //   transcript has
-//                                                             //   "sun" + "shining"
+//
+//	// Deepgram:
+//	//   transcript has
+//	//   "sun" + "shining"
 func TestVerb_Conference_TwoParty(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -115,6 +118,12 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 	// "wait-listener-settles" step block on that signal instead of a
 	// fixed 2s sleep.
 	answeredCh := make(chan struct{}, 1)
+	// Dedicated context so the cleanup below can unblock the goroutine (LIFO,
+	// before WithTimeout's ctx-cancel cleanup) and guarantee it is joined even
+	// if a Step between spawn and wait-listener-done fatals — otherwise the
+	// orphaned goroutine calls Step/Errorf on t after the test completes →
+	// "Log in goroutine after test completed" panic that crashes the binary.
+	listenerCtx, listenerCancel := context.WithCancel(ctx)
 	var wg sync.WaitGroup
 	wg.Add(1)
 	go func() {
@@ -122,8 +131,8 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 		var c *jsip.Call
 		select {
 		case c = <-listenerUAS.Inbound:
-		case <-ctx.Done():
-			listenerResultCh <- listenerResult{err: ctx.Err()}
+		case <-listenerCtx.Done():
+			listenerResultCh <- listenerResult{err: listenerCtx.Err()}
 			return
 		}
 		ls := Step(t, "listener:answer-record-and-wait-end")
@@ -149,10 +158,17 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 		if err := c.SendSilence(); err != nil {
 			ls.Errorf("SendSilence: %v", err)
 		}
-		_ = c.WaitState(ctx, jsip.StateEnded)
+		_ = c.WaitState(listenerCtx, jsip.StateEnded)
 		ls.Done()
 		listenerResultCh <- listenerResult{wavPath: wav}
 	}()
+	// Always join the goroutine, even if a later Step fatals (see listenerCtx
+	// comment above). Runs before WithTimeout's ctx-cancel cleanup while t is
+	// still valid: cancel unblocks the goroutine, then wg.Wait joins it.
+	t.Cleanup(func() {
+		listenerCancel()
+		wg.Wait()
+	})
 	s.Done()
 
 	s = Step(t, "wait-listener-settles")
@@ -213,4 +229,3 @@ func TestVerb_Conference_TwoParty(t *testing.T) {
 		"quick", "brown", "fox", "sun", "shining", "valley", "river")
 	s.Done()
 }
-

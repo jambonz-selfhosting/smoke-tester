@@ -5,15 +5,15 @@
 // not just SIP signalling but that jambonz-bridged media actually reaches
 // the caller:
 //
-//   1. Jambonz INVITEs our primary UAS (caller leg).
-//   2. `dial` sends a second INVITE to our callee UAS.
-//   3. Callee answers, streams the reference WAV
-//      (tests/verbs/testdata/test_audio.wav, pinned transcript
-//      "The sun is shining.") over its outbound RTP.
-//   4. Caller records its inbound RTP — that's whatever made it through
-//      jambonz's bridge — to a PCM16 file.
-//   5. Callee hangs up, dial actionHook fires, caller's recording is sent
-//      through Deepgram and asserted to contain the expected words.
+//  1. Jambonz INVITEs our primary UAS (caller leg).
+//  2. `dial` sends a second INVITE to our callee UAS.
+//  3. Callee answers, streams the reference WAV
+//     (tests/verbs/testdata/test_audio.wav, pinned transcript
+//     "The sun is shining.") over its outbound RTP.
+//  4. Caller records its inbound RTP — that's whatever made it through
+//     jambonz's bridge — to a PCM16 file.
+//  5. Callee hangs up, dial actionHook fires, caller's recording is sent
+//     through Deepgram and asserted to contain the expected words.
 //
 // Phase-2 test; skipped without NGROK_AUTHTOKEN. Requires both UASes
 // registered (JAMBONZ_SIP_USER + JAMBONZ_SIP_CALLEE_USER).
@@ -44,6 +44,7 @@ import (
 //  7. wait-callee-done — wait for callee goroutine to finish
 //  8. assert-callee-sip-wire — callee received INVITE, sent 100/180/200
 //  9. wait-action-dial-callback — block on /action/dial HTTP callback
+//
 // 10. assert-dial-status-completed — dial_call_status=="completed", dial_sip_status==200
 // 11. assert-bridge-audio-transcript — Deepgram transcript contains "sun" + "shining"
 //
@@ -54,15 +55,18 @@ import (
 // UAS      --200 OK-->                                             Jambonz
 // Jambonz  --INVITE (callee leg)-->                                UAS(callee-uas)
 // UAS2     --200 OK-->                                             Jambonz
-//                     (RTP bridged both directions)
+//
+//	(RTP bridged both directions)
+//
 // UAS2     ==silence + test_audio.wav + silence==>                 Jambonz ==> UAS
 // UAS                                                     records PCM16 from bridge
 // UAS2     --BYE-->                                                Jambonz
 // Jambonz  --POST /action/dial {dial_call_status:"completed"}-->   Webhook  // assert
 // Jambonz  --BYE-->                                                UAS
-//                                                                  // Deepgram: assert
-//                                                                  //   transcript has
-//                                                                  //   "sun" + "shining"
+//
+//	// Deepgram: assert
+//	//   transcript has
+//	//   "sun" + "shining"
 func TestVerb_Dial_User_Bridge(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -113,6 +117,10 @@ func TestVerb_Dial_User_Bridge(t *testing.T) {
 	// the tail of the phrase before BYE tears down media.
 	calleeDone := make(chan struct{})
 	var calleeCall *jsip.Call
+	// Dedicated context so the cleanup below can unblock the goroutine
+	// independently of the test's WithTimeout ctx (whose cancel cleanup runs
+	// last, LIFO). See the t.Cleanup after the goroutine for why.
+	calleeCtx, calleeCancel := context.WithCancel(ctx)
 	go func() {
 		defer close(calleeDone)
 		// sub-step prefix [callee:*] identifies the goroutine's steps
@@ -162,10 +170,20 @@ func TestVerb_Dial_User_Bridge(t *testing.T) {
 			}
 			<-c.Done()
 			t.Logf("[callee] done")
-		case <-ctx.Done():
-			GoroutineFailf(t, "callee", "never received INVITE: %v", ctx.Err())
+		case <-calleeCtx.Done():
+			GoroutineFailf(t, "callee", "never received INVITE: %v", calleeCtx.Err())
 		}
 	}()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit join below). Registered after spawn so
+	// it runs (LIFO) before WithTimeout's ctx-cancel cleanup, while t is still
+	// valid: cancel unblocks the goroutine, then we wait for it to exit —
+	// preventing a "Log in goroutine after test completed" panic on a
+	// place-call fatal (e.g. "480 no available feature servers").
+	t.Cleanup(func() {
+		calleeCancel()
+		<-calleeDone
+	})
 	s.Done()
 
 	s = Step(t, "place-caller-and-record")
