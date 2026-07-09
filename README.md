@@ -54,15 +54,57 @@ See [.env.example](.env.example) for the full annotated template.
 
 ## Targets
 
+### Run the whole suite
+
 ```bash
 make test           # everything: REST + verbs + contract layer (~90s)
 make test-rest      # REST CRUD only (~22s)
 make test-verbs     # call-flow verb tests only (~80s)
+make test-sip       # SIP tests only
 make test-report    # write self-contained report.html
 make help           # all targets, current parallelism setting
 ```
 
-Parallelism auto-scales to `min(NumCPU, 8)`. Override with `make test PARALLEL=4`.
+### Run a single test
+
+Type the test's name as the make goal — it locates the package for you and runs
+only that test (anchored `^NAME$`, `-v` so you see per-step markers):
+
+```bash
+make TestVerb_Conference_TwoParty
+```
+
+### Run every test in one file
+
+Type the `_test.go` filename (bare or a path) as the make goal:
+
+```bash
+make builtin_hangup_test.go
+make handoff_test.go PARALLEL=2
+```
+
+### Session-timer (drachtio) tests
+
+These need a live `sbc-inbound` and the `drachtio` build tag, so they are
+**excluded** from `make test` and the generic `make Test%` rule does not work for
+them. Use the dedicated targets:
+
+```bash
+make list-drachtio                                             # discover names
+make test-drachtio                                             # run all
+make test-drachtio RUN=TestDrachtio_SessionTimer_UASRefresher  # run one
+make test-drachtio RUN=TestDrachtio_SessionTimer               # run one file's tests (prefix)
+```
+
+### Parallelism
+
+Auto-scales to `min(NumCPU, 4)` — the limit is the cluster under test, not the
+dev box. Override on the command line:
+
+```bash
+make test PARALLEL=8   # beefier cluster
+make test PARALLEL=1   # serial, for debugging
+```
 
 ## What you'll see
 
