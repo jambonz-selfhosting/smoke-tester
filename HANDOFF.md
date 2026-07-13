@@ -409,6 +409,37 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-07-13 — Warm-transfer caller-ID regression coverage
+
+**Scope:** a live call on `eu.jambonz.io` exposed a feature-server bug: the
+`transfer` verb drops the configured `callerId` (task never copies
+`data.callerId`) AND its fallback reads the non-existent
+`cs.callInfo.callingNumber` (real property is `.from`), so the warm-transfer
+outdial INVITE goes out with an empty From user. sbc-outbound substitutes
+"anonymous" and PSTN carriers reject the leg (Twilio 403 / error 32204).
+All three tests were verified red against the buggy build, then the 2-line
+feature-server fix (copy `data.callerId` in transfer.js; fallback
+`cs.callInfo.from` in warm-common.js) was deployed to `jambonz.me` and the
+full transfer + handoff suites now PASS live.
+
+- **`TestVerb_Transfer_WarmCallerID`** (`tests/verbs/transfer_test.go`, new)
+  — warm/parked transfer with explicit `callerId`; asserts the target UAS's
+  received INVITE From contains the configured number (and not "anonymous"),
+  plus the usual bridged/completed actionHook. No audio/STT — caller-ID
+  contract only.
+- **`TestVerb_Transfer_WarmParked`** — added step
+  `assert-target-caller-id-fallback`: with no `callerId` configured, the
+  target INVITE From must fall back to the parent caller's number
+  (`441514533212`, the REST-created leg's From), never anonymous/empty.
+- **`TestVerb_Agent_OpenAI_Handoff_WarmCallerID`**
+  (`tests/verbs/handoff_test.go`, new) — same contract through the agent
+  verb's Layer-1 handoff (the exact production path): warm handoff with
+  `callerId` + `brief:"none"`, LLM force-calls `transfer_to_human`, asserts
+  the human-leg INVITE From carries the callerId (not anonymous) and the
+  agent actionHook reports `completion_reason=="transferred"`. Verified red
+  live against `jambonz.me` (From arrives as anonymous; blind/dial handoff is
+  unaffected — `blind.js` reads `data.callerId` directly, warm path doesn't).
+
 ### 2026-07-05 — Tool-calling depth: agent argument extraction + first llm-verb toolHook test
 
 **Scope:** the existing `TestVerb_Agent_ToolHook` only proved a

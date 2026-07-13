@@ -13,6 +13,7 @@ import (
 	"fmt"
 	"path/filepath"
 	"slices"
+	"strings"
 	"testing"
 	"time"
 
@@ -246,11 +247,12 @@ func TestVerb_Transfer_Blind(t *testing.T) {
 //  6. place-caller-and-record     — POST /Calls, answer caller leg, record bridge audio
 //  7. wait-target-done            — wait for target goroutine to finish
 //  8. assert-target-sip-wire      — target received INVITE, sent 100/180/200
-//  9. wait-action-transfer-callback — block on /action/transfer HTTP callback (20s sub-context)
+//  9. assert-target-caller-id-fallback — no callerId configured: target INVITE From falls back to the parent caller number, never anonymous/empty
+// 10. wait-action-transfer-callback — block on /action/transfer HTTP callback (20s sub-context)
 //
-// 10. assert-transfer-status-bridged — transfer_result=="bridged", transfer_reason=="completed", sip_status==200
-// 11. assert-brief-reached-target  — Deepgram STT on target recording contains "briefing" + "agent"
-// 12. assert-bridge-audio-transcript — Deepgram STT on caller recording contains "sun" + "shining"
+// 11. assert-transfer-status-bridged — transfer_result=="bridged", transfer_reason=="completed", sip_status==200
+// 12. assert-brief-reached-target  — Deepgram STT on target recording contains "briefing" + "agent"
+// 13. assert-bridge-audio-transcript — Deepgram STT on caller recording contains "sun" + "shining"
 //
 // Test     --POST /Calls [tag.x_test_id, to=callerUAS]-->                 Jambonz
 // Jambonz  --GET /hook-->                                                 Webhook
@@ -425,6 +427,22 @@ func TestVerb_Transfer_WarmParked(t *testing.T) {
 		if !slices.Contains(sent, want) {
 			s.Errorf("target sent statuses = %v, want %d", sent, want)
 		}
+	}
+	s.Done()
+
+	s = Step(t, "assert-target-caller-id-fallback")
+	// No callerId is configured on this transfer, so the target leg must fall
+	// back to the parent call's caller number (the REST-created caller leg
+	// uses From 441514533212 — see placeWebhookCallToWithSID). Regression: the
+	// warm-transfer outdial once sent an empty From user, which sbc-outbound
+	// presents as "anonymous" and PSTN carriers reject (Twilio 403 / 32204).
+	from := targetCall.From()
+	s.Logf("target INVITE From: %s", from)
+	if !strings.Contains(from, "441514533212") {
+		s.Errorf("target INVITE From = %q, want fallback to parent caller number 441514533212", from)
+	}
+	if strings.Contains(strings.ToLower(from), "anonymous") {
+		s.Errorf("target INVITE From = %q presents anonymous — caller-id fallback is broken", from)
 	}
 	s.Done()
 
@@ -969,6 +987,202 @@ func TestVerb_Transfer_BlindRefer(t *testing.T) {
 	// (default return). This "error" reason is the REFER-path signature.
 	if got := cb.String("transfer_reason"); got != "error" {
 		s.Errorf("transfer_reason: got %q want %q", got, "error")
+	}
+	s.Done()
+}
+
+// TestVerb_Transfer_WarmCallerID — regression: the `callerId` option on a warm
+// transfer must be presented to the transfer destination. A feature-server bug
+// dropped the configured callerId (the transfer task never copied
+// data.callerId off the verb), so the target-leg INVITE went out with an
+// EMPTY From user; sbc-outbound then presented "anonymous" and PSTN carriers
+// rejected the leg (Twilio: 403, error 32204 "Invalid Caller ID"). A
+// registered-user target accepts the call regardless of caller ID, which lets
+// us assert the From header directly on the UAS wire instead of needing a
+// PSTN carrier in the loop.
+//
+// No audio/STT assertions here — bridge audio is already covered by
+// TestVerb_Transfer_WarmParked. This test pins the caller-ID contract only.
+//
+// Asserts:
+//
+//	(a) the INVITE received by the target carries the configured callerId in
+//	    its From header (and does not present anonymous),
+//	(b) the transfer still completes end-to-end (transfer_result=="bridged",
+//	    transfer_reason=="completed").
+//
+// Steps:
+//  1. script-transfer-warm-callerid — [transfer warm/callerPresent=false callerId=..., hangup] + empty action ack
+//  2. spawn-target-goroutine        — async: answer, silence, wait out the brief + bridge, hang up
+//  3. place-caller-and-wait         — POST /Calls, answer caller leg, hold until ended
+//  4. wait-target-done              — wait for target goroutine to finish
+//  5. assert-target-sip-wire        — target received INVITE, sent 100/180/200
+//  6. assert-target-caller-id       — target INVITE From contains the configured callerId
+//  7. wait-action-transfer-callback — block on /action/transfer HTTP callback (20s sub-context)
+//  8. assert-transfer-status-bridged — transfer_result=="bridged", transfer_reason=="completed"
+//
+// Test     --POST /Calls [tag.x_test_id, to=callerUAS]-->                 Jambonz
+// Jambonz  --GET /hook-->                                                 Webhook
+// Webhook  --[answer, pause, transfer warm callerId=+15005550042, hangup]--> Jambonz
+// Jambonz  --INVITE (caller leg)-->                                       UAS(callerUAS)
+// UAS      --200 OK-->                                                    Jambonz
+//
+//	(caller parked on hold)
+//
+// Jambonz  --INVITE From: <sip:+15005550042@...> (target leg)-->          UAS(targetUAS)  // assert From
+// UAS2     --200 OK-->                                                    Jambonz
+// Jambonz  ==TTS brief, then bridge==>                                    both legs
+// UAS2     --BYE-->                                                       Jambonz
+// Jambonz  --POST /action/transfer {transfer_result:"bridged"}-->         Webhook  // assert
+// Jambonz  --BYE-->                                                       UAS
+func TestVerb_Transfer_WarmCallerID(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+	ctx := WithTimeout(t, 120*time.Second)
+	callerUAS, targetUAS := claimUAS2(t, ctx)
+
+	_, sess := claimSession(t)
+
+	// Distinctive E.164 number no other fixture uses: if it shows up in the
+	// target's From header it can only have come from the verb's callerId.
+	const transferCallerID = "+15005550042"
+
+	s := Step(t, "script-transfer-warm-callerid")
+	actionURL := SessionURL(sess, "transfer")
+	target := fmt.Sprintf("%s@%s", targetUAS.Username, suite.SIPRealm)
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		V("transfer",
+			"mode", "warm",
+			"callerPresent", false,
+			"target", []any{map[string]any{
+				"type": "user",
+				"name": target,
+			}},
+			"callerId", transferCallerID,
+			"brief", map[string]any{"text": "Briefing the agent now."},
+			"timeout", 20,
+			"anchorMedia", true,
+			"actionHook", actionURL),
+		V("hangup"),
+	}))
+	SessionAckEmpty(sess, "transfer")
+	s.Done()
+
+	s = Step(t, "spawn-target-goroutine")
+	// Target goroutine: answer, prime the RTP path, wait out the brief + the
+	// bridge forming, then hang up. Hanging up before the bridge forms would
+	// resolve the transfer as a decline/failure instead of bridged, so the
+	// WarmBriefSettleDelay wait is load-bearing.
+	targetDone := make(chan struct{})
+	var targetCall *jsip.Call
+	// Dedicated context so the cleanup below can unblock the goroutine
+	// independently of the test's WithTimeout ctx (whose cancel cleanup runs
+	// last, LIFO). See the t.Cleanup after the goroutine for why.
+	targetCtx, targetCancel := context.WithCancel(ctx)
+	go func() {
+		defer close(targetDone)
+		select {
+		case c := <-targetUAS.Inbound:
+			targetCall = c
+			t.Logf("[target:trying] start")
+			if err := c.Trying(); err != nil {
+				GoroutineFailf(t, "target:trying", "Trying: %v", err)
+				return
+			}
+			t.Logf("[target:ringing] start")
+			if err := c.Ringing(); err != nil {
+				GoroutineFailf(t, "target:ringing", "Ringing: %v", err)
+				return
+			}
+			t.Logf("[target:answer] start")
+			if err := c.Answer(); err != nil {
+				GoroutineFailf(t, "target:answer", "Answer: %v", err)
+				return
+			}
+			t.Logf("[target:silence-prime] start")
+			if err := c.SendSilence(); err != nil {
+				GoroutineFailf(t, "target:silence-prime", "SendSilence: %v", err)
+				return
+			}
+			// Let the brief finish and the bridge latch before hanging up so
+			// the actionHook reports bridged/completed, not a failure path.
+			time.Sleep(WarmBriefSettleDelay)
+			t.Logf("[target:hangup] start")
+			if err := c.Hangup(); err != nil {
+				GoroutineFailf(t, "target:hangup", "Hangup: %v", err)
+			}
+			<-c.Done()
+			t.Logf("[target] done")
+		case <-targetCtx.Done():
+			GoroutineFailf(t, "target", "never received INVITE: %v", targetCtx.Err())
+		}
+	}()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit join below). Registered after spawn so
+	// it runs (LIFO) before WithTimeout's ctx-cancel cleanup, while t is still
+	// valid: cancel unblocks the goroutine, then we wait for it to exit —
+	// preventing a "Log in goroutine after test completed" panic on a
+	// place-call fatal (e.g. "480 no available feature servers").
+	t.Cleanup(func() {
+		targetCancel()
+		<-targetDone
+	})
+	s.Done()
+
+	s = Step(t, "place-caller-and-wait")
+	call := placeWebhookCallTo(ctx, t, callerUAS, sess, withTimeLimit(60))
+	AnswerRecordAndWaitEnded(s, ctx, call, WithSilence())
+	s.Done()
+
+	s = Step(t, "wait-target-done")
+	<-targetDone
+	s.Done()
+
+	s = Step(t, "assert-target-sip-wire")
+	if targetCall == nil {
+		s.Fatal("target call was never handed to the handler")
+	}
+	RequireRecvMethods(s, targetCall, "INVITE")
+	sent := StatusesOf(targetCall.Sent())
+	for _, want := range []int{100, 180, 200} {
+		if !slices.Contains(sent, want) {
+			s.Errorf("target sent statuses = %v, want %d", sent, want)
+		}
+	}
+	s.Done()
+
+	s = Step(t, "assert-target-caller-id")
+	// The core regression assertion: the configured callerId must survive
+	// feature-server → sbc-outbound → target INVITE. With the bug, the From
+	// user is empty and sbc-outbound substitutes "anonymous".
+	from := targetCall.From()
+	s.Logf("target INVITE From: %s", from)
+	if !strings.Contains(from, transferCallerID) {
+		s.Errorf("target INVITE From = %q, want it to contain configured callerId %q", from, transferCallerID)
+	}
+	if strings.Contains(strings.ToLower(from), "anonymous") {
+		s.Errorf("target INVITE From = %q presents anonymous — configured callerId was dropped", from)
+	}
+	s.Done()
+
+	s = Step(t, "wait-action-transfer-callback")
+	// Same 20s sub-context as the other warm tests: brief-duration +
+	// bridge-setup precede the callback.
+	waitCtx, wcancel := context.WithTimeout(ctx, 20*time.Second)
+	defer wcancel()
+	cb, err := sess.WaitCallbackFor(waitCtx, "action/transfer")
+	if err != nil {
+		s.Fatalf("WaitCallbackFor action/transfer: %v", err)
+	}
+	s.Logf("action/transfer body: %s", string(cb.Body))
+	s.Done()
+
+	s = Step(t, "assert-transfer-status-bridged")
+	if got := cb.String("transfer_result"); got != "bridged" {
+		s.Errorf("transfer_result: got %q want %q", got, "bridged")
+	}
+	if got := cb.String("transfer_reason"); got != "completed" {
+		s.Errorf("transfer_reason: got %q want %q", got, "completed")
 	}
 	s.Done()
 }
