@@ -409,6 +409,37 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-07-14 — onHoldHook + transfer-kill coverage (feature-server transfer fixes)
+
+**Scope:** the feature-server gained (a) onHoldHook execution on warm/parked
+transfers (previously schema-only; parked callers heard silence), (b)
+spread-based handoff→transfer field forwarding (headers/callerName/
+anchorMedia/referredBy were silently dropped), and (c) a kill-gap fix
+(TaskTransfer.kill now aborts a running warm strategy via _abortStrategy —
+previously a LCC redirect mid-transfer left the hold loop + ringing human leg
+alive until ring timeout). Three test changes pin these; all compile + vet
+clean but are UNRUN — `jambonz.me` was unreachable at session end (likely
+being redeployed with the new build). Run the transfer/handoff/LCC suites
+when it's back.
+
+- **`TestVerb_Transfer_WarmParked_OnHoldHook`** (`transfer_test.go`, new) —
+  warm/parked transfer with `onHoldHook` served by `/action/onhold` returning
+  a say; target delays answer 4s so the announcement has a window. Asserts
+  hook invoked with `event_type=="transfer.on-hold"`, caller transcript
+  contains "transfer" (hold say reached the parked caller), and bridged/
+  completed.
+- **`TestVerb_Agent_OpenAI_Handoff_WarmCallerID`** (extended) — handoff block
+  now also carries `onHoldHook` + `headers:{X-Handoff-Test}`; new steps
+  assert the custom header arrives on the target INVITE (headers forwarding)
+  and `/action/onhold` was invoked (onHoldHook forwarding). Hook-invocation
+  only — audible-hold audio is the transfer test's job.
+- **`TestLCC_Redirect_DuringWarmTransfer`** (`lcc_transfer_test.go`, new) —
+  kill-gap regression: warm/parked transfer (timeout 30) ringing a
+  never-answering target with the hold loop live; re-script the call hook and
+  inject `updateCall{call_hook}` → assert the caller hears the replacement
+  say and the call ends <20s after updateCall (pre-fix: stalled the full 30s
+  ring timeout), and the target leg is CANCELed without a 200.
+
 ### 2026-07-13 — Warm-transfer caller-ID regression coverage
 
 **Scope:** a live call on `eu.jambonz.io` exposed a feature-server bug: the

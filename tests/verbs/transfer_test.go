@@ -1186,3 +1186,195 @@ func TestVerb_Transfer_WarmCallerID(t *testing.T) {
 	}
 	s.Done()
 }
+
+// TestVerb_Transfer_WarmParked_OnHoldHook — the onHoldHook option on a warm/
+// parked transfer: while the caller is parked, jambonz requests the hook and
+// plays the returned verbs (say/play/pause only) to the caller in a loop until
+// the bridge forms. Previously the schema documented onHoldHook but the
+// feature-server played only silence ("no onHoldHook processing in v1").
+//
+// The target delays its answer by a few seconds so the hold announcement has a
+// clean window to play to the parked caller before the brief + bridge cut it off.
+//
+// Asserts:
+//
+//	(a) the onHoldHook is invoked with event_type=="transfer.on-hold",
+//	(b) the hold announcement reached the PARKED caller — Deepgram STT on the
+//	    caller recording contains "transfer" (from "Please hold while we
+//	    transfer you to an agent."),
+//	(c) the transfer still completes end-to-end (transfer_result=="bridged").
+//
+// Steps:
+//  1. script-transfer-onholdhook   — transfer warm/parked with onHoldHook; onhold hook scripted with the say
+//  2. spawn-target-goroutine       — async: ring, delay ~4s, answer, wait out the brief + bridge, hang up
+//  3. place-caller-and-record      — POST /Calls, answer caller leg, record until ended
+//  4. wait-onhold-callback         — block on /action/onhold, assert event_type=="transfer.on-hold"
+//  5. wait-target-done             — wait for target goroutine to finish
+//  6. assert-target-sip-wire       — target received INVITE, sent 100/180/200
+//  7. wait-action-transfer-callback — block on /action/transfer
+//  8. assert-transfer-status-bridged — transfer_result=="bridged", transfer_reason=="completed"
+//  9. assert-hold-announcement-reached-caller — caller recording contains "transfer"
+func TestVerb_Transfer_WarmParked_OnHoldHook(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+	ctx := WithTimeout(t, 150*time.Second)
+	callerUAS, targetUAS := claimUAS2(t, ctx)
+
+	_, sess := claimSession(t)
+
+	s := Step(t, "script-transfer-onholdhook")
+	actionURL := SessionURL(sess, "transfer")
+	target := fmt.Sprintf("%s@%s", targetUAS.Username, suite.SIPRealm)
+	// The hold announcement served each time jambonz requests the onHoldHook.
+	// The feature-server loops the hook while the caller stays parked, so the
+	// phrase may repeat — the transcript assertion only needs one occurrence.
+	sess.ScriptActionHook("onhold", webhook.Script{
+		V("say", "text", "Please hold while we transfer you to an agent."),
+	})
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		V("transfer",
+			"mode", "warm",
+			"callerPresent", false,
+			"target", []any{map[string]any{
+				"type": "user",
+				"name": target,
+			}},
+			"brief", map[string]any{"text": "Briefing the agent now."},
+			"onHoldHook", SessionURL(sess, "onhold"),
+			"timeout", 20,
+			"anchorMedia", true,
+			"actionHook", actionURL),
+		V("hangup"),
+	}))
+	SessionAckEmpty(sess, "transfer")
+	s.Done()
+
+	s = Step(t, "spawn-target-goroutine")
+	// Ring for ~4s before answering so the hold announcement (~3.5s of TTS,
+	// starting after the 500ms pacing silence + hook round-trip) plays to the
+	// parked caller before the brief + bridge interrupt it.
+	targetDone := make(chan struct{})
+	var targetCall *jsip.Call
+	// Dedicated context so the cleanup below can unblock the goroutine
+	// independently of the test's WithTimeout ctx (whose cancel cleanup runs
+	// last, LIFO). See the t.Cleanup after the goroutine for why.
+	targetCtx, targetCancel := context.WithCancel(ctx)
+	go func() {
+		defer close(targetDone)
+		select {
+		case c := <-targetUAS.Inbound:
+			targetCall = c
+			t.Logf("[target:trying] start")
+			if err := c.Trying(); err != nil {
+				GoroutineFailf(t, "target:trying", "Trying: %v", err)
+				return
+			}
+			t.Logf("[target:ringing] start")
+			if err := c.Ringing(); err != nil {
+				GoroutineFailf(t, "target:ringing", "Ringing: %v", err)
+				return
+			}
+			// Hold-announcement window: stay ringing while the caller hears
+			// the onHoldHook say.
+			time.Sleep(4 * time.Second)
+			t.Logf("[target:answer] start")
+			if err := c.Answer(); err != nil {
+				GoroutineFailf(t, "target:answer", "Answer: %v", err)
+				return
+			}
+			t.Logf("[target:silence-prime] start")
+			if err := c.SendSilence(); err != nil {
+				GoroutineFailf(t, "target:silence-prime", "SendSilence: %v", err)
+				return
+			}
+			// Let the brief finish and the bridge latch before hanging up so
+			// the actionHook reports bridged/completed, not a failure path.
+			time.Sleep(WarmBriefSettleDelay)
+			t.Logf("[target:hangup] start")
+			if err := c.Hangup(); err != nil {
+				GoroutineFailf(t, "target:hangup", "Hangup: %v", err)
+			}
+			<-c.Done()
+			t.Logf("[target] done")
+		case <-targetCtx.Done():
+			GoroutineFailf(t, "target", "never received INVITE: %v", targetCtx.Err())
+		}
+	}()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit join below). Registered after spawn so
+	// it runs (LIFO) before WithTimeout's ctx-cancel cleanup, while t is still
+	// valid: cancel unblocks the goroutine, then we wait for it to exit —
+	// preventing a "Log in goroutine after test completed" panic on a
+	// place-call fatal (e.g. "480 no available feature servers").
+	t.Cleanup(func() {
+		targetCancel()
+		<-targetDone
+	})
+	s.Done()
+
+	s = Step(t, "place-caller-and-record")
+	call := placeWebhookCallTo(ctx, t, callerUAS, sess, withTimeLimit(60))
+	callerRec := AnswerRecordAndWaitEnded(s, ctx, call,
+		WithRecord("transfer-onhold-caller"), WithSilence())
+	s.Done()
+
+	s = Step(t, "wait-onhold-callback")
+	// The hook fired while the call was live; its callback is already queued.
+	waitCtx0, wcancel0 := context.WithTimeout(ctx, 15*time.Second)
+	defer wcancel0()
+	hcb, err := sess.WaitCallbackFor(waitCtx0, "action/onhold")
+	if err != nil {
+		s.Fatalf("WaitCallbackFor action/onhold: %v", err)
+	}
+	s.Logf("action/onhold body: %s", string(hcb.Body))
+	if got := hcb.String("event_type"); got != "transfer.on-hold" {
+		s.Errorf("onHoldHook event_type: got %q want %q", got, "transfer.on-hold")
+	}
+	s.Done()
+
+	s = Step(t, "wait-target-done")
+	<-targetDone
+	s.Done()
+
+	s = Step(t, "assert-target-sip-wire")
+	if targetCall == nil {
+		s.Fatal("target call was never handed to the handler")
+	}
+	RequireRecvMethods(s, targetCall, "INVITE")
+	sent := StatusesOf(targetCall.Sent())
+	for _, want := range []int{100, 180, 200} {
+		if !slices.Contains(sent, want) {
+			s.Errorf("target sent statuses = %v, want %d", sent, want)
+		}
+	}
+	s.Done()
+
+	s = Step(t, "wait-action-transfer-callback")
+	waitCtx, wcancel := context.WithTimeout(ctx, 20*time.Second)
+	defer wcancel()
+	cb2, err := sess.WaitCallbackFor(waitCtx, "action/transfer")
+	if err != nil {
+		s.Fatalf("WaitCallbackFor action/transfer: %v", err)
+	}
+	s.Logf("action/transfer body: %s", string(cb2.Body))
+	s.Done()
+
+	s = Step(t, "assert-transfer-status-bridged")
+	if got := cb2.String("transfer_result"); got != "bridged" {
+		s.Errorf("transfer_result: got %q want %q", got, "bridged")
+	}
+	if got := cb2.String("transfer_reason"); got != "completed" {
+		s.Errorf("transfer_reason: got %q want %q", got, "completed")
+	}
+	s.Done()
+
+	s = Step(t, "assert-hold-announcement-reached-caller")
+	// The real proof: the parked caller heard the app-provided hold verbs, not
+	// silence. "transfer" is mid-phrase ("...while we TRANSFER you to an
+	// agent") so it survives both start-clipping and an end-of-phrase cutoff
+	// when the bridge forms.
+	s.Logf("caller recorded pcm_bytes=%d rms=%.1f duration=%s",
+		call.PCMBytesIn(), call.RMS(), call.AudioDuration())
+	AssertTranscriptContains(s, ctx, callerRec, "transfer")
+	s.Done()
+}

@@ -280,16 +280,23 @@ func TestVerb_LLM_OpenAI_Handoff(t *testing.T) {
 //	(b) the warm handoff completes end-to-end (agent actionHook reports
 //	    completion_reason=="transferred").
 //
+// The handoff block also carries onHoldHook and custom SIP headers, pinning
+// the handoff→transfer field forwarding (buildHandoffTransferData once
+// silently dropped fields it didn't explicitly list — callerId, onHoldHook,
+// headers were all lost that way at different times).
+//
 // Steps:
 //  1. preflight-skips              — needs OPENAI_API_KEY + DEEPGRAM_API_KEY + deepgram label
-//  2. script-agent-handoff-warm-callerid — agent verb with handoff{mode:warm, callerId} + empty acks
+//  2. script-agent-handoff-warm-callerid — agent verb with handoff{mode:warm, callerId, onHoldHook, headers} + hook scripts
 //  3. spawn-target-goroutine       — async: answer, silence, brief hold, hang up (answerAndIdleTarget)
 //  4. place-caller                 — POST /Calls, answer caller leg, hold until ended
 //  5. wait-target-done             — wait for target goroutine to finish
 //  6. assert-target-answered       — target received INVITE, sent 100/180/200
 //  7. assert-target-caller-id      — target INVITE From contains the configured callerId
-//  8. wait-action-agent-callback   — block on /action/agent-complete
-//  9. assert-completion-transferred — completion_reason=="transferred"
+//  8. assert-target-custom-header  — target INVITE carries the handoff's custom SIP header
+//  9. wait-onhold-callback         — /action/onhold was invoked with event_type=="transfer.on-hold"
+// 10. wait-action-agent-callback   — block on /action/agent-complete
+// 11. assert-completion-transferred — completion_reason=="transferred"
 func TestVerb_Agent_OpenAI_Handoff_WarmCallerID(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -311,6 +318,14 @@ func TestVerb_Agent_OpenAI_Handoff_WarmCallerID(t *testing.T) {
 
 	s = Step(t, "script-agent-handoff-warm-callerid")
 	target := fmt.Sprintf("%s@%s", targetUAS.Username, suite.SIPRealm)
+	// Hold verbs served while the caller is parked. The target answers
+	// immediately and brief is "none", so the say may be cut short by the
+	// bridge — this test only asserts the hook was INVOKED (field forwarding);
+	// the audible-hold-audio contract is covered by
+	// TestVerb_Transfer_WarmParked_OnHoldHook.
+	sess.ScriptActionHook("onhold", webhook.Script{
+		V("say", "text", "Please hold while we connect you."),
+	})
 	agentVerb := V("agent",
 		"stt", map[string]any{"vendor": "deepgram", "label": deepgramLabel, "language": "en-US"},
 		"tts", map[string]any{"vendor": "deepgram", "label": deepgramLabel, "voice": deepgramVoice},
@@ -335,6 +350,8 @@ func TestVerb_Agent_OpenAI_Handoff_WarmCallerID(t *testing.T) {
 			"callerPresent": false,
 			"brief":         "none",
 			"callerId":      handoffCallerID,
+			"onHoldHook":    SessionURL(sess, "onhold"),
+			"headers":       map[string]any{"X-Handoff-Test": "smoke-1"},
 			"target": []any{map[string]any{
 				"type": "user",
 				"name": target,
@@ -402,6 +419,30 @@ func TestVerb_Agent_OpenAI_Handoff_WarmCallerID(t *testing.T) {
 	}
 	if strings.Contains(strings.ToLower(from), "anonymous") {
 		s.Errorf("target INVITE From = %q presents anonymous — handoff callerId was dropped", from)
+	}
+	s.Done()
+
+	s = Step(t, "assert-target-custom-header")
+	// Pins headers forwarding: handoff → buildHandoffTransferData → transfer
+	// task → placeHumanLeg opts.headers → INVITE (sbc-outbound proxies all
+	// non-internal request headers to the B-leg).
+	if got := targetCall.Header("X-Handoff-Test"); got != "smoke-1" {
+		s.Errorf("target INVITE X-Handoff-Test: got %q want %q — handoff headers were dropped", got, "smoke-1")
+	}
+	s.Done()
+
+	s = Step(t, "wait-onhold-callback")
+	// Pins onHoldHook forwarding: the hook fired while the caller was parked;
+	// its callback is already queued by the time the call ends.
+	waitCtxH, wcancelH := context.WithTimeout(ctx, 15*time.Second)
+	defer wcancelH()
+	hcb, err := sess.WaitCallbackFor(waitCtxH, "action/onhold")
+	if err != nil {
+		s.Fatalf("WaitCallbackFor action/onhold: %v — handoff onHoldHook was dropped", err)
+	}
+	s.Logf("action/onhold body: %s", string(hcb.Body))
+	if got := hcb.String("event_type"); got != "transfer.on-hold" {
+		s.Errorf("onHoldHook event_type: got %q want %q", got, "transfer.on-hold")
 	}
 	s.Done()
 
