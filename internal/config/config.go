@@ -78,6 +78,18 @@ type Settings struct {
 	// exercising xai STT — see HasXai.
 	XaiAPIKey string
 
+	// Optional — Speechmatics STT API key. When set, TestMain provisions a
+	// speechmatics SpeechCredential under the ephemeral account and the
+	// speechmatics gather/transcribe tests exercise it (model selection +
+	// transcript_filtering_config). When unset those tests pass without
+	// exercising speechmatics STT — see HasSpeechmatics.
+	SpeechmaticsAPIKey string
+
+	// Optional — Speechmatics realtime host for the provisioned credential
+	// (the API requires speechmatics_stt_uri). Defaults to
+	// "eu2.rt.speechmatics.com" when SPEECHMATICS_STT_URI is unset.
+	SpeechmaticsSTTURI string
+
 	// Required — ngrok auth token. Phase-2 verb tests + Phase-1 status
 	// callbacks both need a public URL forwarded to the local webhook
 	// server. The whole verb suite gates on this.
@@ -119,6 +131,11 @@ func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
+
+// HasSpeechmatics reports whether the speechmatics STT gather/transcribe
+// tests can run. Optional: when the key is unset those tests pass without
+// exercising speechmatics.
+func (s *Settings) HasSpeechmatics() bool { return s.SpeechmaticsAPIKey != "" }
 
 var (
 	loadOnce sync.Once
@@ -170,19 +187,21 @@ func MustLoad() *Settings {
 
 func parse() (*Settings, error) {
 	s := &Settings{
-		APIBaseURL:     strings.TrimRight(os.Getenv("JAMBONZ_API_URL"), "/"),
-		SPAPIKey:       os.Getenv("JAMBONZ_SP_API_KEY"),
-		SPSID:          os.Getenv("JAMBONZ_SP_SID"),
-		SIPRealmZone:   firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
-		DeepgramAPIKey: os.Getenv("DEEPGRAM_API_KEY"),
-		DeepseekAPIKey: os.Getenv("DEEPSEEK_API_KEY"),
-		OpenAIAPIKey:   os.Getenv("OPENAI_API_KEY"),
-		MurfAPIKey:     os.Getenv("MURF_API_KEY"),
-		XaiAPIKey:      os.Getenv("XAI_API_KEY"),
-		NgrokAuthToken: os.Getenv("NGROK_AUTHTOKEN"),
-		NgrokDomain:    os.Getenv("NGROK_DOMAIN"),
-		RunID:          os.Getenv("RUN_ID"),
-		LogLevel:       strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
+		APIBaseURL:         strings.TrimRight(os.Getenv("JAMBONZ_API_URL"), "/"),
+		SPAPIKey:           os.Getenv("JAMBONZ_SP_API_KEY"),
+		SPSID:              os.Getenv("JAMBONZ_SP_SID"),
+		SIPRealmZone:       firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
+		DeepgramAPIKey:     os.Getenv("DEEPGRAM_API_KEY"),
+		DeepseekAPIKey:     os.Getenv("DEEPSEEK_API_KEY"),
+		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
+		MurfAPIKey:         os.Getenv("MURF_API_KEY"),
+		XaiAPIKey:          os.Getenv("XAI_API_KEY"),
+		SpeechmaticsAPIKey: os.Getenv("SPEECHMATICS_API_KEY"),
+		SpeechmaticsSTTURI: firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
+		NgrokAuthToken:     os.Getenv("NGROK_AUTHTOKEN"),
+		NgrokDomain:        os.Getenv("NGROK_DOMAIN"),
+		RunID:              os.Getenv("RUN_ID"),
+		LogLevel:           strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
 	}
 
 	// required
