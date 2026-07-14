@@ -27,6 +27,9 @@ type SpeechCredentialCreate struct {
 	UseForSTT  bool   `json:"use_for_stt"`
 	APIKey     string `json:"api_key,omitempty"`
 	ServiceKey string `json:"service_key,omitempty"`
+	// SpeechmaticsSTTURI is required by the API when vendor is
+	// "speechmatics" — the realtime host, e.g. "eu2.rt.speechmatics.com".
+	SpeechmaticsSTTURI string `json:"speechmatics_stt_uri,omitempty"`
 }
 
 // CreateAccountSpeechCredential POSTs a credential under an account. Returns

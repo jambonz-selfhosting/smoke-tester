@@ -80,6 +80,13 @@ var (
 	xaiVoice    = "eve"
 	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
 
+	// speechmatics speech credential (STT-only) provisioned at TestMain IF
+	// SPEECHMATICS_API_KEY is set (optional vendor). When unset,
+	// speechmaticsLabel stays "" and the speechmatics gather/transcribe tests
+	// pass without exercising speechmatics.
+	speechmaticsLabel string
+	speechmaticsSID   string
+
 	// Webhook server + ngrok tunnel + Application bound to the suite
 	// account. The webhook always runs (NGROK_AUTHTOKEN is mandatory in
 	// the new model).
@@ -188,6 +195,18 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: XAI_API_KEY not set — xai STT tests will pass without exercising xai")
 	}
 
+	// 3d. speechmatics STT speech credential — optional. Only provisioned
+	// when SPEECHMATICS_API_KEY is set; otherwise the speechmatics gather/
+	// transcribe tests pass without exercising speechmatics STT.
+	if cfg.HasSpeechmatics() {
+		if err := provisionSpeechmaticsCredential(); err != nil {
+			log.Fatalf("tests/verbs: speechmatics credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: speechmatics credential label=%s sid=%s", speechmaticsLabel, speechmaticsSID)
+	} else {
+		log.Printf("tests/verbs: SPEECHMATICS_API_KEY not set — speechmatics STT tests will pass without exercising speechmatics")
+	}
+
 	// 4. Webhook server + ngrok tunnel + Application bound to the suite.
 	if err := setupWebhook(v); err != nil {
 		log.Fatalf("tests/verbs: webhook setup failed: %v", err)
@@ -211,6 +230,7 @@ func TestMain(m *testing.M) {
 	teardownDeepgramCredential()
 	teardownMurfCredential()
 	teardownXaiCredential()
+	teardownSpeechmaticsCredential()
 	if sipResolver != nil {
 		_ = sipResolver.Close()
 	}
@@ -318,6 +338,38 @@ func teardownXaiCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, xaiSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete xai credential %s: %v", xaiSID, err)
+	}
+}
+
+// provisionSpeechmaticsCredential creates a speechmatics speech credential
+// under the suite account, labelled `it-speechmatics-<runID>`. STT-only.
+// Called only when SPEECHMATICS_API_KEY is set.
+func provisionSpeechmaticsCredential() error {
+	speechmaticsLabel = "it-speechmatics-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:             "speechmatics",
+		Label:              speechmaticsLabel,
+		APIKey:             cfg.SpeechmaticsAPIKey,
+		SpeechmaticsSTTURI: cfg.SpeechmaticsSTTURI,
+		UseForSTT:          true,
+	})
+	if err != nil {
+		return err
+	}
+	speechmaticsSID = sid
+	return nil
+}
+
+func teardownSpeechmaticsCredential() {
+	if speechmaticsSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, speechmaticsSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete speechmatics credential %s: %v", speechmaticsSID, err)
 	}
 }
 
