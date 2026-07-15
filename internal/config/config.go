@@ -99,6 +99,18 @@ type Settings struct {
 	// public URL is stable across runs.
 	NgrokDomain string
 
+	// Optional — the harness's OWN cluster-reachable SIP address, used by the
+	// dial-to-SIP-URI SRTP test. Unlike the registered-user path (which the
+	// cluster reaches by reusing the REGISTER connection), a `type:sip`
+	// forward makes the cluster open a fresh connection to the Request-URI
+	// host, so the harness must be reachable there. Set SIPPublicHost to a
+	// host/IP the cluster's sbc-outbound can route to and SIPTLSPort to a
+	// port the harness binds a TLS SIP listener on. When either is unset the
+	// SRTP-over-TLS dial test skips (passes) with a config-missing log — see
+	// HasReachableTLSSIP.
+	SIPPublicHost string
+	SIPTLSPort    int
+
 	// Test-run knobs
 	RunID          string
 	LogLevel       string // "info" | "debug"
@@ -136,6 +148,12 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // tests can run. Optional: when the key is unset those tests pass without
 // exercising speechmatics.
 func (s *Settings) HasSpeechmatics() bool { return s.SpeechmaticsAPIKey != "" }
+
+// HasReachableTLSSIP reports whether the dial-to-SIP-URI SRTP-over-TLS test
+// can run. It needs the harness's own cluster-reachable host plus a TLS
+// bind port; when either is unset the test skips (passes) with a
+// config-missing log.
+func (s *Settings) HasReachableTLSSIP() bool { return s.SIPPublicHost != "" && s.SIPTLSPort != 0 }
 
 var (
 	loadOnce sync.Once
@@ -200,6 +218,7 @@ func parse() (*Settings, error) {
 		SpeechmaticsSTTURI: firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
 		NgrokAuthToken:     os.Getenv("NGROK_AUTHTOKEN"),
 		NgrokDomain:        os.Getenv("NGROK_DOMAIN"),
+		SIPPublicHost:      os.Getenv("JAMBONZ_IT_SIP_PUBLIC_HOST"),
 		RunID:              os.Getenv("RUN_ID"),
 		LogLevel:           strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
 	}
@@ -243,6 +262,15 @@ func parse() (*Settings, error) {
 	// `<account>.<zone>` realm.
 	if !strings.Contains(s.SIPRealmZone, ".") {
 		return nil, fmt.Errorf("JAMBONZ_SIP_REALM_ZONE must contain at least one dot (got %q)", s.SIPRealmZone)
+	}
+
+	// optional harness-reachable TLS SIP port (dial-to-SIP-URI SRTP test)
+	if v := os.Getenv("JAMBONZ_IT_SIP_TLS_PORT"); v != "" {
+		port, err := strconv.Atoi(v)
+		if err != nil || port < 1 || port > 65535 {
+			return nil, fmt.Errorf("JAMBONZ_IT_SIP_TLS_PORT must be a valid port (1-65535): %q", v)
+		}
+		s.SIPTLSPort = port
 	}
 
 	// ttl

@@ -38,6 +38,20 @@ type Config struct {
 	// resolve to the cluster's SBC public IP. See
 	// internal/sip/resolver.go's StaticResolver.
 	Resolver *net.Resolver
+
+	// TLSBindPort, when non-zero, adds a SIP-over-TLS listener on this fixed
+	// port (alongside the ephemeral tcp/udp transports) using a generated
+	// self-signed certificate, and enables SDES SRTP on media for calls that
+	// arrive on it. Unlike the ephemeral tcp/udp ports, a fixed port lets the
+	// cluster reach this stack directly for a `type:sip` forward (the sipUri
+	// names host:port explicitly). ExternalHost is advertised in Contact/Via/
+	// SDP so return traffic routes back. Used by the dial-to-SIP-URI SRTP test.
+	TLSBindPort int
+
+	// ExternalHost is the host/IP advertised in Contact/Via/SDP (the address
+	// the cluster uses to reach this stack). Set alongside TLSBindPort when
+	// the stack must be reachable for an inbound `type:sip` forward.
+	ExternalHost string
 }
 
 // InboundHandler is invoked synchronously for every incoming INVITE. The
@@ -93,11 +107,30 @@ func Start(ctx context.Context, cfg Config, handler InboundHandler) (*Stack, err
 		return nil, fmt.Errorf("sipgo NewUA: %w", err)
 	}
 
-	dg := diago.NewDiago(ua,
+	opts := []diago.DiagoOption{
 		diago.WithTransport(diago.Transport{Transport: "tcp", BindHost: "0.0.0.0", BindPort: 0}),
 		diago.WithTransport(diago.Transport{Transport: "udp", BindHost: "0.0.0.0", BindPort: 0}),
-		diago.WithServerRequestMiddleware(observeRequestMiddleware),
-	)
+	}
+	if cfg.TLSBindPort != 0 {
+		tlsConf, err := selfSignedTLSConfig(cfg.ExternalHost)
+		if err != nil {
+			return nil, err
+		}
+		tran := diago.Transport{
+			Transport: "tls",
+			BindHost:  "0.0.0.0",
+			BindPort:  cfg.TLSBindPort,
+			TLSConf:   tlsConf,
+			MediaSRTP: 1, // 1 = SDES: auto-mirrors the offer's a=crypto (RTP/SAVP)
+		}
+		if cfg.ExternalHost != "" {
+			tran.ExternalHost = cfg.ExternalHost
+			tran.ExternalPort = cfg.TLSBindPort
+		}
+		opts = append(opts, diago.WithTransport(tran))
+	}
+	opts = append(opts, diago.WithServerRequestMiddleware(observeRequestMiddleware))
+	dg := diago.NewDiago(ua, opts...)
 
 	serveCtx, cancel := context.WithCancel(ctx)
 	s := &Stack{
