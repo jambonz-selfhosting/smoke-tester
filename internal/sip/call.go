@@ -356,6 +356,60 @@ func (c *Call) SendReinvite(ctx context.Context, headers H) (*sip.Response, erro
 	return res, c.out.WriteRequest(ack)
 }
 
+// SendReinviteWithSDP sends an in-dialog re-INVITE carrying a caller-supplied
+// SDP offer (rather than reusing the current local SDP, which the far end
+// treats as a session-timer refresh and never renegotiates media for). Use it
+// to reproduce a media-changing re-INVITE — e.g. a carrier moving its RTP port
+// mid-call — which forces the far end to renegotiate its media endpoint.
+//
+// Same UAC/ACK contract as SendReinvite: outbound calls only, 2xx is ACKed
+// here, non-2xx is auto-ACKed by the transaction layer. The returned response
+// is the final response (200 on success; the offending status on rejection).
+func (c *Call) SendReinviteWithSDP(ctx context.Context, sdp []byte, headers H) (*sip.Response, error) {
+	if c.direction != Outbound {
+		return nil, fmt.Errorf("SendReinviteWithSDP: outbound only")
+	}
+	if s := c.State(); s != StateAnswered {
+		return nil, invalidState("SendReinviteWithSDP", s, StateAnswered)
+	}
+	if len(sdp) == 0 {
+		return nil, fmt.Errorf("SendReinviteWithSDP: empty sdp")
+	}
+	contact := c.out.RemoteContact()
+	if contact == nil {
+		return nil, fmt.Errorf("SendReinviteWithSDP: no remote contact on dialog")
+	}
+
+	req := sip.NewRequest(sip.INVITE, contact.Address)
+	req.AppendHeader(sip.HeaderClone(c.out.InviteRequest.Contact()))
+	req.AppendHeader(sip.NewHeader("Content-Type", "application/sdp"))
+	for k, v := range headers {
+		req.AppendHeader(sip.NewHeader(k, v))
+	}
+	req.SetBody(sdp)
+
+	c.recordSent(newRequestMsg(MsgSent, req))
+	res, err := c.out.Do(ctx, req)
+	if res != nil {
+		c.recordReceived(newResponseMsg(MsgRecv, res))
+	}
+	if err != nil {
+		return res, fmt.Errorf("SendReinviteWithSDP: %w", err)
+	}
+	if res.StatusCode < 200 || res.StatusCode >= 300 {
+		// Non-2xx final responses are auto-ACKed by the transaction layer.
+		return res, nil
+	}
+
+	ackTo := res.Contact()
+	if ackTo == nil {
+		ackTo = contact
+	}
+	ack := sip.NewRequest(sip.ACK, ackTo.Address)
+	c.recordSent(newRequestMsg(MsgSent, ack))
+	return res, c.out.WriteRequest(ack)
+}
+
 func (c *Call) doInDialog(ctx context.Context, method sip.RequestMethod, contentType string, body []byte, extra ...sip.Header) (*sip.Response, error) {
 	if s := c.State(); s != StateAnswered {
 		return nil, invalidState(method.String(), s, StateAnswered)
