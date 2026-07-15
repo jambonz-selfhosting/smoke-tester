@@ -99,16 +99,6 @@ type Settings struct {
 	// public URL is stable across runs.
 	NgrokDomain string
 
-	// Optional — TLS SIP bind/advertise port for the dial-to-SIP-URI SRTP
-	// test. Unlike the registered-user path (which the cluster reaches by
-	// reusing the REGISTER connection), a `type:sip` forward makes the
-	// cluster open a fresh connection to the Request-URI host, so the harness
-	// must be reachable there. The reachable host reuses SBCPublicIP (the
-	// harness is expected to bind this TLS listener where the SBC public IP
-	// routes to it); this is just the port. When unset the SRTP-over-TLS dial
-	// test skips (passes) with a config-missing log — see HasReachableTLSSIP.
-	SIPTLSPort int
-
 	// Test-run knobs
 	RunID          string
 	LogLevel       string // "info" | "debug"
@@ -146,12 +136,6 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // tests can run. Optional: when the key is unset those tests pass without
 // exercising speechmatics.
 func (s *Settings) HasSpeechmatics() bool { return s.SpeechmaticsAPIKey != "" }
-
-// HasReachableTLSSIP reports whether the dial-to-SIP-URI SRTP-over-TLS test
-// can run. The reachable host reuses SBCPublicIP (always set), so this only
-// needs the TLS bind port; when it is unset the test skips (passes) with a
-// config-missing log.
-func (s *Settings) HasReachableTLSSIP() bool { return s.SBCPublicIP != nil && s.SIPTLSPort != 0 }
 
 var (
 	loadOnce sync.Once
@@ -259,15 +243,6 @@ func parse() (*Settings, error) {
 	// `<account>.<zone>` realm.
 	if !strings.Contains(s.SIPRealmZone, ".") {
 		return nil, fmt.Errorf("JAMBONZ_SIP_REALM_ZONE must contain at least one dot (got %q)", s.SIPRealmZone)
-	}
-
-	// optional harness-reachable TLS SIP port (dial-to-SIP-URI SRTP test)
-	if v := os.Getenv("JAMBONZ_IT_SIP_TLS_PORT"); v != "" {
-		port, err := strconv.Atoi(v)
-		if err != nil || port < 1 || port > 65535 {
-			return nil, fmt.Errorf("JAMBONZ_IT_SIP_TLS_PORT must be a valid port (1-65535): %q", v)
-		}
-		s.SIPTLSPort = port
 	}
 
 	// ttl
