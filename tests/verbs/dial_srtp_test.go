@@ -7,7 +7,8 @@
 // (`type:"sip"`). For that forward the cluster's sbc-outbound opens a fresh
 // connection to the Request-URI host, so the harness must be reachable there:
 // the test binds a TLS SIP listener on JAMBONZ_IT_SIP_TLS_PORT and advertises
-// JAMBONZ_IT_SIP_PUBLIC_HOST. When either is unset the test skips (passes).
+// the SBC public IP (JAMBONZ_SBC_PUBLIC_IP) as the reachable host. When the
+// port is unset the test skips (passes).
 //
 // The chain under test:
 //  1. dial verb carries srtpEncryption:"sdes".
@@ -41,10 +42,13 @@ func TestVerb_Dial_Sip_SRTP_TLS(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
 	if !cfg.HasReachableTLSSIP() {
-		t.Skip("JAMBONZ_IT_SIP_PUBLIC_HOST / JAMBONZ_IT_SIP_TLS_PORT not set; " +
+		t.Skip("JAMBONZ_IT_SIP_TLS_PORT not set; " +
 			"skipping dial-to-sips SRTP/TLS test (harness must be cluster-reachable for a type:sip forward)")
 	}
 	ctx := WithTimeout(t, 120*time.Second)
+	// The reachable host reuses the SBC public IP: the harness is expected to
+	// bind its TLS SIP listener where that address routes to it.
+	reachableHost := cfg.SBCPublicIP.String()
 
 	// Caller leg: a normal registered UAS that jambonz INVITEs and whose
 	// inbound RTP (the bridged audio) we record + transcribe.
@@ -59,7 +63,7 @@ func TestVerb_Dial_Sip_SRTP_TLS(t *testing.T) {
 	calleeStack, err := jsip.Start(context.Background(), jsip.Config{
 		Transport:    "tls",
 		TLSBindPort:  cfg.SIPTLSPort,
-		ExternalHost: cfg.SIPPublicHost,
+		ExternalHost: reachableHost,
 		LogLevel:     cfg.LogLevel,
 		Owner:        t.Name(),
 	}, func(_ context.Context, call *jsip.Call) error {
@@ -88,7 +92,7 @@ func TestVerb_Dial_Sip_SRTP_TLS(t *testing.T) {
 	actionURL := SessionURL(sess, "dial")
 	// sips: + transport=tls so sbc-outbound uses TLS signalling; the user part
 	// is arbitrary (our UAS answers any inbound INVITE on this transport).
-	sipURI := fmt.Sprintf("sips:srtp-callee@%s:%d;transport=tls", cfg.SIPPublicHost, cfg.SIPTLSPort)
+	sipURI := fmt.Sprintf("sips:srtp-callee@%s:%d;transport=tls", reachableHost, cfg.SIPTLSPort)
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("dial",
 			"target", []any{map[string]any{

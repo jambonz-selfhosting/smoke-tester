@@ -99,17 +99,15 @@ type Settings struct {
 	// public URL is stable across runs.
 	NgrokDomain string
 
-	// Optional — the harness's OWN cluster-reachable SIP address, used by the
-	// dial-to-SIP-URI SRTP test. Unlike the registered-user path (which the
-	// cluster reaches by reusing the REGISTER connection), a `type:sip`
-	// forward makes the cluster open a fresh connection to the Request-URI
-	// host, so the harness must be reachable there. Set SIPPublicHost to a
-	// host/IP the cluster's sbc-outbound can route to and SIPTLSPort to a
-	// port the harness binds a TLS SIP listener on. When either is unset the
-	// SRTP-over-TLS dial test skips (passes) with a config-missing log — see
-	// HasReachableTLSSIP.
-	SIPPublicHost string
-	SIPTLSPort    int
+	// Optional — TLS SIP bind/advertise port for the dial-to-SIP-URI SRTP
+	// test. Unlike the registered-user path (which the cluster reaches by
+	// reusing the REGISTER connection), a `type:sip` forward makes the
+	// cluster open a fresh connection to the Request-URI host, so the harness
+	// must be reachable there. The reachable host reuses SBCPublicIP (the
+	// harness is expected to bind this TLS listener where the SBC public IP
+	// routes to it); this is just the port. When unset the SRTP-over-TLS dial
+	// test skips (passes) with a config-missing log — see HasReachableTLSSIP.
+	SIPTLSPort int
 
 	// Test-run knobs
 	RunID          string
@@ -150,10 +148,10 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 func (s *Settings) HasSpeechmatics() bool { return s.SpeechmaticsAPIKey != "" }
 
 // HasReachableTLSSIP reports whether the dial-to-SIP-URI SRTP-over-TLS test
-// can run. It needs the harness's own cluster-reachable host plus a TLS
-// bind port; when either is unset the test skips (passes) with a
+// can run. The reachable host reuses SBCPublicIP (always set), so this only
+// needs the TLS bind port; when it is unset the test skips (passes) with a
 // config-missing log.
-func (s *Settings) HasReachableTLSSIP() bool { return s.SIPPublicHost != "" && s.SIPTLSPort != 0 }
+func (s *Settings) HasReachableTLSSIP() bool { return s.SBCPublicIP != nil && s.SIPTLSPort != 0 }
 
 var (
 	loadOnce sync.Once
@@ -218,7 +216,6 @@ func parse() (*Settings, error) {
 		SpeechmaticsSTTURI: firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
 		NgrokAuthToken:     os.Getenv("NGROK_AUTHTOKEN"),
 		NgrokDomain:        os.Getenv("NGROK_DOMAIN"),
-		SIPPublicHost:      os.Getenv("JAMBONZ_IT_SIP_PUBLIC_HOST"),
 		RunID:              os.Getenv("RUN_ID"),
 		LogLevel:           strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
 	}
