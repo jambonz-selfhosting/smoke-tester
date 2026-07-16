@@ -1,98 +1,210 @@
-//go:build manual_srtp
-
-// Manual / opt-in test for the `dial` verb's srtpEncryption option over a
-// sips:/TLS SIP URI. It is EXCLUDED from the default suite by the
-// `manual_srtp` build tag (like the drachtio tests): `make test` /
-// `go test ./tests/...` never compile it. Run it deliberately with:
+// Test for the `dial` verb's srtpEncryption option over a sips:/TLS SIP URI.
 //
-//	make test-srtp \
-//	  JAMBONZ_IT_SIP_TLS_DEST_DOMAIN=your-capture-host.example.com \
-//	  JAMBONZ_IT_SIP_TLS_DEST_DOMAIN_PORT=5061
+// The jambonz-side contract we verify: dial srtpEncryption:"sdes" makes the
+// feature-server emit X-Jambonz-SRTP: sdes, and sbc-outbound then offers SRTP
+// (RTP/SAVP + a=crypto) on the outbound INVITE — versus a plain RTP/AVP offer
+// when the option is absent. That contract lives entirely in the SDP of the
+// INVITE jambonz sends, so we assert on the received offer, not on media flow
+// (media encryption itself is rtpengine's job, tested upstream).
 //
-// Why manual: reaching a real SRTP/TLS callee that answers and bridges media
-// isn't practical from the (NAT'd) harness. Instead this test points the dial
-// at an EXTERNAL destination domain you control, so you can packet-capture the
-// outbound leg on that host and confirm jambonz sends the call correctly:
-// sips:/TLS signalling and an SRTP (RTP/SAVP + a=crypto) media offer. The
-// destination is expected to be a passive capture point that does not answer,
-// so the dial resolves as failed/no-answer — that is fine; the artifact is the
-// pcap, not a completed bridge.
+// Reaching the (NAT'd) harness for a type:sip forward: the harness stands up a
+// SIP-over-TLS listener locally and fronts it with an ngrok TCP tunnel (raw
+// TCP passthrough — TLS is terminated at the harness). We dial the tunnel's
+// public tcp host:port, so sbc-outbound connects straight through to our
+// listener and we read the offer off the wire. No public IP, no pcap.
 //
-// The chain being exercised: dial srtpEncryption:"sdes" -> feature-server emits
-// X-Jambonz-SRTP: sdes -> sbc-outbound forwards over TLS with an SDES SRTP
-// offer to JAMBONZ_IT_SIP_TLS_DEST_DOMAIN.
+// The probe listener rejects the INVITE after capturing it (488) — no media is
+// exchanged (ngrok TCP can't carry RTP/UDP), which is fine: the proof is the
+// SDP offer. Gated on ngrok (like the other Phase-2 tests); if a TCP tunnel
+// can't be opened (ngrok plan/session limits) the test skips with the reason.
 package verbs
 
 import (
 	"context"
 	"fmt"
-	"os"
+	"net"
+	"net/url"
+	"strconv"
+	"strings"
 	"testing"
 	"time"
 
+	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
+	"golang.ngrok.com/ngrok"
+	"golang.ngrok.com/ngrok/config"
 )
 
 func TestVerb_Dial_Sip_SRTP_TLS(t *testing.T) {
+	t.Parallel()
 	requireWebhook(t)
-	destDomain := os.Getenv("JAMBONZ_IT_SIP_TLS_DEST_DOMAIN")
-	destPort := os.Getenv("JAMBONZ_IT_SIP_TLS_DEST_DOMAIN_PORT")
-	if destDomain == "" || destPort == "" {
-		t.Skip("JAMBONZ_IT_SIP_TLS_DEST_DOMAIN / JAMBONZ_IT_SIP_TLS_DEST_DOMAIN_PORT not set; " +
-			"skipping manual SRTP/TLS send-out test")
-	}
-	ctx := WithTimeout(t, 90*time.Second)
+	ctx := WithTimeout(t, 120*time.Second)
 
-	// Caller (A) leg: a normal registered UAS that jambonz INVITEs so the app
-	// runs and executes the dial verb. We do not assert on bridged media — the
-	// outbound (B) leg goes to the external capture destination.
+	// Local SIP-over-TLS probe listener (self-signed). Inbound INVITEs land on
+	// probeInbound; the stack does not register (the ngrok tunnel, not a
+	// registration, is how the cluster reaches it).
+	s := Step(t, "start-tls-probe")
+	localPort := freeTCPPort(t)
+	probeInbound := make(chan *jsip.Call, 4)
+	probe, err := jsip.Start(context.Background(), jsip.Config{
+		TLSBindHost: "127.0.0.1",
+		TLSBindPort: localPort,
+		LogLevel:    cfg.LogLevel,
+		Owner:       t.Name(),
+	}, func(_ context.Context, call *jsip.Call) error {
+		select {
+		case probeInbound <- call:
+		default:
+			_ = call.Reject(486, "Busy Here")
+			return nil
+		}
+		<-call.Done()
+		return nil
+	})
+	if err != nil {
+		s.Fatalf("start TLS probe stack: %v", err)
+	}
+	t.Cleanup(probe.Stop)
+	s.Done()
+
+	s = Step(t, "open-ngrok-tcp-tunnel")
+	host, pubPort, closeTun := startSIPTCPTunnel(t, localPort)
+	t.Cleanup(closeTun)
+	s.Logf("tunnel tcp://%s:%d -> 127.0.0.1:%d", host, pubPort, localPort)
+	s.Done()
+
+	// Positive: with srtpEncryption:"sdes" the offer must be SRTP.
+	posSDP := probeDial(t, ctx, probeInbound, host, pubPort, true)
+	s = Step(t, "assert-srtp-offer")
+	if posSDP == "" {
+		s.Fatal("no INVITE SDP captured from probe with srtpEncryption=sdes (dial never reached it)")
+	}
+	if !strings.Contains(posSDP, "RTP/SAVP") {
+		s.Errorf("srtpEncryption offer did not use SRTP transport (want RTP/SAVP); offer:\n%s", posSDP)
+	}
+	if !strings.Contains(posSDP, "a=crypto:") {
+		s.Errorf("srtpEncryption offer had no a=crypto SDES line; offer:\n%s", posSDP)
+	}
+	if !strings.Contains(posSDP, "AES_CM_128_HMAC_SHA1_80") {
+		s.Errorf("srtpEncryption offer missing expected SDES suite AES_CM_128_HMAC_SHA1_80; offer:\n%s", posSDP)
+	}
+	s.Done()
+
+	// Negative control: without srtpEncryption the same dial must be plain RTP.
+	// This proves the SRTP offer is caused by the option, not by sips:/TLS.
+	negSDP := probeDial(t, ctx, probeInbound, host, pubPort, false)
+	s = Step(t, "assert-plain-offer")
+	if negSDP == "" {
+		s.Fatal("no INVITE SDP captured from probe without srtpEncryption")
+	}
+	if strings.Contains(negSDP, "RTP/SAVP") || strings.Contains(negSDP, "a=crypto:") {
+		s.Errorf("offer without srtpEncryption unexpectedly used SRTP; offer:\n%s", negSDP)
+	}
+	if !strings.Contains(negSDP, "RTP/AVP") {
+		s.Errorf("offer without srtpEncryption did not use plain RTP/AVP; offer:\n%s", negSDP)
+	}
+	s.Done()
+}
+
+// probeDial places a caller call whose app dials a sips:/TLS URI pointing at
+// the probe tunnel (optionally with srtpEncryption:"sdes"), captures the SDP
+// offer on the INVITE the probe receives, rejects it, and returns the offer.
+func probeDial(t *testing.T, ctx context.Context, probeInbound <-chan *jsip.Call,
+	host string, port int, srtp bool) string {
+	t.Helper()
+	label := "plain"
+	if srtp {
+		label = "sdes"
+	}
 	callerUAS := claimUAS(t, ctx)
 	_, sess := claimSession(t)
 
-	s := Step(t, "script-dial-to-sips-dest")
+	s := Step(t, "script-dial-"+label)
 	actionURL := SessionURL(sess, "dial")
-	// user part is arbitrary; the capture host sees whatever you set here.
-	sipURI := fmt.Sprintf("sips:srtp-test@%s:%s;transport=tls", destDomain, destPort)
+	sipURI := fmt.Sprintf("sips:probe@%s:%d;transport=tls", host, port)
+	kv := []any{
+		"target", []any{map[string]any{"type": "sip", "sipUri": sipURI}},
+		"timeout", 12,
+		"actionHook", actionURL,
+	}
+	if srtp {
+		kv = append(kv, "srtpEncryption", "sdes")
+	}
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		V("dial",
-			"target", []any{map[string]any{
-				"type":   "sip",
-				"sipUri": sipURI,
-			}},
-			// the option under test — request encrypted media (SDES) on the
-			// outbound leg.
-			"srtpEncryption", "sdes",
-			"timeout", 15,
-			"actionHook", actionURL),
+		V("dial", kv...),
 		V("hangup"),
 	}))
 	SessionAckEmpty(sess, "dial")
-	s.Logf("dialing %s (srtpEncryption=sdes) — capture the outbound INVITE on %s:%s",
-		sipURI, destDomain, destPort)
 	s.Done()
 
-	s = Step(t, "place-caller-and-run-dial")
-	// Answer the caller and hold it up while the dial attempts the outbound
-	// leg. The capture destination is not expected to answer, so the dial
-	// times out and the leg ends.
-	call := placeWebhookCallTo(ctx, t, callerUAS, sess, withTimeLimit(60))
+	// Capture the probe's inbound INVITE concurrently with the caller leg
+	// (which blocks until the dial resolves — i.e. until we reject here).
+	// Bounded so a send-out that never reaches the probe fails fast rather
+	// than hanging until the whole-test deadline.
+	sdpCh := make(chan string, 1)
+	go func() {
+		select {
+		case c := <-probeInbound:
+			sdp := ""
+			if inv := c.ReceivedByMethod("INVITE"); len(inv) > 0 && inv[0].RawRequest != nil {
+				sdp = string(inv[0].RawRequest.Body())
+			}
+			_ = c.Reject(488, "Not Acceptable Here")
+			sdpCh <- sdp
+		case <-time.After(30 * time.Second):
+			sdpCh <- ""
+		case <-ctx.Done():
+			sdpCh <- ""
+		}
+	}()
+
+	s = Step(t, "place-caller-"+label)
+	call := placeWebhookCallTo(ctx, t, callerUAS, sess, withTimeLimit(30))
 	AnswerRecordAndWaitEnded(s, ctx, call, WithSilence())
 	s.Done()
 
-	s = Step(t, "wait-action-dial-callback")
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	cb, err := sess.WaitCallbackFor(waitCtx, "action/dial")
+	return <-sdpCh
+}
+
+// freeTCPPort asks the OS for an unused TCP port on loopback.
+func freeTCPPort(t *testing.T) int {
+	t.Helper()
+	l, err := net.Listen("tcp", "127.0.0.1:0")
 	if err != nil {
-		// No callback means the dial verb never ran / never resolved — that's
-		// a real failure of the send-out path, so fail loudly.
-		s.Fatalf("no action/dial callback (dial verb did not run?): %v", err)
+		t.Fatalf("freeTCPPort: %v", err)
 	}
-	// Do NOT assert a completed bridge: the destination is a capture point.
-	// The proof of correctness is the pcap on the destination host.
-	s.Logf("action/dial: dial_call_status=%q dial_sip_status=%d",
-		cb.String("dial_call_status"), cb.Int("dial_sip_status"))
-	s.Logf("outbound INVITE sent — verify on %s:%s that it is sips:/TLS and the SDP "+
-		"offers SRTP (RTP/SAVP + a=crypto)", destDomain, destPort)
-	s.Done()
+	defer l.Close()
+	return l.Addr().(*net.TCPAddr).Port
+}
+
+// startSIPTCPTunnel opens an ngrok TCP endpoint that forwards raw TCP to the
+// harness's local TLS SIP listener, and returns the public host+port. Skips
+// the test if a TCP tunnel can't be established (e.g. ngrok plan/session
+// limits alongside the webhook tunnel).
+func startSIPTCPTunnel(t *testing.T, localPort int) (string, int, func()) {
+	t.Helper()
+	backend, err := url.Parse(fmt.Sprintf("tcp://127.0.0.1:%d", localPort))
+	if err != nil {
+		t.Fatalf("startSIPTCPTunnel: parse backend: %v", err)
+	}
+	tunCtx, cancel := context.WithCancel(context.Background())
+	fwd, err := ngrok.ListenAndForward(tunCtx, backend, config.TCPEndpoint(), ngrok.WithAuthtokenFromEnv())
+	if err != nil {
+		cancel()
+		t.Skipf("ngrok TCP tunnel unavailable (%v); this test needs an ngrok token/plan that "+
+			"allows a TCP endpoint alongside the webhook tunnel", err)
+	}
+	host, portStr, err := net.SplitHostPort(strings.TrimPrefix(fwd.URL(), "tcp://"))
+	if err != nil {
+		_ = fwd.Close()
+		cancel()
+		t.Fatalf("startSIPTCPTunnel: parse tunnel url %q: %v", fwd.URL(), err)
+	}
+	port, err := strconv.Atoi(portStr)
+	if err != nil {
+		_ = fwd.Close()
+		cancel()
+		t.Fatalf("startSIPTCPTunnel: bad tunnel port %q: %v", portStr, err)
+	}
+	return host, port, func() { _ = fwd.Close(); cancel() }
 }

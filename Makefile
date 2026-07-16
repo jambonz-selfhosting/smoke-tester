@@ -1,4 +1,4 @@
-.PHONY: help build test test-rest test-sip test-verbs test-srtp test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio lint clean deps
+.PHONY: help build test test-rest test-sip test-verbs test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio lint clean deps
 
 # Parallelism: default to min(NumCPU, 4). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
@@ -97,19 +97,6 @@ test-sip:
 
 test-verbs:
 	go test -count=1 -timeout 180s -parallel $(PARALLEL) ./tests/verbs/...
-
-# Manual, opt-in SRTP/TLS send-out test (dial verb srtpEncryption over a
-# sips: URI). EXCLUDED from `make test` via the `manual_srtp` build tag; it
-# dials an EXTERNAL destination you control so you can packet-capture the
-# outbound leg and confirm sips:/TLS + SRTP (a=crypto). Requires
-# JAMBONZ_IT_SIP_TLS_DEST_DOMAIN and JAMBONZ_IT_SIP_TLS_DEST_DOMAIN_PORT
-# (skips when unset).
-#
-#   make test-srtp \
-#     JAMBONZ_IT_SIP_TLS_DEST_DOMAIN=your-capture-host.example.com \
-#     JAMBONZ_IT_SIP_TLS_DEST_DOMAIN_PORT=5061
-test-srtp:
-	go test -tags manual_srtp -count=1 -timeout 120s -v -run "^TestVerb_Dial_Sip_SRTP_TLS$$" ./tests/verbs/
 
 # Run a single test by typing its name as the make goal:
 #
