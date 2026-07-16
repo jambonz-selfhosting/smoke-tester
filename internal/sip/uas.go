@@ -38,6 +38,15 @@ type Config struct {
 	// resolve to the cluster's SBC public IP. See
 	// internal/sip/resolver.go's StaticResolver.
 	Resolver *net.Resolver
+
+	// TLSBindPort, when non-zero, adds a SIP-over-TLS listener on
+	// TLSBindHost:TLSBindPort using a generated self-signed certificate (in
+	// addition to the ephemeral tcp/udp transports). Used by the SRTP/TLS
+	// offer test, which fronts this listener with an ngrok TCP tunnel so the
+	// cluster can reach it through NAT and the harness can inspect the SDP
+	// offer on the received INVITE.
+	TLSBindHost string
+	TLSBindPort int
 }
 
 // InboundHandler is invoked synchronously for every incoming INVITE. The
@@ -93,11 +102,24 @@ func Start(ctx context.Context, cfg Config, handler InboundHandler) (*Stack, err
 		return nil, fmt.Errorf("sipgo NewUA: %w", err)
 	}
 
-	dg := diago.NewDiago(ua,
+	opts := []diago.DiagoOption{
 		diago.WithTransport(diago.Transport{Transport: "tcp", BindHost: "0.0.0.0", BindPort: 0}),
 		diago.WithTransport(diago.Transport{Transport: "udp", BindHost: "0.0.0.0", BindPort: 0}),
-		diago.WithServerRequestMiddleware(observeRequestMiddleware),
-	)
+	}
+	if cfg.TLSBindPort != 0 {
+		tlsConf, err := selfSignedTLSConfig(cfg.TLSBindHost)
+		if err != nil {
+			return nil, err
+		}
+		opts = append(opts, diago.WithTransport(diago.Transport{
+			Transport: "tls",
+			BindHost:  nonEmpty(cfg.TLSBindHost, "0.0.0.0"),
+			BindPort:  cfg.TLSBindPort,
+			TLSConf:   tlsConf,
+		}))
+	}
+	opts = append(opts, diago.WithServerRequestMiddleware(observeRequestMiddleware))
+	dg := diago.NewDiago(ua, opts...)
 
 	serveCtx, cancel := context.WithCancel(ctx)
 	s := &Stack{
