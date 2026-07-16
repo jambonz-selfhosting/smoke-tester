@@ -73,44 +73,68 @@ func TestVerb_Dial_Sip_SRTP_TLS(t *testing.T) {
 	s.Logf("tunnel tcp://%s:%d -> 127.0.0.1:%d", host, pubPort, localPort)
 	s.Done()
 
-	// Positive: with srtpEncryption:"sdes" the offer must be SRTP.
-	posSDP := probeDial(t, ctx, probeInbound, host, pubPort, true)
-	s = Step(t, "assert-srtp-offer")
-	if posSDP == "" {
-		s.Fatal("no INVITE SDP captured from probe with srtpEncryption=sdes (dial never reached it)")
+	// Positive: dialing a sips:/TLS URI with srtpEncryption:"sdes" must produce
+	// BOTH — TLS on the signalling plane (because the URI is sips:/transport=tls)
+	// and SRTP on the media plane (because of srtpEncryption). Asserted on the
+	// same INVITE.
+	pos := probeDial(t, ctx, probeInbound, host, pubPort, true)
+	s = Step(t, "assert-tls-and-srtp")
+	if pos.sdp == "" {
+		s.Fatal("no INVITE captured from probe with srtpEncryption=sdes (dial never reached it)")
 	}
-	if !strings.Contains(posSDP, "RTP/SAVP") {
-		s.Errorf("srtpEncryption offer did not use SRTP transport (want RTP/SAVP); offer:\n%s", posSDP)
+	// signalling plane: sips:/transport=tls must be honored end-to-end.
+	if !strings.EqualFold(pos.transport, "tls") {
+		s.Errorf("sips: INVITE arrived over %q, want TLS (transport not respected)", pos.transport)
 	}
-	if !strings.Contains(posSDP, "a=crypto:") {
-		s.Errorf("srtpEncryption offer had no a=crypto SDES line; offer:\n%s", posSDP)
+	// media plane: SRTP via SDES.
+	if !strings.Contains(pos.sdp, "RTP/SAVP") {
+		s.Errorf("srtpEncryption offer did not use SRTP transport (want RTP/SAVP); offer:\n%s", pos.sdp)
 	}
-	if !strings.Contains(posSDP, "AES_CM_128_HMAC_SHA1_80") {
-		s.Errorf("srtpEncryption offer missing expected SDES suite AES_CM_128_HMAC_SHA1_80; offer:\n%s", posSDP)
+	if !strings.Contains(pos.sdp, "a=crypto:") {
+		s.Errorf("srtpEncryption offer had no a=crypto SDES line; offer:\n%s", pos.sdp)
+	}
+	if !strings.Contains(pos.sdp, "AES_CM_128_HMAC_SHA1_80") {
+		s.Errorf("srtpEncryption offer missing expected SDES suite AES_CM_128_HMAC_SHA1_80; offer:\n%s", pos.sdp)
+	}
+	if strings.Contains(pos.sdp, "RTP/AVP ") {
+		s.Errorf("srtpEncryption offer unexpectedly also contained a plain RTP/AVP m-line; offer:\n%s", pos.sdp)
 	}
 	s.Done()
 
-	// Negative control: without srtpEncryption the same dial must be plain RTP.
-	// This proves the SRTP offer is caused by the option, not by sips:/TLS.
-	negSDP := probeDial(t, ctx, probeInbound, host, pubPort, false)
-	s = Step(t, "assert-plain-offer")
-	if negSDP == "" {
-		s.Fatal("no INVITE SDP captured from probe without srtpEncryption")
+	// Negative control: same sips:/TLS dial WITHOUT srtpEncryption must still be
+	// TLS on signalling, but plain RTP/AVP on media — proving SRTP comes from the
+	// option, not from sips:/TLS.
+	neg := probeDial(t, ctx, probeInbound, host, pubPort, false)
+	s = Step(t, "assert-tls-and-plain-rtp")
+	if neg.sdp == "" {
+		s.Fatal("no INVITE captured from probe without srtpEncryption")
 	}
-	if strings.Contains(negSDP, "RTP/SAVP") || strings.Contains(negSDP, "a=crypto:") {
-		s.Errorf("offer without srtpEncryption unexpectedly used SRTP; offer:\n%s", negSDP)
+	if !strings.EqualFold(neg.transport, "tls") {
+		s.Errorf("sips: INVITE arrived over %q, want TLS (transport not respected)", neg.transport)
 	}
-	if !strings.Contains(negSDP, "RTP/AVP") {
-		s.Errorf("offer without srtpEncryption did not use plain RTP/AVP; offer:\n%s", negSDP)
+	if strings.Contains(neg.sdp, "RTP/SAVP") || strings.Contains(neg.sdp, "a=crypto:") {
+		s.Errorf("offer without srtpEncryption unexpectedly used SRTP; offer:\n%s", neg.sdp)
+	}
+	if !strings.Contains(neg.sdp, "RTP/AVP") {
+		s.Errorf("offer without srtpEncryption did not use plain RTP/AVP; offer:\n%s", neg.sdp)
 	}
 	s.Done()
 }
 
+// probeOffer is what the probe observed on the INVITE jambonz forwarded:
+// the SDP body (media plane) and the transport it arrived on (signalling
+// plane) — so one dial can assert both TLS and SRTP.
+type probeOffer struct {
+	sdp       string
+	transport string
+}
+
 // probeDial places a caller call whose app dials a sips:/TLS URI pointing at
 // the probe tunnel (optionally with srtpEncryption:"sdes"), captures the SDP
-// offer on the INVITE the probe receives, rejects it, and returns the offer.
+// offer and transport on the INVITE the probe receives, rejects it, and
+// returns what it saw.
 func probeDial(t *testing.T, ctx context.Context, probeInbound <-chan *jsip.Call,
-	host string, port int, srtp bool) string {
+	host string, port int, srtp bool) probeOffer {
 	t.Helper()
 	label := "plain"
 	if srtp {
@@ -141,20 +165,21 @@ func probeDial(t *testing.T, ctx context.Context, probeInbound <-chan *jsip.Call
 	// (which blocks until the dial resolves — i.e. until we reject here).
 	// Bounded so a send-out that never reaches the probe fails fast rather
 	// than hanging until the whole-test deadline.
-	sdpCh := make(chan string, 1)
+	offCh := make(chan probeOffer, 1)
 	go func() {
 		select {
 		case c := <-probeInbound:
-			sdp := ""
+			var off probeOffer
 			if inv := c.ReceivedByMethod("INVITE"); len(inv) > 0 && inv[0].RawRequest != nil {
-				sdp = string(inv[0].RawRequest.Body())
+				off.sdp = string(inv[0].RawRequest.Body())
+				off.transport = inv[0].RawRequest.Transport()
 			}
 			_ = c.Reject(488, "Not Acceptable Here")
-			sdpCh <- sdp
+			offCh <- off
 		case <-time.After(30 * time.Second):
-			sdpCh <- ""
+			offCh <- probeOffer{}
 		case <-ctx.Done():
-			sdpCh <- ""
+			offCh <- probeOffer{}
 		}
 	}()
 
@@ -163,7 +188,7 @@ func probeDial(t *testing.T, ctx context.Context, probeInbound <-chan *jsip.Call
 	AnswerRecordAndWaitEnded(s, ctx, call, WithSilence())
 	s.Done()
 
-	return <-sdpCh
+	return <-offCh
 }
 
 // freeTCPPort asks the OS for an unused TCP port on loopback.
