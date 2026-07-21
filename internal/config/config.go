@@ -10,6 +10,7 @@ package config
 
 import (
 	"bufio"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"net"
@@ -90,6 +91,21 @@ type Settings struct {
 	// "eu2.rt.speechmatics.com" when SPEECHMATICS_STT_URI is unset.
 	SpeechmaticsSTTURI string
 
+	// Optional — Google Dialogflow. When DialogflowServiceKey is set (the
+	// full service-account JSON, read from DIALOGFLOW_KEYFILE), the
+	// dialogflow verb test provisions nothing via /SpeechCredentials —
+	// jambonz's dialogflow verb takes the credentials inline — and drives a
+	// real CX agent. When unset the test skips (passes) with a
+	// credential-missing log. See HasDialogflow.
+	//
+	// DialogflowServiceKey is the raw JSON string (not a path); the loader
+	// reads it from the file named by DIALOGFLOW_KEYFILE.
+	DialogflowServiceKey string
+	DialogflowProject    string // GCP project id (e.g. "drachtio-cpaas")
+	DialogflowAgent      string // CX agent id (uuid)
+	DialogflowRegion     string // GCP region (e.g. "us-central1")
+	DialogflowLang       string // language code; default "en-US"
+
 	// Required — ngrok auth token. Phase-2 verb tests + Phase-1 status
 	// callbacks both need a public URL forwarded to the local webhook
 	// server. The whole verb suite gates on this.
@@ -136,6 +152,15 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // tests can run. Optional: when the key is unset those tests pass without
 // exercising speechmatics.
 func (s *Settings) HasSpeechmatics() bool { return s.SpeechmaticsAPIKey != "" }
+
+// HasDialogflow reports whether the Google Dialogflow verb test can run. It
+// needs the service-account JSON plus the CX agent coordinates (project +
+// agent + region). Optional: when any is unset the test skips (passes) with
+// a credential-missing log.
+func (s *Settings) HasDialogflow() bool {
+	return s.DialogflowServiceKey != "" && s.DialogflowProject != "" &&
+		s.DialogflowAgent != "" && s.DialogflowRegion != ""
+}
 
 var (
 	loadOnce sync.Once
@@ -198,6 +223,10 @@ func parse() (*Settings, error) {
 		XaiAPIKey:          os.Getenv("XAI_API_KEY"),
 		SpeechmaticsAPIKey: os.Getenv("SPEECHMATICS_API_KEY"),
 		SpeechmaticsSTTURI: firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
+		DialogflowProject:  os.Getenv("DIALOGFLOW_PROJECT"),
+		DialogflowAgent:    os.Getenv("DIALOGFLOW_AGENT"),
+		DialogflowRegion:   firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
+		DialogflowLang:     firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
 		NgrokAuthToken:     os.Getenv("NGROK_AUTHTOKEN"),
 		NgrokDomain:        os.Getenv("NGROK_DOMAIN"),
 		RunID:              os.Getenv("RUN_ID"),
@@ -243,6 +272,22 @@ func parse() (*Settings, error) {
 	// `<account>.<zone>` realm.
 	if !strings.Contains(s.SIPRealmZone, ".") {
 		return nil, fmt.Errorf("JAMBONZ_SIP_REALM_ZONE must contain at least one dot (got %q)", s.SIPRealmZone)
+	}
+
+	// Optional — Google Dialogflow service-account key. DIALOGFLOW_KEYFILE
+	// names a file whose contents (service-account JSON) are read verbatim
+	// and passed inline to the dialogflow verb. Unset => the dialogflow test
+	// skips cleanly. A set-but-unreadable file is a hard error so a
+	// misconfigured path doesn't silently disable the test.
+	if kf := os.Getenv("DIALOGFLOW_KEYFILE"); kf != "" {
+		raw, err := os.ReadFile(kf)
+		if err != nil {
+			return nil, fmt.Errorf("DIALOGFLOW_KEYFILE=%q: %w", kf, err)
+		}
+		if !json.Valid(raw) {
+			return nil, fmt.Errorf("DIALOGFLOW_KEYFILE=%q is not valid JSON", kf)
+		}
+		s.DialogflowServiceKey = string(raw)
 	}
 
 	// ttl
