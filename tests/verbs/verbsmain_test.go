@@ -63,6 +63,14 @@ var (
 	// Default TTS voice when speaking through Deepgram.
 	deepgramVoice = "aura-asteria-en"
 
+	// Deepgram Flux TTS credential — a distinct vendor ("deepgramflux",
+	// wss://api.deepgram.com/v2/speak) that reuses DEEPGRAM_API_KEY.
+	// Provisioned unconditionally at TestMain (the key is already required).
+	deepgramFluxLabel string
+	deepgramFluxSID   string
+	// Default TTS voice/model when speaking through Deepgram Flux.
+	deepgramFluxVoice = "flux-alexis-en"
+
 	// Murf TTS speech credential provisioned at TestMain IF MURF_API_KEY is
 	// set (optional vendor). When unset, murfLabel stays "" and the Murf say
 	// test skips (passes) with a credential-missing log.
@@ -172,6 +180,14 @@ func TestMain(m *testing.M) {
 	log.Printf("tests/verbs: Deepgram credential label=%s sid=%s",
 		deepgramLabel, deepgramSID)
 
+	// 3a2. Deepgram Flux TTS credential — reuses DEEPGRAM_API_KEY, so it is
+	// always provisioned (no separate env gate).
+	if err := provisionDeepgramFluxCredential(); err != nil {
+		log.Fatalf("tests/verbs: Deepgram Flux credential provisioning failed: %v", err)
+	}
+	log.Printf("tests/verbs: Deepgram Flux credential label=%s sid=%s",
+		deepgramFluxLabel, deepgramFluxSID)
+
 	// 3b. Murf TTS speech credential — optional. Only provisioned when
 	// MURF_API_KEY is set; otherwise the Murf say test skips with a log.
 	if cfg.HasMurf() {
@@ -228,6 +244,7 @@ func TestMain(m *testing.M) {
 	// cascade doesn't have to fight FK constraints.
 	teardownWebhook()
 	teardownDeepgramCredential()
+	teardownDeepgramFluxCredential()
 	teardownMurfCredential()
 	teardownXaiCredential()
 	teardownSpeechmaticsCredential()
@@ -273,6 +290,39 @@ func teardownDeepgramCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, deepgramSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete Deepgram credential %s: %v", deepgramSID, err)
+	}
+}
+
+// provisionDeepgramFluxCredential creates a Deepgram Flux TTS speech
+// credential under the suite account, labelled `it-deepgramflux-<runID>`.
+// TTS-only here (Flux STT has its own recognizer path); reuses the required
+// DEEPGRAM_API_KEY, so it is always provisioned.
+func provisionDeepgramFluxCredential() error {
+	deepgramFluxLabel = "it-deepgramflux-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "deepgramflux",
+		Label:     deepgramFluxLabel,
+		APIKey:    cfg.DeepgramAPIKey,
+		UseForTTS: true,
+		UseForSTT: false,
+	})
+	if err != nil {
+		return err
+	}
+	deepgramFluxSID = sid
+	return nil
+}
+
+func teardownDeepgramFluxCredential() {
+	if deepgramFluxSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, deepgramFluxSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete Deepgram Flux credential %s: %v", deepgramFluxSID, err)
 	}
 }
 

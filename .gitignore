@@ -1,5 +1,9 @@
 .env
 .env.local
+# per-cluster env files carry live secrets (API keys, ngrok token, Deepgram
+# key). Never commit them; only the annotated template is tracked.
+.env.*
+!.env.example
 bin/
 *.wav
 !tests/verbs/testdata/*.wav
