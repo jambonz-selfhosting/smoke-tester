@@ -208,10 +208,72 @@ func (c *Call) Ringing() error {
 	return nil
 }
 
-// TODO: RingingEarlyMedia (183 Session Progress + SDP) to test verbs with
-// `earlyMedia: true`. Requires manual media-session init which diago doesn't
-// expose on the public API. Deferred to the UAC/webhook pass when we'll
-// need to plumb deeper anyway.
+// SendEarlyMedia183 sends a raw 183 Session Progress carrying `sdp` as the
+// message body. Inbound (UAS) only, and only before the call is answered. Safe
+// to call more than once on the same call — each invocation emits another 183
+// on the same early dialog (the To-tag stays constant), so a test can drive a
+// far end that re-sends session progress with a CHANGING codec.
+//
+// Why raw instead of diago's ProgressMedia: diago locks its media session to
+// the codecs of the FIRST 183 (initMediaSessionFromConf is a no-op once a
+// session exists), so it cannot emit a sequence of 183s whose offered codec
+// changes between them. That changing-codec sequence is exactly what triggers
+// the sbc-outbound "empty m= payload type" regression (see
+// outbound-error-payload-type-missing.log: PCMA -> PCMU -> PCMA across three
+// successive 183s). Sending the SDP verbatim gives the test control over every
+// m= line.
+//
+// No local RTP session is created — early-media *audio* is out of scope for
+// this signaling reproduction; rtpengine performs its SDP transform regardless
+// of whether media actually flows. Build the body with EarlyMediaSDP. Leaves
+// the call in StateRinging; follow with Answer() or Hangup().
+func (c *Call) SendEarlyMedia183(sdp []byte) error {
+	if c.direction != Inbound {
+		return fmt.Errorf("SendEarlyMedia183: inbound only")
+	}
+	if s := c.State(); s != StateInit && s != StateTrying && s != StateRinging {
+		return invalidState("SendEarlyMedia183", s, StateInit, StateTrying, StateRinging)
+	}
+	hdrs := []sip.Header{sip.NewHeader("Content-Type", "application/sdp")}
+	if err := c.in.Respond(183, "Session Progress", sdp, hdrs...); err != nil {
+		return fmt.Errorf("SendEarlyMedia183: %w", err)
+	}
+	c.setState(StateRinging, "")
+	return nil
+}
+
+// EarlyMediaSDP builds a minimal single-audio-codec SDP body for a 183
+// early-media response, mirroring the shape real carriers send (one G.711
+// codec + telephone-event). codec is "PCMU" or "PCMA". host/port name the RTP
+// endpoint; routability is irrelevant to a signaling reproduction. sessionID
+// varies the origin line so successive bodies aren't byte-identical (some
+// stacks ignore a repeated o= version).
+func EarlyMediaSDP(codec, host string, port, sessionID int) ([]byte, error) {
+	var pt int
+	up := strings.ToUpper(codec)
+	switch up {
+	case "PCMU":
+		pt = 0
+	case "PCMA":
+		pt = 8
+	default:
+		return nil, fmt.Errorf("EarlyMediaSDP: unsupported codec %q (want PCMU or PCMA)", codec)
+	}
+	body := fmt.Sprintf(
+		"v=0\r\n"+
+			"o=SmokeTester %d %d IN IP4 %s\r\n"+
+			"s=SmokeTester Early Media\r\n"+
+			"c=IN IP4 %s\r\n"+
+			"t=0 0\r\n"+
+			"m=audio %d RTP/AVP %d 101\r\n"+
+			"a=rtpmap:%d %s/8000\r\n"+
+			"a=rtpmap:101 telephone-event/8000\r\n"+
+			"a=fmtp:101 0-16\r\n"+
+			"a=ptime:20\r\n"+
+			"a=sendrecv\r\n",
+		sessionID, sessionID, host, host, port, pt, pt, up)
+	return []byte(body), nil
+}
 
 // Answer accepts the call with 200 OK (inbound) or marks an already-answered
 // outbound call (UAC.Invite blocks until 200 OK; calling Answer is a no-op
