@@ -15,18 +15,19 @@
 //	mediajam dialogflow session     --StreamingDetectIntent--> Google CX
 //	Google CX  --audio_provided--> mediajam --play--> caller (our recording)
 //
-// This CX agent's start page replies to the caller's FIRST turn of speech
-// with a greeting (verified out-of-band: a REST detectIntent with
-// {"text":"hello"} returns "Hi! How are you doing?"). It does NOT define a
-// named welcome/WELCOME event handler — sending one gets a CX
-// "No handler is defined for the event" error. So the realistic drive is
-// exactly what a human caller does: speak first, then assert the agent's
-// spoken reply comes back over the SIP leg.
+// The default agent (99e7b4c8-...) is a generative Conversational Agent
+// (Playbook): it answers free-form speech and holds a real conversation
+// (verified out-of-band with a REST detectIntent — "I want to fly to Paris
+// tonight" returns match=PLAYBOOK, "Could you please tell me what city you
+// will be departing from?"). It has no named welcome/WELCOME event handler —
+// sending one gets a CX "No handler is defined for the event" error — so the
+// realistic drive is exactly what a human caller does: speak first, then
+// assert the agent's spoken reply comes back over the SIP leg.
 //
-// We record the caller-side audio, speak a "hello" prompt, wait for the
-// agent's TTS reply, and assert via Deepgram STT (independent of
-// Dialogflow's own recognition) that the greeting words land. That proves
-// the full media round-trip, not a circular read of Dialogflow's events.
+// We record the caller-side audio, speak a flight-booking prompt, wait for
+// the agent's TTS reply, and assert via Deepgram STT (independent of
+// Dialogflow's own recognition) that the reply words land. That proves the
+// full media round-trip, not a circular read of Dialogflow's events.
 //
 // Skips cleanly (passes) when Dialogflow is not configured — see
 // cfg.HasDialogflow(): needs DIALOGFLOW_KEYFILE + DIALOGFLOW_PROJECT +
@@ -43,39 +44,38 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-// dialogflowPrompt is what the caller says to open the conversation. The CX
-// agent's start page greets on the first turn regardless of the exact words,
-// so a plain greeting is enough to trigger a reply.
-const dialogflowPrompt = "Hello there."
+// dialogflowPrompt is what the caller says to open the conversation. The
+// Playbook agent books flights, so a flight request drives it into its slot-
+// filling turn ("which city are you departing from?").
+const dialogflowPrompt = "I want to fly to Paris tonight."
 
-// dialogflowReplyKeywords are content words the CX agent's start-page
-// greeting uses. The agent varies its phrasing turn to turn — observed live:
-// "Hi! How are you doing?", "Good day! What can I do for you today?",
-// "Greetings, how can I assist?" — so this pools the content words across
-// those variants. Deepgram STT on a telephony clip can drop a word, so we
-// require only ONE via AssertTranscriptHasMost(..., 1, ...): the contract
-// under test is "the agent spoke a reply back over the SIP leg", not its
-// exact wording.
+// dialogflowReplyKeywords are content words the Playbook's reply uses.
+// Observed live for a flight request: "Could you please tell me what city you
+// will be departing from?" — a slot-filling prompt for the departure city.
+// The exact wording is model-generated and varies run to run, so this pools
+// the likely content words and we require only ONE via
+// AssertTranscriptHasMost(..., 1, ...): the contract under test is "the agent
+// spoke a coherent reply back over the SIP leg", not its exact phrasing.
 var dialogflowReplyKeywords = []string{
-	"hi", "how", "doing", "day", "good", "help", "today",
-	"greetings", "assist", "can", "you",
+	"city", "departing", "depart", "from", "where", "leaving",
+	"travel", "flight", "fly", "please", "tell", "what",
 }
 
 // TestVerb_Dialogflow_CX — drive a real Dialogflow CX agent through the
-// dialogflow verb: speak a greeting and assert the agent speaks a reply back
+// dialogflow verb: speak a request and assert the agent speaks a reply back
 // over the caller leg.
 //
 // Steps:
 //  1. preflight-skips — skip unless Dialogflow + Deepgram are configured
-//  2. ensure-prompt-wav — Deepgram-TTS the "hello" prompt (cached on disk)
+//  2. ensure-prompt-wav — Deepgram-TTS the flight-request prompt (cached)
 //  3. register-webhook-session
 //  4. script-dialogflow-verb — call_hook=[answer, pause, dialogflow(cx), hangup]
 //  5. place-call
 //  6. answer-and-record — 200 OK, start recording, prime with silence
 //  7. wait-for-recognizer — let the CX audio stream arm
-//  8. speak-prompt — stream the "hello" WAV, then trailing silence
+//  8. speak-prompt — stream the request WAV, then trailing silence
 //  9. wait-for-reply — let CX detect the turn + stream its reply audio back
-// 10. assert-reply-audio — Deepgram STT the recording, assert greeting words
+// 10. assert-reply-audio — Deepgram STT the recording, assert reply words
 // 11. hangup-and-wait-ended
 // 12. drain-callbacks — best-effort eventHook/actionHook capture
 // 13. assert-event-plumbing — dialogflow eventHook fired (soft check)
@@ -111,7 +111,7 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 
 	s = Step(t, "script-dialogflow-verb")
 	// No welcomeEvent: this CX agent has no named welcome-event handler and
-	// greets on the caller's first spoken turn instead. eventHook carries
+	// replies on the caller's first spoken turn instead. eventHook carries
 	// the X-Test-Id query param so per-event callbacks (which don't include
 	// callInfo) correlate back to this session. actionHook fires when the
 	// dialogflow session ends; ack it empty so jambonz doesn't chain
@@ -182,8 +182,8 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 
 	s = Step(t, "assert-reply-audio")
 	// Independent verification: Deepgram STT on the caller-side recording
-	// must hear the CX agent's spoken reply. The agent greets with one of a
-	// few phrasings, so require at least 1 greeting content word.
+	// must hear the CX agent's spoken reply. The Playbook's wording is
+	// model-generated and varies, so require at least 1 reply content word.
 	AssertTranscriptHasMost(s, ctx, recPath, 1, dialogflowReplyKeywords...)
 	s.Done()
 
