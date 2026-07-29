@@ -1,38 +1,24 @@
-// Tests for the `dialogflow` verb — connects the caller to a Google
-// Dialogflow agent (ES / CX / CES). We exercise the CX path against a real
-// CX agent because that's the model the mediajam media server most recently
-// gained support for; the mrf adapter translates the feature-server task's
-// FreeSWITCH-style `dialogflow_cx_start` api command into mediajam's
-// `dialogflow.start` control message, and mediajam streams the caller's
-// audio to Dialogflow and plays the agent's synthesized reply back.
+// Tests for the `dialogflow` verb — CX variant with a client-side tool call.
 //
-// What this proves end-to-end (the whole chain that broke with
-// "mediajam: api command not supported: dialogflow_cx_start"):
+// Chain under test:
 //
 //	caller speaks (our WAV)  ==RTP==>
-//	feature-server dialogflow task  --ep.api(dialogflow_cx_start)-->
-//	@jambonz/mrf endpoint shim      --dialogflow.start / audio-->
-//	mediajam dialogflow session     --StreamingDetectIntent--> Google CX
-//	Google CX  --audio_provided--> mediajam --play--> caller (our recording)
+//	feature-server dialogflow task  --dialogflow_cx_start-->
+//	@jambonz/mrf  --dialogflow.start--> mediajam --StreamingDetectIntent--> CX
+//	CX returns a tool_call --> mediajam tool_calls event --> task POSTs toolHook
+//	our webhook returns {outputParameters} --> task --dialogflow_cx_tool_result-->
+//	mediajam primes the next turn --> CX speaks --> audio to caller (recorded)
 //
-// The default agent (99e7b4c8-...) is a generative Conversational Agent
-// (Playbook): it answers free-form speech and holds a real conversation
-// (verified out-of-band with a REST detectIntent — "I want to fly to Paris
-// tonight" returns match=PLAYBOOK, "Could you please tell me what city you
-// will be departing from?"). It has no named welcome/WELCOME event handler —
-// sending one gets a CX "No handler is defined for the event" error — so the
-// realistic drive is exactly what a human caller does: speak first, then
-// assert the agent's spoken reply comes back over the SIP leg.
+// The agent (Airline Support, 99e7b4c8) is a Playbook scripted to call
+// getGeolocation before saying anything. "hi, I need a flight" triggered that
+// tool call 6/6 in manual runs; after the tool result it greets ("welcome to
+// the Cymbal Air helpdesk ... Where would you like to go?").
 //
-// We record the caller-side audio, speak a flight-booking prompt, wait for
-// the agent's TTS reply, and assert via Deepgram STT (independent of
-// Dialogflow's own recognition) that the reply words land. That proves the
-// full media round-trip, not a circular read of Dialogflow's events.
+// Assertions: toolHook fired with action=getGeolocation, and the post-tool
+// greeting audio lands on the caller leg (independent Deepgram STT).
 //
-// Skips cleanly (passes) when Dialogflow is not configured — see
-// cfg.HasDialogflow(): needs DIALOGFLOW_KEYFILE + DIALOGFLOW_PROJECT +
-// DIALOGFLOW_AGENT + DIALOGFLOW_REGION. Also needs DEEPGRAM_API_KEY (to
-// pre-gen the prompt WAV and STT-verify the reply) and NGROK_AUTHTOKEN.
+// Skips when Dialogflow is unconfigured (cfg.HasDialogflow) or DEEPGRAM_API_KEY
+// is missing.
 package verbs
 
 import (
@@ -44,41 +30,31 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-// dialogflowPrompt is what the caller says to open the conversation. The
-// Playbook agent books flights, so a flight request drives it into its slot-
-// filling turn ("which city are you departing from?").
-const dialogflowPrompt = "I want to fly to Paris tonight."
+// dialogflowPrompt reliably drives the playbook into its getGeolocation call.
+const dialogflowPrompt = "hi, I need a flight"
 
-// dialogflowReplyKeywords are content words the Playbook's reply uses.
-// Observed live for a flight request: "Could you please tell me what city you
-// will be departing from?" — a slot-filling prompt for the departure city.
-// The exact wording is model-generated and varies run to run, so this pools
-// the likely content words and we require only ONE via
-// AssertTranscriptHasMost(..., 1, ...): the contract under test is "the agent
-// spoke a coherent reply back over the SIP leg", not its exact phrasing.
+// dialogflowToolResult is the canned getGeolocation output (client-side tool:
+// we control both sides; the data is fictional by design).
+const dialogflowToolResult = `{"outputParameters":{"city":"New York","country":"United States","country_code":"us","postcode":"10001"}}`
+
+// dialogflowReplyKeywords: content words of the post-tool greeting. LLM
+// phrasing varies, so require only ONE — the contract is "the agent spoke
+// after the tool result", not exact wording.
 var dialogflowReplyKeywords = []string{
-	"city", "departing", "depart", "from", "where", "leaving",
-	"travel", "flight", "fly", "please", "tell", "what",
+	"cymbal", "air", "helpdesk", "welcome", "flight", "where", "go", "help", "world",
 }
 
-// TestVerb_Dialogflow_CX — drive a real Dialogflow CX agent through the
-// dialogflow verb: speak a request and assert the agent speaks a reply back
-// over the caller leg.
+// TestVerb_Dialogflow_CX — full tool-call round trip through jambonz.
 //
 // Steps:
-//  1. preflight-skips — skip unless Dialogflow + Deepgram are configured
-//  2. ensure-prompt-wav — Deepgram-TTS the flight-request prompt (cached)
-//  3. register-webhook-session
-//  4. script-dialogflow-verb — call_hook=[answer, pause, dialogflow(cx), hangup]
-//  5. place-call
-//  6. answer-and-record — 200 OK, start recording, prime with silence
-//  7. wait-for-recognizer — let the CX audio stream arm
-//  8. speak-prompt — stream the request WAV, then trailing silence
-//  9. wait-for-reply — let CX detect the turn + stream its reply audio back
-// 10. assert-reply-audio — Deepgram STT the recording, assert reply words
-// 11. hangup-and-wait-ended
-// 12. drain-callbacks — best-effort eventHook/actionHook capture
-// 13. assert-event-plumbing — dialogflow eventHook fired (soft check)
+//  1. preflight-skips
+//  2. ensure-prompt-wav
+//  3. script-dialogflow-verb — toolHook answers with canned geolocation
+//  4. place-call / answer-and-record
+//  5. speak-prompt, wait-for-reply (tool RTT + LLM + TTS)
+//  6. assert-toolhook — tool-call callback captured, action=getGeolocation
+//  7. assert-reply-audio — greeting words in the caller-leg recording
+//  8. hangup, drain, event plumbing check
 func TestVerb_Dialogflow_CX(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -90,7 +66,7 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	}
 	if !cfg.HasDeepgram() {
 		s.Done()
-		t.Skip("dialogflow test needs DEEPGRAM_API_KEY (pre-gen the prompt WAV + STT-verify the reply)")
+		t.Skip("dialogflow test needs DEEPGRAM_API_KEY (prompt WAV + STT verification)")
 	}
 	s.Done()
 
@@ -104,18 +80,11 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	if err != nil {
 		s.Fatalf("EnsureWAV: %v", err)
 	}
-	s.Logf("prompt wav: %s", promptWAV)
 	s.Done()
 
 	testID, sess := claimSession(t)
 
 	s = Step(t, "script-dialogflow-verb")
-	// No welcomeEvent: this CX agent has no named welcome-event handler and
-	// replies on the caller's first spoken turn instead. eventHook carries
-	// the X-Test-Id query param so per-event callbacks (which don't include
-	// callInfo) correlate back to this session. actionHook fires when the
-	// dialogflow session ends; ack it empty so jambonz doesn't chain
-	// follow-up verbs.
 	dfVerb := V("dialogflow",
 		"credentials", cfg.DialogflowServiceKey,
 		"project", cfg.DialogflowProject,
@@ -125,13 +94,17 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 		"lang", cfg.DialogflowLang,
 		"actionHook", webhookSrv.PublicURL()+"/action/dialogflow",
 		"eventHook", SessionURL(sess, "dialogflow-event"),
-		"events", []string{"intent", "transcription", "start-play", "stop-play"},
+		"toolHook", SessionURL(sess, "dialogflow-tool"),
+		"events", []string{"intent", "transcription", "tool-calls", "start-play", "stop-play"},
 	)
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		dfVerb,
 		V("hangup"),
 	}))
 	SessionAckEmpty(sess, "dialogflow", "dialogflow-event")
+	// toolHook answers with the canned geolocation result (raw JSON object,
+	// not a verb script)
+	sess.ScriptActionHookBody("dialogflow-tool", []byte(dialogflowToolResult))
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -147,74 +120,70 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	if err := call.StartRecording(recPath); err != nil {
 		s.Fatalf("StartRecording: %v", err)
 	}
-	// Prime the RTP path with silence so the recording is open and the media
-	// leg has latched before we speak.
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence: %v", err)
 	}
 	s.Done()
 
-	// Let the CX audio-input stream arm before the first syllable, or the
-	// leading word gets clipped and CX may not endpoint the turn.
 	WaitFor(t, "wait-for-recognizer", RecognizerArmDelayLong)
 
 	s = Step(t, "speak-prompt")
 	if err := call.SendWAV(promptWAV); err != nil {
 		s.Fatalf("SendWAV: %v", err)
 	}
-	// Trailing silence so CX's single-utterance endpointer fires and the
-	// agent is triggered to reply.
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence (post): %v", err)
 	}
 	s.Done()
 
 	s = Step(t, "wait-for-reply")
-	// CX detect-intent + fulfillment audio + mediajam file + jambonz play
-	// round-trip. Keep sending silence so the recording stays open while the
-	// reply streams back.
+	// STT endpoint + playbook LLM + toolHook RTT + tool-result turn + TTS +
+	// playback of the greeting (~12s speech)
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence (reply window): %v", err)
 	}
-	time.Sleep(6 * time.Second)
+	time.Sleep(16 * time.Second)
 	call.StopRecording()
 	s.Done()
 
+	s = Step(t, "assert-toolhook")
+	cbs := DrainCallbacks(sess, 2*time.Second)
+	var toolCB *webhook.Callback
+	for i := range cbs {
+		if cbs[i].Hook == "action/dialogflow-tool" {
+			toolCB = &cbs[i]
+			break
+		}
+	}
+	if toolCB == nil {
+		s.Errorf("no toolHook callback captured in %d callbacks", len(cbs))
+	} else {
+		s.Logf("toolHook body: %s", string(toolCB.Body))
+		if action := toolCB.NestedString("tool_call.action"); action != "getGeolocation" {
+			s.Errorf("tool_call.action = %q, want getGeolocation", action)
+		}
+	}
+	s.Done()
+
 	s = Step(t, "assert-reply-audio")
-	// Independent verification: Deepgram STT on the caller-side recording
-	// must hear the CX agent's spoken reply. The Playbook's wording is
-	// model-generated and varies, so require at least 1 reply content word.
 	AssertTranscriptHasMost(s, ctx, recPath, 1, dialogflowReplyKeywords...)
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
 
-	s = Step(t, "drain-callbacks")
-	cbs := DrainCallbacks(sess, 5*time.Second)
-	s.Logf("captured %d hook callbacks", len(cbs))
-	s.Done()
-
 	s = Step(t, "assert-event-plumbing")
-	// Soft check: confirm the dialogflow eventHook fired at all (start-play
-	// when the reply audio begins, or intent/transcription). Proves the
-	// dialogflow_cx::* event → verb:hook plumbing works; orthogonal to the
-	// reply-audio assertion above, so a miss is a warning, not a failure.
-	var events []webhook.Callback
-	for _, cb := range cbs {
+	var types []string
+	for _, cb := range append(cbs, DrainCallbacks(sess, 3*time.Second)...) {
 		if cb.Hook == "action/dialogflow-event" {
-			events = append(events, cb)
-		}
-	}
-	if len(events) == 0 {
-		s.Logf("WARNING: no dialogflow eventHook callbacks captured (media round-trip still asserted above)")
-	} else {
-		var types []string
-		for _, cb := range events {
 			types = append(types, cb.String("event"))
 			if id := cb.NestedString("customer_data.x_test_id"); id != "" && id != testID {
-				s.Errorf("eventHook customer_data.x_test_id=%q want %q", id, testID)
+				s.Errorf("eventHook x_test_id=%q want %q", id, testID)
 			}
 		}
+	}
+	if len(types) == 0 {
+		s.Logf("WARNING: no dialogflow eventHook callbacks captured")
+	} else {
 		s.Logf("dialogflow event types: %v", types)
 	}
 	s.Done()
