@@ -37,9 +37,15 @@ import (
 // dialogflowPrompt reliably drives the playbook into its getGeolocation call.
 const dialogflowPrompt = "hi, I need a flight"
 
-// dialogflowPrompt2 answers the greeting's "where would you like to go?" with
-// destination + date, driving the playbook toward getFlights.
-const dialogflowPrompt2 = "I would like to fly to Paris on December fifth"
+// dialogflowPrompt2 answers the greeting with origin + destination + date.
+// Origin is spoken explicitly even though getGeolocation already supplied it:
+// the playbook occasionally ignores the tool result and re-asks for the
+// departure city, and a self-contained turn keeps the flow moving either way.
+const dialogflowPrompt2 = "I want to fly from New York to Paris on December fifth"
+
+// dialogflowPrompt3 picks a flight from the read-out list; the playbook then
+// confirms the booking with a generated booking number.
+const dialogflowPrompt3 = "Please book the cheapest flight for me"
 
 // Canned client-side tool outputs (the tools have no backend by design).
 const (
@@ -56,11 +62,18 @@ var dialogflowReplyKeywords = []string{
 	"cymbal", "air", "helpdesk", "welcome", "flight", "where", "go", "help", "world",
 }
 
-// dialogflowTurn2Keywords: whatever the agent says after turn 2 — a flight
-// readout (numbers, times) or a follow-up question. Broad pool, require ONE.
+// dialogflowTurn2Keywords: the flight read-out draws on our canned data
+// (CA101/CA205, JFK->CDG, $640/$545) plus generic flight words. Require ONE.
 var dialogflowTurn2Keywords = []string{
-	"flight", "paris", "december", "depart", "found", "option", "morning",
-	"evening", "price", "dollars", "time", "travel", "book", "confirm",
+	"flight", "jfk", "cheapest", "leaves", "arrives", "stops", "dollars",
+	"book", "option", "forty", "morning", "afternoon", "paris", "december",
+}
+
+// dialogflowTurn3Keywords: the booking confirmation ("your booking is
+// confirmed, your booking number is X Y Z 1 2 3"). Require ONE.
+var dialogflowTurn3Keywords = []string{
+	"book", "booked", "booking", "confirm", "confirmed", "reference",
+	"number", "success", "successfully", "reservation", "all set", "email",
 }
 
 // TestVerb_Dialogflow_CX — two-turn tool-call round trip through jambonz.
@@ -70,10 +83,11 @@ var dialogflowTurn2Keywords = []string{
 //  2. ensure-prompt-wavs (turn 1 + turn 2)
 //  3. script-dialogflow-verb — toolHook answers per tool_call.action
 //  4. place-call / answer-and-record
-//  5. turn 1: speak "hi, I need a flight", wait, assert greeting audio
-//  6. turn 2: speak destination+date, wait, assert reply audio
-//  7. assert-tool-callbacks — getGeolocation strict; getFlights soft
-//  8. hangup, event plumbing check
+//  5. turn 1: "hi, I need a flight" -> getGeolocation -> greeting audio
+//  6. turn 2: destination+date -> getFlights (populated params) -> flight list
+//  7. turn 3: pick a flight -> booking confirmation audio
+//  8. assert-tool-callbacks — getGeolocation strict; getFlights soft
+//  9. hangup, event plumbing check
 func TestVerb_Dialogflow_CX(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -89,7 +103,7 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	}
 	s.Done()
 
-	ctx := WithTimeout(t, 150*time.Second)
+	ctx := WithTimeout(t, 260*time.Second)
 	uas := claimUAS(t, ctx)
 
 	s = Step(t, "ensure-prompt-wavs")
@@ -104,6 +118,12 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	})
 	if err != nil {
 		s.Fatalf("EnsureWAV turn 2: %v", err)
+	}
+	prompt3WAV, err := tts.EnsureWAV(ctx, "testdata/dialogflow", dialogflowPrompt3, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV turn 3: %v", err)
 	}
 	s.Done()
 
@@ -137,7 +157,7 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(170))
 	s.Done()
 
 	rec1 := filepath.Join(t.TempDir(), "turn1-greeting.wav")
@@ -196,7 +216,39 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "turn2-wait-for-reply")
-	// getFlights round trip + the agent reading out two flights (~10s speech)
+	// getFlights round trip + the agent reading out two flights — the full
+	// readout runs ~25-30s; speaking before it ends is lost (no active
+	// listen stream during playback)
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (reply window): %v", err)
+	}
+	time.Sleep(32 * time.Second)
+	call.StopRecording()
+	s.Done()
+
+	s = Step(t, "turn2-assert-reply")
+	AssertTranscriptHasMost(s, ctx, rec2, 1, dialogflowTurn2Keywords...)
+	s.Done()
+
+	rec3 := filepath.Join(t.TempDir(), "turn3-booking.wav")
+
+	s = Step(t, "turn3-book-flight")
+	if err := call.StartRecording(rec3); err != nil {
+		s.Fatalf("StartRecording turn 3: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (pre): %v", err)
+	}
+	if err := call.SendWAV(prompt3WAV); err != nil {
+		s.Fatalf("SendWAV turn 3: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "turn3-wait-for-confirmation")
+	// no tool on this turn: playbook LLM confirms + generates a booking number
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence (reply window): %v", err)
 	}
@@ -204,8 +256,8 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	call.StopRecording()
 	s.Done()
 
-	s = Step(t, "turn2-assert-reply")
-	AssertTranscriptHasMost(s, ctx, rec2, 1, dialogflowTurn2Keywords...)
+	s = Step(t, "turn3-assert-booking-confirmed")
+	AssertTranscriptHasMost(s, ctx, rec3, 1, dialogflowTurn3Keywords...)
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
