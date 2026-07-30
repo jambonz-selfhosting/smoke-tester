@@ -30,6 +30,10 @@ type SpeechCredentialCreate struct {
 	// SpeechmaticsSTTURI is required by the API when vendor is
 	// "speechmatics" — the realtime host, e.g. "eu2.rt.speechmatics.com".
 	SpeechmaticsSTTURI string `json:"speechmatics_stt_uri,omitempty"`
+	// ModelID is required by the API for some vendors (openai) and optional
+	// for others; it is the default model the credential recognizes with,
+	// overridable per-verb via the vendor's recognizer options.
+	ModelID string `json:"model_id,omitempty"`
 }
 
 // CreateAccountSpeechCredential POSTs a credential under an account. Returns

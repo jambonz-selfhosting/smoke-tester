@@ -95,6 +95,13 @@ var (
 	speechmaticsLabel string
 	speechmaticsSID   string
 
+	// openai speech credential (STT-only) provisioned at TestMain IF
+	// OPENAI_API_KEY is set (optional vendor). When unset, openaiLabel stays
+	// "" and the openai gather/transcribe tests pass without exercising
+	// openai STT.
+	openaiLabel string
+	openaiSID   string
+
 	// Webhook server + ngrok tunnel + Application bound to the suite
 	// account. The webhook always runs (NGROK_AUTHTOKEN is mandatory in
 	// the new model).
@@ -223,6 +230,18 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: SPEECHMATICS_API_KEY not set — speechmatics STT tests will pass without exercising speechmatics")
 	}
 
+	// 3e. openai STT speech credential — optional. Only provisioned when
+	// OPENAI_API_KEY is set; otherwise the openai gather/transcribe tests
+	// pass without exercising openai STT.
+	if cfg.HasOpenAI() {
+		if err := provisionOpenaiCredential(); err != nil {
+			log.Fatalf("tests/verbs: openai credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: openai credential label=%s sid=%s", openaiLabel, openaiSID)
+	} else {
+		log.Printf("tests/verbs: OPENAI_API_KEY not set — openai STT tests will pass without exercising openai")
+	}
+
 	// 4. Webhook server + ngrok tunnel + Application bound to the suite.
 	if err := setupWebhook(v); err != nil {
 		log.Fatalf("tests/verbs: webhook setup failed: %v", err)
@@ -248,6 +267,7 @@ func TestMain(m *testing.M) {
 	teardownMurfCredential()
 	teardownXaiCredential()
 	teardownSpeechmaticsCredential()
+	teardownOpenaiCredential()
 	if sipResolver != nil {
 		_ = sipResolver.Close()
 	}
@@ -420,6 +440,41 @@ func teardownSpeechmaticsCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, speechmaticsSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete speechmatics credential %s: %v", speechmaticsSID, err)
+	}
+}
+
+// provisionOpenaiCredential creates an openai speech credential under the
+// suite account, labelled `it-openai-<runID>`. STT-only — the model is chosen
+// per-test via recognizer.openaiOptions.model, not on the credential.
+// Called only when OPENAI_API_KEY is set.
+func provisionOpenaiCredential() error {
+	openaiLabel = "it-openai-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor: "openai",
+		Label:  openaiLabel,
+		APIKey: cfg.OpenAIAPIKey,
+		// the API requires a model on an openai credential; each test overrides
+		// it via recognizer.openaiOptions.model
+		ModelID:   "gpt-live-transcribe",
+		UseForSTT: true,
+	})
+	if err != nil {
+		return err
+	}
+	openaiSID = sid
+	return nil
+}
+
+func teardownOpenaiCredential() {
+	if openaiSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, openaiSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete openai credential %s: %v", openaiSID, err)
 	}
 }
 

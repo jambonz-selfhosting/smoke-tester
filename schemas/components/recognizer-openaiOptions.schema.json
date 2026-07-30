@@ -29,6 +29,38 @@
       "type": "string",
       "description": "Language code for recognition."
     },
+    "languages": {
+      "type": "array",
+      "items": { "type": "string" },
+      "minItems": 1,
+      "description": "Language hints for 'gpt-live-transcribe', which takes a list rather than a single code. Not combinable with 'language' at the vendor."
+    },
+    "keywords": {
+      "type": "array",
+      "items": { "type": "string" },
+      "description": "Literal term hints for 'gpt-live-transcribe'. Defaults to the recognizer's 'hints'."
+    },
+    "delay": {
+      "type": "string",
+      "enum": ["minimal", "low", "medium", "high", "xhigh"],
+      "description": "Latency/accuracy trade-off for 'gpt-live-transcribe'."
+    },
+    "vadMode": {
+      "type": "integer",
+      "minimum": 0,
+      "maximum": 3,
+      "description": "Local VAD aggressiveness (0-3), for the client-endpointed models that reject server turn detection."
+    },
+    "vadSilenceMs": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Milliseconds of silence to end a turn, for the client-endpointed models."
+    },
+    "vadVoiceMs": {
+      "type": "integer",
+      "minimum": 1,
+      "description": "Milliseconds of voice to start a turn, for the client-endpointed models."
+    },
     "input_audio_noise_reduction": {
       "type": "string",
       "enum": ["near_field", "far_field"],
