@@ -452,9 +452,12 @@ func provisionOpenaiCredential() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
-		Vendor:    "openai",
-		Label:     openaiLabel,
-		APIKey:    cfg.OpenAIAPIKey,
+		Vendor: "openai",
+		Label:  openaiLabel,
+		APIKey: cfg.OpenAIAPIKey,
+		// the API requires a model on an openai credential; using the new
+		// realtime model here also asserts api-server accepts it
+		ModelID:   "gpt-live-transcribe",
 		UseForSTT: true,
 	})
 	if err != nil {

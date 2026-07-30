@@ -51,12 +51,39 @@ func liveTranscribeRecognizer() map[string]any {
 	}
 }
 
+// serverEndpointedRecognizer is the older family, where OpenAI's own server
+// VAD segments turns. Both families are built by one session-config path in
+// the media layer, so this is the regression guard for the half that did not
+// change behavior.
+func serverEndpointedRecognizer() map[string]any {
+	return map[string]any{
+		"vendor": "openai",
+		"label":  openaiLabel,
+		"openaiOptions": map[string]any{
+			"model":          "gpt-4o-transcribe",
+			"turn_detection": map[string]any{"type": "server_vad", "silence_duration_ms": 500},
+		},
+	}
+}
+
 // TestVerb_Gather_Speech_OpenAI_LiveTranscribe — stream the fixture WAV
 // ("The sun is shining.") into `gather input=[speech]` with the
 // gpt-live-transcribe recognizer and assert the action callback carries the
 // spoken words. Receiving a final transcript at all is the assertion that
 // matters: this model produces one only when jambonz commits the turn.
 func TestVerb_Gather_Speech_OpenAI_LiveTranscribe(t *testing.T) {
+	gatherWithOpenaiRecognizer(t, liveTranscribeRecognizer)
+}
+
+// TestVerb_Gather_Speech_OpenAI_ServerVad — same flow on gpt-4o-transcribe,
+// which endpoints turns server-side. Pins that adding the client-endpointed
+// family did not disturb it.
+func TestVerb_Gather_Speech_OpenAI_ServerVad(t *testing.T) {
+	gatherWithOpenaiRecognizer(t, serverEndpointedRecognizer)
+}
+
+func gatherWithOpenaiRecognizer(t *testing.T, buildRecognizer func() map[string]any) {
+	t.Helper()
 	if !cfg.HasOpenAI() || openaiLabel == "" {
 		t.Log("OPENAI_API_KEY not set — passing without exercising openai STT")
 		return
@@ -79,9 +106,9 @@ func TestVerb_Gather_Speech_OpenAI_LiveTranscribe(t *testing.T) {
 	s.Logf("ground truth: %q", truth)
 	s.Done()
 
-	s = Step(t, "script-gather-speech-openai-live-transcribe")
+	s = Step(t, "script-gather-speech-openai")
 	actionURL := SessionURL(sess, "gather")
-	recognizer := liveTranscribeRecognizer()
+	recognizer := buildRecognizer()
 	recognizer["language"] = "en-US"
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("gather",
@@ -141,8 +168,9 @@ func TestVerb_Gather_Speech_OpenAI_LiveTranscribe(t *testing.T) {
 	s = Step(t, "assert-transcript")
 	transcript := extractTranscript(cb)
 	if transcript == "" {
-		s.Fatalf("no transcript in action/gather payload — the turn was never "+
-			"committed, so gpt-live-transcribe never finalized: %s", string(cb.Body))
+		s.Fatalf("no transcript in action/gather payload — on a client-endpointed "+
+			"model this means the turn was never committed, so openai never "+
+			"finalized it: %s", string(cb.Body))
 	}
 	s.Logf("recognized: %q", transcript)
 	normalized := strings.ToLower(transcript)
