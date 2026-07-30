@@ -1,4 +1,4 @@
-// Tests for the `dialogflow` verb — CX variant with a client-side tool call.
+// Tests for the `dialogflow` verb — CX variant with client-side tool calls.
 //
 // Chain under test:
 //
@@ -14,8 +14,12 @@
 // tool call 6/6 in manual runs; after the tool result it greets ("welcome to
 // the Cymbal Air helpdesk ... Where would you like to go?").
 //
-// Assertions: toolHook fired with action=getGeolocation, and the post-tool
-// greeting audio lands on the caller leg (independent Deepgram STT).
+// Turn 2 gives a destination + date, which per the playbook triggers a second
+// tool call (getFlights) with POPULATED input_parameters; we return a canned
+// flight list and the agent reads it out. The playbook is an LLM, so turn 2
+// occasionally skips the tool ("a run that doesn't call the tool is not
+// necessarily a defect") — turn-2 tool assertions are soft (logged warnings),
+// turn-1 assertions are strict.
 //
 // Skips when Dialogflow is unconfigured (cfg.HasDialogflow) or DEEPGRAM_API_KEY
 // is missing.
@@ -33,28 +37,43 @@ import (
 // dialogflowPrompt reliably drives the playbook into its getGeolocation call.
 const dialogflowPrompt = "hi, I need a flight"
 
-// dialogflowToolResult is the canned getGeolocation output (client-side tool:
-// we control both sides; the data is fictional by design).
-const dialogflowToolResult = `{"outputParameters":{"city":"New York","country":"United States","country_code":"us","postcode":"10001"}}`
+// dialogflowPrompt2 answers the greeting's "where would you like to go?" with
+// destination + date, driving the playbook toward getFlights.
+const dialogflowPrompt2 = "I would like to fly to Paris on December fifth"
 
-// dialogflowReplyKeywords: content words of the post-tool greeting. LLM
-// phrasing varies, so require only ONE — the contract is "the agent spoke
-// after the tool result", not exact wording.
+// Canned client-side tool outputs (the tools have no backend by design).
+const (
+	dialogflowGeoResult = `{"outputParameters":{"city":"New York","country":"United States","country_code":"us","postcode":"10001"}}`
+
+	dialogflowFlightsResult = `{"outputParameters":{"flights":[` +
+		`{"flight_number":"CA101","origin":"JFK","destination":"CDG","departure_time":"08:30","arrival_time":"21:45","price_usd":640},` +
+		`{"flight_number":"CA205","origin":"JFK","destination":"CDG","departure_time":"17:10","arrival_time":"06:25","price_usd":545}]}}`
+)
+
+// dialogflowReplyKeywords: content words of the post-getGeolocation greeting.
+// LLM phrasing varies, so require only ONE.
 var dialogflowReplyKeywords = []string{
 	"cymbal", "air", "helpdesk", "welcome", "flight", "where", "go", "help", "world",
 }
 
-// TestVerb_Dialogflow_CX — full tool-call round trip through jambonz.
+// dialogflowTurn2Keywords: whatever the agent says after turn 2 — a flight
+// readout (numbers, times) or a follow-up question. Broad pool, require ONE.
+var dialogflowTurn2Keywords = []string{
+	"flight", "paris", "december", "depart", "found", "option", "morning",
+	"evening", "price", "dollars", "time", "travel", "book", "confirm",
+}
+
+// TestVerb_Dialogflow_CX — two-turn tool-call round trip through jambonz.
 //
 // Steps:
 //  1. preflight-skips
-//  2. ensure-prompt-wav
-//  3. script-dialogflow-verb — toolHook answers with canned geolocation
+//  2. ensure-prompt-wavs (turn 1 + turn 2)
+//  3. script-dialogflow-verb — toolHook answers per tool_call.action
 //  4. place-call / answer-and-record
-//  5. speak-prompt, wait-for-reply (tool RTT + LLM + TTS)
-//  6. assert-toolhook — tool-call callback captured, action=getGeolocation
-//  7. assert-reply-audio — greeting words in the caller-leg recording
-//  8. hangup, drain, event plumbing check
+//  5. turn 1: speak "hi, I need a flight", wait, assert greeting audio
+//  6. turn 2: speak destination+date, wait, assert reply audio
+//  7. assert-tool-callbacks — getGeolocation strict; getFlights soft
+//  8. hangup, event plumbing check
 func TestVerb_Dialogflow_CX(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -66,19 +85,25 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	}
 	if !cfg.HasDeepgram() {
 		s.Done()
-		t.Skip("dialogflow test needs DEEPGRAM_API_KEY (prompt WAV + STT verification)")
+		t.Skip("dialogflow test needs DEEPGRAM_API_KEY (prompt WAVs + STT verification)")
 	}
 	s.Done()
 
-	ctx := WithTimeout(t, 120*time.Second)
+	ctx := WithTimeout(t, 150*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s = Step(t, "ensure-prompt-wav")
+	s = Step(t, "ensure-prompt-wavs")
 	promptWAV, err := tts.EnsureWAV(ctx, "testdata/dialogflow", dialogflowPrompt, tts.PromptOptions{
 		Model: "aura-asteria-en",
 	})
 	if err != nil {
-		s.Fatalf("EnsureWAV: %v", err)
+		s.Fatalf("EnsureWAV turn 1: %v", err)
+	}
+	prompt2WAV, err := tts.EnsureWAV(ctx, "testdata/dialogflow", dialogflowPrompt2, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV turn 2: %v", err)
 	}
 	s.Done()
 
@@ -102,22 +127,27 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 		V("hangup"),
 	}))
 	SessionAckEmpty(sess, "dialogflow", "dialogflow-event")
-	// toolHook answers with the canned geolocation result (raw JSON object,
-	// not a verb script)
-	sess.ScriptActionHookBody("dialogflow-tool", []byte(dialogflowToolResult))
+	// toolHook answers per requested action (raw JSON, not a verb script)
+	sess.ScriptActionHookBodyFunc("dialogflow-tool", func(cb webhook.Callback) []byte {
+		if cb.NestedString("tool_call.action") == "getFlights" {
+			return []byte(dialogflowFlightsResult)
+		}
+		return []byte(dialogflowGeoResult)
+	})
 	s.Done()
 
 	s = Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(60))
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
 	s.Done()
 
-	recPath := filepath.Join(t.TempDir(), "dialogflow-reply.wav")
+	rec1 := filepath.Join(t.TempDir(), "turn1-greeting.wav")
+	rec2 := filepath.Join(t.TempDir(), "turn2-flights.wav")
 
 	s = Step(t, "answer-and-record")
 	if err := call.Answer(); err != nil {
 		s.Fatalf("Answer: %v", err)
 	}
-	if err := call.StartRecording(recPath); err != nil {
+	if err := call.StartRecording(rec1); err != nil {
 		s.Fatalf("StartRecording: %v", err)
 	}
 	if err := call.SendSilence(); err != nil {
@@ -127,7 +157,7 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 
 	WaitFor(t, "wait-for-recognizer", RecognizerArmDelayLong)
 
-	s = Step(t, "speak-prompt")
+	s = Step(t, "turn1-speak-prompt")
 	if err := call.SendWAV(promptWAV); err != nil {
 		s.Fatalf("SendWAV: %v", err)
 	}
@@ -136,9 +166,9 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "wait-for-reply")
+	s = Step(t, "turn1-wait-for-reply")
 	// STT endpoint + playbook LLM + toolHook RTT + tool-result turn + TTS +
-	// playback of the greeting (~12s speech)
+	// greeting playback
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence (reply window): %v", err)
 	}
@@ -146,34 +176,79 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	call.StopRecording()
 	s.Done()
 
-	s = Step(t, "assert-toolhook")
-	cbs := DrainCallbacks(sess, 2*time.Second)
-	var toolCB *webhook.Callback
-	for i := range cbs {
-		if cbs[i].Hook == "action/dialogflow-tool" {
-			toolCB = &cbs[i]
-			break
-		}
+	s = Step(t, "turn1-assert-greeting")
+	AssertTranscriptHasMost(s, ctx, rec1, 1, dialogflowReplyKeywords...)
+	s.Done()
+
+	s = Step(t, "turn2-speak-destination")
+	if err := call.StartRecording(rec2); err != nil {
+		s.Fatalf("StartRecording turn 2: %v", err)
 	}
-	if toolCB == nil {
-		s.Errorf("no toolHook callback captured in %d callbacks", len(cbs))
-	} else {
-		s.Logf("toolHook body: %s", string(toolCB.Body))
-		if action := toolCB.NestedString("tool_call.action"); action != "getGeolocation" {
-			s.Errorf("tool_call.action = %q, want getGeolocation", action)
-		}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (pre): %v", err)
+	}
+	if err := call.SendWAV(prompt2WAV); err != nil {
+		s.Fatalf("SendWAV turn 2: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
 	}
 	s.Done()
 
-	s = Step(t, "assert-reply-audio")
-	AssertTranscriptHasMost(s, ctx, recPath, 1, dialogflowReplyKeywords...)
+	s = Step(t, "turn2-wait-for-reply")
+	// getFlights round trip + the agent reading out two flights (~10s speech)
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (reply window): %v", err)
+	}
+	time.Sleep(20 * time.Second)
+	call.StopRecording()
+	s.Done()
+
+	s = Step(t, "turn2-assert-reply")
+	AssertTranscriptHasMost(s, ctx, rec2, 1, dialogflowTurn2Keywords...)
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
 
+	s = Step(t, "assert-tool-callbacks")
+	cbs := DrainCallbacks(sess, 5*time.Second)
+	var toolCBs []webhook.Callback
+	for _, cb := range cbs {
+		if cb.Hook == "action/dialogflow-tool" {
+			toolCBs = append(toolCBs, cb)
+		}
+	}
+	if len(toolCBs) == 0 {
+		s.Fatalf("no toolHook callbacks captured in %d callbacks", len(cbs))
+	}
+	// turn 1 is deterministic: getGeolocation, no input parameters
+	if action := toolCBs[0].NestedString("tool_call.action"); action != "getGeolocation" {
+		s.Errorf("first tool_call.action = %q, want getGeolocation", action)
+	}
+	// turn 2 is LLM-dependent: assert getFlights when it fired, warn when not
+	sawFlights := false
+	for _, cb := range toolCBs[1:] {
+		if cb.NestedString("tool_call.action") == "getFlights" {
+			sawFlights = true
+			// populated params look like {origin_airport_code, destination_airport_code,
+			// travel_date, timezone_difference_minutes, flight_duration_minutes, ...}
+			if date := cb.NestedString("tool_call.input_parameters.travel_date"); date == "" {
+				s.Errorf("getFlights input_parameters not populated: %s", string(cb.Body))
+			} else {
+				s.Logf("getFlights populated: travel_date=%s origin=%s", date,
+					cb.NestedString("tool_call.input_parameters.origin_airport_code"))
+			}
+		}
+	}
+	if !sawFlights {
+		s.Logf("WARNING: getFlights did not fire this run (playbook LLM nondeterminism; turn-1 round trip still proven)")
+	}
+	s.Logf("tool callbacks: %d", len(toolCBs))
+	s.Done()
+
 	s = Step(t, "assert-event-plumbing")
 	var types []string
-	for _, cb := range append(cbs, DrainCallbacks(sess, 3*time.Second)...) {
+	for _, cb := range cbs {
 		if cb.Hook == "action/dialogflow-event" {
 			types = append(types, cb.String("event"))
 			if id := cb.NestedString("customer_data.x_test_id"); id != "" && id != testID {
