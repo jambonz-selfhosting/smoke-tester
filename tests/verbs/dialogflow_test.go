@@ -315,3 +315,126 @@ func TestVerb_Dialogflow_CX(t *testing.T) {
 	}
 	s.Done()
 }
+
+// dialogflowErrKeywords: however the playbook reacts to a failed tool —
+// apologizing, asking for the city directly, or offering help. Require ONE.
+var dialogflowErrKeywords = []string{
+	"sorry", "trouble", "unable", "city", "departing", "where", "from",
+	"help", "flight", "assist", "try",
+}
+
+// TestVerb_Dialogflow_CX_ToolError — the error half of the tool round trip:
+// the toolHook answers getGeolocation with {error}, mediajam sends
+// ToolCallResult.error, and the agent must still produce a spoken reply
+// (typically asking for the departure city directly) instead of stalling.
+func TestVerb_Dialogflow_CX_ToolError(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	s := Step(t, "preflight-skips")
+	if !cfg.HasDialogflow() {
+		s.Done()
+		t.Skip("dialogflow test needs DIALOGFLOW_KEYFILE + DIALOGFLOW_PROJECT + DIALOGFLOW_AGENT + DIALOGFLOW_REGION")
+	}
+	if !cfg.HasDeepgram() {
+		s.Done()
+		t.Skip("dialogflow test needs DEEPGRAM_API_KEY")
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 120*time.Second)
+	uas := claimUAS(t, ctx)
+
+	s = Step(t, "ensure-prompt-wav")
+	promptWAV, err := tts.EnsureWAV(ctx, "testdata/dialogflow", dialogflowPrompt, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
+	}
+	s.Done()
+
+	_, sess := claimSession(t)
+
+	s = Step(t, "script-dialogflow-verb")
+	dfVerb := V("dialogflow",
+		"credentials", cfg.DialogflowServiceKey,
+		"project", cfg.DialogflowProject,
+		"agent", cfg.DialogflowAgent,
+		"region", cfg.DialogflowRegion,
+		"model", "cx",
+		"lang", cfg.DialogflowLang,
+		"actionHook", webhookSrv.PublicURL()+"/action/dialogflow",
+		"eventHook", SessionURL(sess, "dialogflow-event"),
+		"toolHook", SessionURL(sess, "dialogflow-tool"),
+		"events", []string{"intent", "tool-calls", "start-play", "stop-play"},
+	)
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		dfVerb,
+		V("hangup"),
+	}))
+	SessionAckEmpty(sess, "dialogflow", "dialogflow-event")
+	// every tool call fails
+	sess.ScriptActionHookBody("dialogflow-tool",
+		[]byte(`{"error":"geolocation service unavailable"}`))
+	s.Done()
+
+	s = Step(t, "place-call")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(60))
+	s.Done()
+
+	recPath := filepath.Join(t.TempDir(), "tool-error-reply.wav")
+
+	s = Step(t, "answer-and-record")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	if err := call.StartRecording(recPath); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	WaitFor(t, "wait-for-recognizer", RecognizerArmDelayLong)
+
+	s = Step(t, "speak-prompt")
+	if err := call.SendWAV(promptWAV); err != nil {
+		s.Fatalf("SendWAV: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-reply")
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (reply window): %v", err)
+	}
+	time.Sleep(16 * time.Second)
+	call.StopRecording()
+	s.Done()
+
+	s = Step(t, "assert-toolhook-fired")
+	cbs := DrainCallbacks(sess, 3*time.Second)
+	sawTool := false
+	for _, cb := range cbs {
+		if cb.Hook == "action/dialogflow-tool" {
+			sawTool = true
+			break
+		}
+	}
+	if !sawTool {
+		s.Fatalf("no toolHook callback captured in %d callbacks", len(cbs))
+	}
+	s.Done()
+
+	s = Step(t, "assert-agent-recovers")
+	// the agent must speak SOMETHING after the tool error — silence means the
+	// error result never reached CX (or the playbook stalled)
+	AssertTranscriptHasMost(s, ctx, recPath, 1, dialogflowErrKeywords...)
+	s.Done()
+
+	HangupAndWaitEnded(t, ctx, call)
+}
