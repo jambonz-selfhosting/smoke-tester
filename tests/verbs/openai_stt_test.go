@@ -1,26 +1,16 @@
-// Tests for the `gather` and `transcribe` verbs with STT vendor "openai"
-// using the gpt-live-transcribe model, plus the openaiOptions it introduced:
+// Tests for `gather` and `transcribe` with STT vendor "openai", covering both
+// model families and the openaiOptions gpt-live-transcribe introduced
+// (delay, keywords, languages).
 //
-//   - openaiOptions.model = "gpt-live-transcribe"
-//   - openaiOptions.delay      (latency/accuracy trade-off)
-//   - openaiOptions.keywords   (literal term hints)
-//   - openaiOptions.languages  (language hints as a LIST, not a single code)
+// Why gpt-live-transcribe needs more than a model-string swap: it rejects
+// OpenAI's server-side turn detection and, left alone, streams deltas forever
+// without finalizing an utterance — jambonz endpoints turns itself and commits
+// the buffer. `gather` fires its actionHook only on a FINAL transcript, so a
+// callback carrying the fixture's words IS the proof that ran mid-call; a
+// missing commit shows up here as a gather timeout with no speech.
 //
-// Why this needs its own test rather than a model-string swap: unlike
-// gpt-4o-transcribe, gpt-live-transcribe rejects OpenAI's server-side turn
-// detection outright and — left alone — streams transcript deltas forever
-// without ever finalizing an utterance. jambonz therefore endpoints turns
-// itself (local VAD in the media layer, then an explicit buffer commit).
-//
-// The gather test is what pins that: `gather` only fires its actionHook once
-// a FINAL transcript arrives, so a callback carrying the fixture's words is
-// proof the local endpointing ran mid-call. Were the commit missing, the
-// verb would time out with no speech instead.
-//
-// openai is an OPTIONAL vendor (see config.HasOpenAI /
-// provisionOpenaiCredential in verbsmain_test.go): when OPENAI_API_KEY is
-// unset, openaiLabel stays "" and these tests pass immediately after a log —
-// a plain `return`, never t.Skip, never a failure.
+// Optional vendor: with OPENAI_API_KEY unset these pass after a log (see
+// speechmatics_stt_test.go for the convention).
 package verbs
 
 import (
@@ -34,10 +24,9 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-// liveTranscribeRecognizer is the recognizer block shared by both tests: the
-// model that needs client-side turn endpointing, plus the fields only it
-// accepts. "shining" is seeded as a keyword because it is the fixture's last
-// word and the one most likely to be clipped if the turn were committed early.
+// liveTranscribeRecognizer is the block shared by both live-transcribe tests.
+// "shining" is seeded as a keyword: it is the fixture's last word, the one a
+// prematurely committed turn would clip.
 func liveTranscribeRecognizer() map[string]any {
 	return map[string]any{
 		"vendor": "openai",
@@ -51,10 +40,9 @@ func liveTranscribeRecognizer() map[string]any {
 	}
 }
 
-// serverEndpointedRecognizer is the older family, where OpenAI's own server
-// VAD segments turns. Both families are built by one session-config path in
-// the media layer, so this is the regression guard for the half that did not
-// change behavior.
+// serverEndpointedRecognizer is the older family, where OpenAI's server VAD
+// segments turns. One session-config path in the media layer builds both
+// families, so this guards the half whose behavior did not change.
 func serverEndpointedRecognizer() map[string]any {
 	return map[string]any{
 		"vendor": "openai",
@@ -66,18 +54,15 @@ func serverEndpointedRecognizer() map[string]any {
 	}
 }
 
-// TestVerb_Gather_Speech_OpenAI_LiveTranscribe — stream the fixture WAV
-// ("The sun is shining.") into `gather input=[speech]` with the
-// gpt-live-transcribe recognizer and assert the action callback carries the
-// spoken words. Receiving a final transcript at all is the assertion that
-// matters: this model produces one only when jambonz commits the turn.
+// Stream the fixture WAV ("The sun is shining.") into `gather input=[speech]`
+// on gpt-live-transcribe. Receiving a final transcript at all is the assertion
+// that matters — see the file header.
 func TestVerb_Gather_Speech_OpenAI_LiveTranscribe(t *testing.T) {
 	gatherWithOpenaiRecognizer(t, liveTranscribeRecognizer)
 }
 
-// TestVerb_Gather_Speech_OpenAI_ServerVad — same flow on gpt-4o-transcribe,
-// which endpoints turns server-side. Pins that adding the client-endpointed
-// family did not disturb it.
+// Same flow on gpt-4o-transcribe, which endpoints server-side: pins that adding
+// the client-endpointed family did not disturb it.
 func TestVerb_Gather_Speech_OpenAI_ServerVad(t *testing.T) {
 	gatherWithOpenaiRecognizer(t, serverEndpointedRecognizer)
 }
@@ -135,8 +120,7 @@ func gatherWithOpenaiRecognizer(t *testing.T, buildRecognizer func() map[string]
 	s.Done()
 
 	s = Step(t, "wait-for-recognizer")
-	// openai realtime dials a websocket and negotiates a transcription
-	// session before audio counts — use the LONG pad.
+	// openai negotiates a transcription session over its websocket first — LONG pad.
 	time.Sleep(RecognizerArmDelayLong)
 	s.Done()
 
@@ -147,9 +131,8 @@ func gatherWithOpenaiRecognizer(t *testing.T, buildRecognizer func() map[string]
 	s.Done()
 
 	s = Step(t, "post-speech-silence")
-	// The local endpointer needs trailing silence to call the turn over and
-	// commit it; without this the final transcript would only arrive at
-	// session teardown, after gather had already given up.
+	// The local endpointer needs trailing silence to end the turn; without it the
+	// final transcript arrives only at teardown, after gather gave up.
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence (post): %v", err)
 	}
@@ -184,10 +167,8 @@ func gatherWithOpenaiRecognizer(t *testing.T, buildRecognizer func() map[string]
 	s.Done()
 }
 
-// TestVerb_Transcribe_OpenAI_LiveTranscribe — `transcribe` runs continuous
-// STT with gpt-live-transcribe. Continuous transcription is where a missing
-// turn commit hurts most: every utterance in the call has to be finalized on
-// its own, not batched into one transcript at hangup.
+// Continuous STT on gpt-live-transcribe, where a missing turn commit hurts most:
+// every utterance must finalize on its own rather than batch up until hangup.
 func TestVerb_Transcribe_OpenAI_LiveTranscribe(t *testing.T) {
 	if !cfg.HasOpenAI() || openaiLabel == "" {
 		t.Log("OPENAI_API_KEY not set — passing without exercising openai STT")
@@ -251,7 +232,11 @@ func TestVerb_Transcribe_OpenAI_LiveTranscribe(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "collect-transcription-hook")
-	deadline := time.Now().Add(30 * time.Second)
+	// Bound the wait well inside the script's 15s pause: a transcript that only
+	// arrives at session teardown would still land within a 30s window, which is
+	// exactly the missing-commit failure this test exists to catch.
+	sentAt := time.Now()
+	deadline := sentAt.Add(12 * time.Second)
 	var parts []string
 	transcript := ""
 	for time.Now().Before(deadline) {
@@ -268,6 +253,7 @@ func TestVerb_Transcribe_OpenAI_LiveTranscribe(t *testing.T) {
 			}
 		}
 		if transcript != "" && transcriptHits(transcript) >= 2 {
+			s.Logf("first usable transcript after %s", time.Since(sentAt).Round(time.Millisecond))
 			break
 		}
 		time.Sleep(100 * time.Millisecond)

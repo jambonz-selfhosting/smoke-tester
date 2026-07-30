@@ -455,8 +455,8 @@ func provisionOpenaiCredential() error {
 		Vendor: "openai",
 		Label:  openaiLabel,
 		APIKey: cfg.OpenAIAPIKey,
-		// the API requires a model on an openai credential; using the new
-		// realtime model here also asserts api-server accepts it
+		// the API requires a model on an openai credential; each test overrides
+		// it via recognizer.openaiOptions.model
 		ModelID:   "gpt-live-transcribe",
 		UseForSTT: true,
 	})
