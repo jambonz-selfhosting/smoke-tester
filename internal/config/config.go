@@ -91,6 +91,25 @@ type Settings struct {
 	// "eu2.rt.speechmatics.com" when SPEECHMATICS_STT_URI is unset.
 	SpeechmaticsSTTURI string
 
+	// Optional — Google Speech-to-Text service-account JSON (the full key,
+	// read from GOOGLE_STT_KEYFILE). When set, TestMain provisions a google
+	// SpeechCredential under the ephemeral account and the google STT tests
+	// exercise the v2 API. When unset those tests pass without exercising
+	// google STT — see HasGoogleSTT.
+	GoogleSTTServiceKey string
+
+	// Optional — a pre-created Google STT **v2 recognizer** to point the
+	// recognizerId test at. The recognizer must already exist (jambonz never
+	// creates one) and, for the assertion to mean anything, its stored
+	// language must DIFFER from GoogleSTTVerbLanguage: the test proves the
+	// recognizer's own config won over the language the verb asked for.
+	// Without these the recognizerId test passes without exercising it —
+	// see HasGoogleV2Recognizer.
+	GoogleSTTParentPath     string // projects/{project}/locations/{location}
+	GoogleSTTRecognizerID   string // bare id, or a full resource path
+	GoogleSTTRecognizerLang string // language stored ON the recognizer, e.g. "ja-JP"
+	GoogleSTTVerbLanguage   string // language the verb asks for; default "en-US"
+
 	// Optional — Google Dialogflow. When DialogflowServiceKey is set (the
 	// full service-account JSON, read from DIALOGFLOW_KEYFILE), the
 	// dialogflow verb test provisions nothing via /SpeechCredentials —
@@ -152,6 +171,20 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // tests can run. Optional: when the key is unset those tests pass without
 // exercising speechmatics.
 func (s *Settings) HasSpeechmatics() bool { return s.SpeechmaticsAPIKey != "" }
+
+// HasGoogleSTT reports whether the google STT tests can provision a
+// credential and run.
+func (s *Settings) HasGoogleSTT() bool { return s.GoogleSTTServiceKey != "" }
+
+// HasGoogleV2Recognizer reports whether the recognizerId test has everything
+// it needs: a credential, a recognizer to name, and a stored language that
+// differs from the one the verb asks for (without the mismatch the test
+// cannot tell a honored recognizer from an ignored one).
+func (s *Settings) HasGoogleV2Recognizer() bool {
+	return s.HasGoogleSTT() && s.GoogleSTTParentPath != "" && s.GoogleSTTRecognizerID != "" &&
+		s.GoogleSTTRecognizerLang != "" &&
+		!strings.EqualFold(s.GoogleSTTRecognizerLang, s.GoogleSTTVerbLanguage)
+}
 
 // HasDialogflow reports whether the Google Dialogflow verb test can run. It
 // needs the service-account JSON plus the CX agent coordinates (project +
@@ -223,14 +256,20 @@ func parse() (*Settings, error) {
 		XaiAPIKey:          os.Getenv("XAI_API_KEY"),
 		SpeechmaticsAPIKey: os.Getenv("SPEECHMATICS_API_KEY"),
 		SpeechmaticsSTTURI: firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
-		DialogflowProject:  os.Getenv("DIALOGFLOW_PROJECT"),
-		DialogflowAgent:    os.Getenv("DIALOGFLOW_AGENT"),
-		DialogflowRegion:   firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
-		DialogflowLang:     firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
-		NgrokAuthToken:     os.Getenv("NGROK_AUTHTOKEN"),
-		NgrokDomain:        os.Getenv("NGROK_DOMAIN"),
-		RunID:              os.Getenv("RUN_ID"),
-		LogLevel:           strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
+
+		GoogleSTTParentPath:     os.Getenv("GOOGLE_STT_PARENT_PATH"),
+		GoogleSTTRecognizerID:   os.Getenv("GOOGLE_STT_RECOGNIZER_ID"),
+		GoogleSTTRecognizerLang: os.Getenv("GOOGLE_STT_RECOGNIZER_LANGUAGE"),
+		GoogleSTTVerbLanguage:   firstNonEmpty(os.Getenv("GOOGLE_STT_VERB_LANGUAGE"), "en-US"),
+
+		DialogflowProject: os.Getenv("DIALOGFLOW_PROJECT"),
+		DialogflowAgent:   os.Getenv("DIALOGFLOW_AGENT"),
+		DialogflowRegion:  firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
+		DialogflowLang:    firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
+		NgrokAuthToken:    os.Getenv("NGROK_AUTHTOKEN"),
+		NgrokDomain:       os.Getenv("NGROK_DOMAIN"),
+		RunID:             os.Getenv("RUN_ID"),
+		LogLevel:          strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
 	}
 
 	// required
@@ -288,6 +327,20 @@ func parse() (*Settings, error) {
 			return nil, fmt.Errorf("DIALOGFLOW_KEYFILE=%q is not valid JSON", kf)
 		}
 		s.DialogflowServiceKey = string(raw)
+	}
+
+	// Optional — Google STT service-account key, same contract as
+	// DIALOGFLOW_KEYFILE: unset => the google STT tests pass without
+	// exercising google; set-but-unreadable is a hard error.
+	if kf := os.Getenv("GOOGLE_STT_KEYFILE"); kf != "" {
+		raw, err := os.ReadFile(kf)
+		if err != nil {
+			return nil, fmt.Errorf("GOOGLE_STT_KEYFILE=%q: %w", kf, err)
+		}
+		if !json.Valid(raw) {
+			return nil, fmt.Errorf("GOOGLE_STT_KEYFILE=%q is not valid JSON", kf)
+		}
+		s.GoogleSTTServiceKey = string(raw)
 	}
 
 	// ttl

@@ -55,6 +55,42 @@ func (c *Client) CreateAccountSpeechCredential(ctx context.Context, accountSID s
 	return ok.SID, nil
 }
 
+// SpeechCredentialTestResult is the body of GET
+// /Accounts/{account_sid}/SpeechCredentials/{sid}/test — per-direction
+// {status: "ok" | "fail" | "not tested", reason}.
+type SpeechCredentialTestResult struct {
+	TTS struct {
+		Status string `json:"status"`
+		Reason string `json:"reason,omitempty"`
+	} `json:"tts"`
+	STT struct {
+		Status string `json:"status"`
+		Reason string `json:"reason,omitempty"`
+	} `json:"stt"`
+}
+
+// TestAccountSpeechCredential exercises a credential against its vendor and
+// records the outcome on the row (stt_tested_ok / tts_tested_ok).
+//
+// This is MANDATORY for google, and only for google: feature-server's
+// getSpeechCredentials refuses a google credential whose stt_tested_ok (or
+// tts_tested_ok) is not set — see lib/session/call-session.js — so a freshly
+// provisioned google credential is invisible to the verbs until it has been
+// tested, and the call fails with "stt using google requested but creds not
+// supplied". Other vendors have no such gate.
+func (c *Client) TestAccountSpeechCredential(ctx context.Context, accountSID, sid string) (SpeechCredentialTestResult, error) {
+	var out SpeechCredentialTestResult
+	path := fmt.Sprintf("/Accounts/%s/SpeechCredentials/%s/test", accountSID, sid)
+	raw, err := c.Request(ctx, http.MethodGet, path, nil, "", http.StatusOK)
+	if err != nil {
+		return out, err
+	}
+	if err := json.Unmarshal(raw, &out); err != nil {
+		return out, fmt.Errorf("decode speech credential test result: %w", err)
+	}
+	return out, nil
+}
+
 // DeleteAccountSpeechCredential removes a credential. 404 is treated as
 // success so cleanup is idempotent.
 func (c *Client) DeleteAccountSpeechCredential(ctx context.Context, accountSID, sid string) error {

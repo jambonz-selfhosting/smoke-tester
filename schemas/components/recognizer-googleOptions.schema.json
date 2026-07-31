@@ -12,7 +12,11 @@
     },
     "recognizerId": {
       "type": "string",
-      "description": "ID of a Google Speech recognizer resource (v2 only)."
+      "description": "ID of a Google Speech recognizer resource (v2 only). Bare id or full resource path."
+    },
+    "parentPath": {
+      "type": "string",
+      "description": "Parent resource path for the Google Speech recognizer (v2 only), e.g. 'projects/{project}/locations/{location}'."
     },
     "speechStartTimeoutMs": {
       "type": "number",

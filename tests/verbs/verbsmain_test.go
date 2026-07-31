@@ -102,6 +102,12 @@ var (
 	openaiLabel string
 	openaiSID   string
 
+	// google speech credential (STT-only) provisioned at TestMain IF
+	// GOOGLE_STT_KEYFILE is set (optional vendor). When unset, googleLabel
+	// stays "" and the google STT v2 tests pass without exercising google.
+	googleLabel string
+	googleSID   string
+
 	// Webhook server + ngrok tunnel + Application bound to the suite
 	// account. The webhook always runs (NGROK_AUTHTOKEN is mandatory in
 	// the new model).
@@ -242,6 +248,18 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: OPENAI_API_KEY not set — openai STT tests will pass without exercising openai")
 	}
 
+	// 3f. google STT speech credential — optional. Only provisioned when
+	// GOOGLE_STT_KEYFILE is set; otherwise the google STT v2 tests pass
+	// without exercising google STT.
+	if cfg.HasGoogleSTT() {
+		if err := provisionGoogleCredential(); err != nil {
+			log.Fatalf("tests/verbs: google credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: google credential label=%s sid=%s", googleLabel, googleSID)
+	} else {
+		log.Printf("tests/verbs: GOOGLE_STT_KEYFILE not set — google STT v2 tests will pass without exercising google")
+	}
+
 	// 4. Webhook server + ngrok tunnel + Application bound to the suite.
 	if err := setupWebhook(v); err != nil {
 		log.Fatalf("tests/verbs: webhook setup failed: %v", err)
@@ -268,6 +286,7 @@ func TestMain(m *testing.M) {
 	teardownXaiCredential()
 	teardownSpeechmaticsCredential()
 	teardownOpenaiCredential()
+	teardownGoogleCredential()
 	if sipResolver != nil {
 		_ = sipResolver.Close()
 	}
@@ -475,6 +494,50 @@ func teardownOpenaiCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, openaiSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete openai credential %s: %v", openaiSID, err)
+	}
+}
+
+// provisionGoogleCredential creates a google speech credential under the
+// suite account, labelled `it-google-<runID>`. STT-only; the service-account
+// JSON goes in `service_key`. Called only when GOOGLE_STT_KEYFILE is set.
+func provisionGoogleCredential() error {
+	googleLabel = "it-google-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "google",
+		Label:      googleLabel,
+		ServiceKey: cfg.GoogleSTTServiceKey,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	googleSID = sid
+
+	// google-only, and mandatory: feature-server ignores a google credential
+	// until stt_tested_ok is set on the row, so an untested credential makes
+	// every google gather fail with "creds not supplied". See
+	// provision.TestAccountSpeechCredential.
+	res, err := client.TestAccountSpeechCredential(ctx, suite.AccountSID, sid)
+	if err != nil {
+		return fmt.Errorf("test google credential %s: %w", sid, err)
+	}
+	if res.STT.Status != "ok" {
+		return fmt.Errorf("google credential %s failed its STT test: status=%q reason=%q",
+			sid, res.STT.Status, res.STT.Reason)
+	}
+	return nil
+}
+
+func teardownGoogleCredential() {
+	if googleSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, googleSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete google credential %s: %v", googleSID, err)
 	}
 }
 
