@@ -79,6 +79,24 @@ type Settings struct {
 	// exercising xai STT — see HasXai.
 	XaiAPIKey string
 
+	// Optional — OpenAI GPT Live (limited-access alpha) API key. This is an
+	// OpenAI key enrolled in the GPT Live Early Access Program; a plain
+	// OPENAI_API_KEY is rejected at connect, so this is a SEPARATE variable
+	// rather than a fallback to OpenAIAPIKey — otherwise the gptlive tests
+	// would fail for everyone who happens to have an ordinary OpenAI key.
+	// When unset the gptlive tests pass without exercising GPT Live — see
+	// HasGptLive.
+	GptLiveAPIKey string
+
+	// Optional — GPT Live model/host/path overrides. The alpha's model names
+	// churn, and the connection URL jambonz defaults to (api.openai.com,
+	// v1/live?model=<model>) is INFERRED from the Event API reference rather
+	// than documented, so these let a run target the real endpoint without a
+	// code change. Empty host/path means "use the feature-server default".
+	GptLiveModel string
+	GptLiveHost  string
+	GptLivePath  string
+
 	// Optional — Speechmatics STT API key. When set, TestMain provisions a
 	// speechmatics SpeechCredential under the ephemeral account and the
 	// speechmatics gather/transcribe tests exercise it (model selection +
@@ -147,6 +165,10 @@ func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
+
+// HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
+// Optional: when the key is unset those tests pass without exercising gptlive.
+func (s *Settings) HasGptLive() bool { return s.GptLiveAPIKey != "" }
 
 // HasSpeechmatics reports whether the speechmatics STT gather/transcribe
 // tests can run. Optional: when the key is unset those tests pass without
@@ -221,6 +243,10 @@ func parse() (*Settings, error) {
 		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
 		MurfAPIKey:         os.Getenv("MURF_API_KEY"),
 		XaiAPIKey:          os.Getenv("XAI_API_KEY"),
+		GptLiveAPIKey:      os.Getenv("GPTLIVE_API_KEY"),
+		GptLiveModel:       firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
+		GptLiveHost:        os.Getenv("GPTLIVE_HOST"),
+		GptLivePath:        os.Getenv("GPTLIVE_PATH"),
 		SpeechmaticsAPIKey: os.Getenv("SPEECHMATICS_API_KEY"),
 		SpeechmaticsSTTURI: firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
 		DialogflowProject:  os.Getenv("DIALOGFLOW_PROJECT"),
