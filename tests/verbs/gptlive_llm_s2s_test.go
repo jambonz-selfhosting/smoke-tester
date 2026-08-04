@@ -45,6 +45,7 @@ package verbs
 import (
 	"context"
 	"encoding/json"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -63,6 +64,20 @@ const gptLiveVoice = "marin"
 // STT reliably returns and one that cannot plausibly appear by chance in a
 // generic greeting. "pineapple" satisfies both.
 const gptLivePassphrase = "pineapple"
+
+// gptLiveDelegationModel is the Responses-side model a `responses` delegation
+// runs its turns on. Required by the server (delegation.responses.model) and
+// distinct from the GPT Live voice model in the connection URL. Overridable
+// because it will churn alongside the alpha.
+var gptLiveDelegationModel = firstNonEmptyEnv("GPTLIVE_DELEGATION_MODEL", "gpt-5.5")
+
+// firstNonEmptyEnv returns the env var if set and non-empty, else def.
+func firstNonEmptyEnv(name, def string) string {
+	if v := os.Getenv(name); v != "" {
+		return v
+	}
+	return def
+}
 
 // gptLiveEchoPrompt instructs the model to answer with the passphrase. GPT
 // Live has no per-response instruction override (no response_create), so this
@@ -425,22 +440,30 @@ func TestVerb_LLM_GptLive_ToolHook(t *testing.T) {
 		// type:'client' the feature-server would reject a verb carrying
 		// handoff/hangup/mcpServers, and a model with a client delegation has
 		// no function-calling protocol at all.
+		// The nested `responses` object is REQUIRED and must carry a `model`;
+		// verified against the alpha, which rejects {type:"responses"} with
+		// "Missing required parameter: 'delegation.responses'" and
+		// {responses:{}} with "'delegation.responses.model'". Tools go INSIDE
+		// it — delegation.responses.tools, not delegation.tools.
 		"delegation": map[string]any{
 			"type": "responses",
-			"tools": []map[string]any{
-				{
-					"type":        "function",
-					"name":        "get_weather",
-					"description": "Get the current weather conditions for a city. Call this whenever the user asks about weather.",
-					"parameters": map[string]any{
-						"type": "object",
-						"properties": map[string]any{
-							"location": map[string]any{
-								"type":        "string",
-								"description": "the city name",
+			"responses": map[string]any{
+				"model": gptLiveDelegationModel,
+				"tools": []map[string]any{
+					{
+						"type":        "function",
+						"name":        "get_weather",
+						"description": "Get the current weather conditions for a city. Call this whenever the user asks about weather.",
+						"parameters": map[string]any{
+							"type": "object",
+							"properties": map[string]any{
+								"location": map[string]any{
+									"type":        "string",
+									"description": "the city name",
+								},
 							},
+							"required": []string{"location"},
 						},
-						"required": []string{"location"},
 					},
 				},
 			},
