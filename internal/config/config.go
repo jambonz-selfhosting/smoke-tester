@@ -97,6 +97,11 @@ type Settings struct {
 	GptLiveHost  string
 	GptLivePath  string
 
+	// Optional — the Responses-side model a `responses` delegation runs its
+	// turns on (delegation.responses.model, required by the server). Distinct
+	// from GptLiveModel, which is the GPT Live voice model in the URL.
+	GptLiveDelegationModel string
+
 	// Optional — Speechmatics STT API key. When set, TestMain provisions a
 	// speechmatics SpeechCredential under the ephemeral account and the
 	// speechmatics gather/transcribe tests exercise it (model selection +
@@ -234,29 +239,30 @@ func MustLoad() *Settings {
 
 func parse() (*Settings, error) {
 	s := &Settings{
-		APIBaseURL:         strings.TrimRight(os.Getenv("JAMBONZ_API_URL"), "/"),
-		SPAPIKey:           os.Getenv("JAMBONZ_SP_API_KEY"),
-		SPSID:              os.Getenv("JAMBONZ_SP_SID"),
-		SIPRealmZone:       firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
-		DeepgramAPIKey:     os.Getenv("DEEPGRAM_API_KEY"),
-		DeepseekAPIKey:     os.Getenv("DEEPSEEK_API_KEY"),
-		OpenAIAPIKey:       os.Getenv("OPENAI_API_KEY"),
-		MurfAPIKey:         os.Getenv("MURF_API_KEY"),
-		XaiAPIKey:          os.Getenv("XAI_API_KEY"),
-		GptLiveAPIKey:      os.Getenv("GPTLIVE_API_KEY"),
-		GptLiveModel:       firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
-		GptLiveHost:        os.Getenv("GPTLIVE_HOST"),
-		GptLivePath:        os.Getenv("GPTLIVE_PATH"),
-		SpeechmaticsAPIKey: os.Getenv("SPEECHMATICS_API_KEY"),
-		SpeechmaticsSTTURI: firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
-		DialogflowProject:  os.Getenv("DIALOGFLOW_PROJECT"),
-		DialogflowAgent:    os.Getenv("DIALOGFLOW_AGENT"),
-		DialogflowRegion:   firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
-		DialogflowLang:     firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
-		NgrokAuthToken:     os.Getenv("NGROK_AUTHTOKEN"),
-		NgrokDomain:        os.Getenv("NGROK_DOMAIN"),
-		RunID:              os.Getenv("RUN_ID"),
-		LogLevel:           strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
+		APIBaseURL:             strings.TrimRight(os.Getenv("JAMBONZ_API_URL"), "/"),
+		SPAPIKey:               os.Getenv("JAMBONZ_SP_API_KEY"),
+		SPSID:                  os.Getenv("JAMBONZ_SP_SID"),
+		SIPRealmZone:           firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
+		DeepgramAPIKey:         os.Getenv("DEEPGRAM_API_KEY"),
+		DeepseekAPIKey:         os.Getenv("DEEPSEEK_API_KEY"),
+		OpenAIAPIKey:           os.Getenv("OPENAI_API_KEY"),
+		MurfAPIKey:             os.Getenv("MURF_API_KEY"),
+		XaiAPIKey:              os.Getenv("XAI_API_KEY"),
+		GptLiveAPIKey:          os.Getenv("GPTLIVE_API_KEY"),
+		GptLiveModel:           firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
+		GptLiveHost:            os.Getenv("GPTLIVE_HOST"),
+		GptLivePath:            os.Getenv("GPTLIVE_PATH"),
+		GptLiveDelegationModel: firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
+		SpeechmaticsAPIKey:     os.Getenv("SPEECHMATICS_API_KEY"),
+		SpeechmaticsSTTURI:     firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
+		DialogflowProject:      os.Getenv("DIALOGFLOW_PROJECT"),
+		DialogflowAgent:        os.Getenv("DIALOGFLOW_AGENT"),
+		DialogflowRegion:       firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
+		DialogflowLang:         firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
+		NgrokAuthToken:         os.Getenv("NGROK_AUTHTOKEN"),
+		NgrokDomain:            os.Getenv("NGROK_DOMAIN"),
+		RunID:                  os.Getenv("RUN_ID"),
+		LogLevel:               strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
 	}
 
 	// required

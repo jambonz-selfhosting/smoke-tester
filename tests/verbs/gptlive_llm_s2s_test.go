@@ -10,10 +10,12 @@
 // reference documents the event stream but NOT the connection URL, the auth
 // scheme, or the session object's schema. The feature-server therefore
 // *infers* wss://api.openai.com/v1/live?model=<model> with a Bearer header,
-// and infers that tool definitions belong at session_update.delegation.tools
-// in the Responses shape. Unit tests cannot validate an inference about
-// somebody else's server — only a real call can. TestVerb_LLM_GptLive_Session
-// exists specifically to prove or refute the URL/auth/startup-config guess,
+// and originally guessed where tool definitions belong. Unit tests cannot
+// validate an inference about somebody else's server — only a real call can,
+// and running these found two such guesses wrong (the mandatory OpenAI-Alpha
+// header, and tools belonging at delegation.responses.tools rather than
+// delegation.tools). TestVerb_LLM_GptLive_Session guards the URL/auth/startup
+// contract,
 // and reports the actionHook's completionReason on failure so a wrong guess
 // reads as "connection failure" rather than a vague timeout. GPTLIVE_HOST /
 // GPTLIVE_PATH let a run correct the URL without a code change.
@@ -45,7 +47,6 @@ package verbs
 import (
 	"context"
 	"encoding/json"
-	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -64,20 +65,6 @@ const gptLiveVoice = "marin"
 // STT reliably returns and one that cannot plausibly appear by chance in a
 // generic greeting. "pineapple" satisfies both.
 const gptLivePassphrase = "pineapple"
-
-// gptLiveDelegationModel is the Responses-side model a `responses` delegation
-// runs its turns on. Required by the server (delegation.responses.model) and
-// distinct from the GPT Live voice model in the connection URL. Overridable
-// because it will churn alongside the alpha.
-var gptLiveDelegationModel = firstNonEmptyEnv("GPTLIVE_DELEGATION_MODEL", "gpt-5.5")
-
-// firstNonEmptyEnv returns the env var if set and non-empty, else def.
-func firstNonEmptyEnv(name, def string) string {
-	if v := os.Getenv(name); v != "" {
-		return v
-	}
-	return def
-}
 
 // gptLiveEchoPrompt instructs the model to answer with the passphrase. GPT
 // Live has no per-response instruction override (no response_create), so this
@@ -142,6 +129,43 @@ func gptLiveCompletionReason(cbs []webhook.Callback) string {
 		}
 	}
 	return ""
+}
+
+// gptLiveClientDelegationID returns the item id of the first client-targeted
+// delegation.created in the stream, or "" if the model never raised one.
+func gptLiveClientDelegationID(cbs []webhook.Callback) string {
+	for _, cb := range cbs {
+		if cb.Hook != "action/llm-gptlive-event" || cb.String("type") != "delegation.created" {
+			continue
+		}
+		if cb.NestedString("item.target") == "client" {
+			if id := cb.NestedString("item.id"); id != "" {
+				return id
+			}
+		}
+	}
+	return ""
+}
+
+// gptLiveSawInputTranscript reports whether the event stream contains evidence
+// that OpenAI recognized CALLER audio: an input transcript fragment, or a
+// projected turn with role "user". Either one can only appear if the media
+// server lifted its input gate and forwarded our audio.
+func gptLiveSawInputTranscript(cbs []webhook.Callback) bool {
+	for _, cb := range cbs {
+		if cb.Hook != "action/llm-gptlive-event" {
+			continue
+		}
+		switch cb.String("type") {
+		case "input_transcript.added":
+			return true
+		case "turn.created", "turn.done":
+			if cb.NestedString("turn.role") == "user" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // TestVerb_LLM_GptLive_Session proves the gptlive path connects, starts a
@@ -242,7 +266,7 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	callSID, call := placeWebhookCallToWithSID(ctx, t, uas, sess, withTimeLimit(90))
 	s.Done()
 
 	s = Step(t, "answer-and-silence")
@@ -285,29 +309,37 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 	// drops every caller frame, so its absence explains an otherwise silent
 	// failure. Scan the event stream for it — WaitCallbackFor discards
 	// non-matching callbacks, so loop on the event hook and inspect each type.
+	// DrainCallbacks (not WaitCallbackFor) because the diagnosis below needs the
+	// /action/llm callback that carries completionReason. WaitCallbackFor
+	// DISCARDS non-matching hooks, so filtering in-process is the only way to
+	// see both the event stream and the completion payload.
 	var drained []webhook.Callback
 	started := false
-	evCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	for !started {
-		cb, err := sess.WaitCallbackFor(evCtx, "action/llm-gptlive-event")
-		if err != nil {
-			break
+	deadline := time.Now().Add(30 * time.Second)
+	for !started && time.Now().Before(deadline) {
+		batch := DrainCallbacks(sess, 2*time.Second)
+		if len(batch) == 0 {
+			continue
 		}
-		drained = append(drained, cb)
-		if cb.String("type") == "session.started" {
-			started = true
-			s.Logf("session.started: %s", string(cb.Body))
+		drained = append(drained, batch...)
+		for _, cb := range batch {
+			if cb.Hook == "action/llm-gptlive-event" && cb.String("type") == "session.started" {
+				started = true
+				s.Logf("session.started: %s", string(cb.Body))
+			}
 		}
 	}
-	cancel()
 	if !started {
 		// Turn the failure into a diagnosis instead of a bare timeout. The
 		// server's own `error` event is the most informative thing available,
-		// so lead with it.
+		// so lead with it; completionReason is the fallback.
 		reason := gptLiveCompletionReason(drained)
 		types := make([]string, 0, len(drained))
 		errCode, errMsg := "", ""
 		for _, cb := range drained {
+			if cb.Hook != "action/llm-gptlive-event" {
+				continue
+			}
 			if ty := cb.String("type"); ty != "" {
 				types = append(types, ty)
 			}
@@ -347,13 +379,68 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 			s.Errorf("never observed session.started (completionReason=%q); events seen: %v",
 				reason, types)
 		}
-		// No session means no audio, so the passphrase assertion below would only
-		// add a redundant "transcript empty" failure after a pointless 12s wait.
-		// Stop here with the one diagnosis that matters.
+		// No session means no audio, so the assertions below would only add
+		// redundant failures after a pointless wait. Stop with the one
+		// diagnosis that matters.
 		s.Done()
 		call.StopRecording()
 		HangupAndWaitEnded(t, ctx, call)
 		return
+	}
+
+	s = Step(t, "answer-client-delegation")
+	// A `client` delegation is the model asking the APPLICATION for text
+	// context. Answering it exercises `delegation.context.append` and — the
+	// point of doing it here — the `delegation_item_id` field name, which is
+	// inferred from the Event API reference and which both sample apps depend
+	// on. The feature-server only whitelists the event TYPE and forwards the
+	// body verbatim, so a wrong field name would be a silent no-op: OpenAI
+	// replies with an `error`, which is non-fatal once the session has started,
+	// and the model just proceeds without the context it asked for.
+	if id := gptLiveClientDelegationID(drained); id != "" {
+		s.Logf("answering client delegation %s", id)
+		body := map[string]any{
+			"llm_update": map[string]any{
+				"type":               "delegation.context.append",
+				"delegation_item_id": id,
+				"content": []any{map[string]any{
+					"type": "input_text",
+					"text": "The caller is a long-standing customer on the Unlimited plan.",
+				}},
+			},
+		}
+		if err := client.UpdateCall(ctx, callSID, body); err != nil {
+			s.Fatalf("UpdateCall(llm_update: delegation.context.append) sid=%s: %v", callSID, err)
+		}
+		// Any error the server raises about our shape arrives on the event hook.
+		after := DrainCallbacks(sess, 8*time.Second)
+		drained = append(drained, after...)
+		for _, cb := range after {
+			if cb.Hook == "action/llm-gptlive-event" && cb.String("type") == "error" {
+				s.Errorf("GPT Live rejected our delegation.context.append: code=%q %q — the "+
+					"field names (delegation_item_id / content[].input_text) are inferred from "+
+					"the Event API reference and both sample apps use them",
+					cb.NestedString("error.code"), cb.NestedString("error.message"))
+			}
+		}
+	} else {
+		s.Logf("no client delegation was raised on this call; delegation.context.append not exercised")
+	}
+	s.Done()
+
+	// FIX: proof that CALLER audio actually reached OpenAI. The passphrase alone
+	// cannot show this — GPT Live has no response_create, so the model speaks
+	// first and its unprompted greeting already contains the passphrase. An
+	// input transcript can only exist if the media server lifted the input gate
+	// and our audio was recognized.
+	if !gptLiveSawInputTranscript(drained) {
+		extra := DrainCallbacks(sess, 5*time.Second)
+		drained = append(drained, extra...)
+	}
+	if !gptLiveSawInputTranscript(drained) {
+		s.Errorf("no input_transcript.added / user turn observed — the caller's audio never " +
+			"reached OpenAI even though the session started (check the media server's input " +
+			"gate on session.started, and whether SendWAV failed above)")
 	}
 	s.Done()
 
@@ -381,11 +468,10 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 // delegation.function_call_output.create envelope (echoing the live
 // tool_call_id, known only at call time), and the agent speaks the result back.
 //
-// This is the test that validates the second inference the Event API reference
-// does not cover: that delegation.tools is where tool definitions belong. If
-// the real field differs, the server accepts the session.update and silently
-// drops the tools — the symptom is no tool call ever arriving, which this test
-// reports explicitly.
+// This is the test that guards the tool-declaration contract the Event API
+// reference does not document: delegation.responses.tools, with a mandatory
+// delegation.responses.model. If either drifts, the server either rejects the
+// session or silently drops the tools, and no tool call ever arrives.
 //
 // Reuses the weather prompt/system-prompt/result consts from llm_test.go — the
 // scenario is vendor-agnostic.
@@ -448,7 +534,7 @@ func TestVerb_LLM_GptLive_ToolHook(t *testing.T) {
 		"delegation": map[string]any{
 			"type": "responses",
 			"responses": map[string]any{
-				"model": gptLiveDelegationModel,
+				"model": cfg.GptLiveDelegationModel,
 				"tools": []map[string]any{
 					{
 						"type":        "function",
@@ -539,10 +625,13 @@ func TestVerb_LLM_GptLive_ToolHook(t *testing.T) {
 	cancel()
 	if err != nil {
 		s.Fatalf("WaitCallbackFor(action/llm-gptlive-tool): %v — no tool call arrived. "+
-			"Either the model never called the tool, or the tools were declared somewhere "+
-			"GPT Live ignores: session_update.delegation.tools is INFERRED from the Responses "+
-			"API and unconfirmed against the alpha, and a wrong field name is dropped silently",
-			err)
+			"Most likely causes, in order: (1) this key is not enrolled in the GPT Live alpha, "+
+			"so the session was refused before any tool could be called — run "+
+			"TestVerb_LLM_GptLive_Session, which diagnoses that explicitly; (2) the session "+
+			"was rejected for another reason (this test has no eventHook, so check the "+
+			"feature-server log for the error event); (3) the model simply chose not to call "+
+			"the tool. The delegation.responses.tools placement itself is verified against "+
+			"the alpha and is not a likely cause.", err)
 	}
 	s.Logf("action/llm-gptlive-tool body: %s", string(toolCB.Body))
 	if got := toolCB.String("name"); got != "get_weather" {
