@@ -47,6 +47,8 @@ package verbs
 import (
 	"context"
 	"encoding/json"
+	"math"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -70,6 +72,24 @@ const gptLivePassphrase = "pineapple"
 // Live has no per-response instruction override (no response_create), so this
 // has to be session-level.
 const gptLiveEchoPrompt = "You are a test fixture on a phone call. Whatever the caller says, reply with exactly this sentence and nothing else: The magic word is pineapple. Always answer in English."
+
+// GptLiveGreetingWindow is how long the agent-speaks-first test captures for.
+// Generous on purpose: the model chooses when to open (no response_create), and
+// a greeting has been observed anywhere from ~2s to ~10s after session.started
+// depending on cluster load.
+const GptLiveGreetingWindow = 20 * time.Second
+
+// gptLiveGreetPassphrase is the distinctive word the agent is told to open the
+// call with. It must be a word STT returns reliably and one that cannot appear
+// by chance in a generic greeting.
+const gptLiveGreetPassphrase = "aardvark"
+
+// gptLiveGreetPrompt tells the model to open the conversation. GPT Live has no
+// response_create, so instructions are the only lever on the first turn.
+const gptLiveGreetPrompt = "You are a voice assistant on a phone call. " +
+	"Open the conversation yourself the moment the call connects: say exactly " +
+	"\"Welcome to the aardvark hotline, how can I help?\" and nothing else. " +
+	"Do not wait for the caller to speak first. Always speak English."
 
 // gptLiveConnectOptions maps the optional GPTLIVE_HOST / GPTLIVE_PATH env
 // overrides onto the verb's connectOptions, or returns nil so the
@@ -662,5 +682,203 @@ func TestVerb_LLM_GptLive_ToolHook(t *testing.T) {
 	// delegation.function_call_output.create envelope round-tripped through the
 	// delegation and the model relayed it to the caller — proving the full loop.
 	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail")
+	s.Done()
+}
+
+// TestVerb_LLM_GptLive_AgentSpeaksFirst proves the agent opens the conversation
+// with NO caller speech at all.
+//
+// This is the only test that can prove it. The other two send a prompt WAV, so
+// agent audio there may be a REPLY rather than a greeting — indistinguishable
+// from the outside. Here the caller sends nothing but background silence (which
+// SendSilence must keep flowing anyway, for symmetric-RTP NAT traversal), so a
+// passphrase in the recording can only have come from an unprompted first turn.
+//
+// GPT Live has no response_create, so there is no explicit "speak now" trigger:
+// the model decides, and instructions are the only lever. If this fails, the
+// diagnosis below distinguishes the three causes that look identical to a
+// caller — the session never started, the model never generated, or the model
+// generated and something downstream discarded the audio (barge-in draining the
+// playout is the live suspect, since a user turn projected from silence would
+// clear the agent's own greeting).
+//
+// Steps:
+//  1. preflight-skips  2. script-llm-verb (greeting instruction, eventHook)
+//  3. place-call  4. answer-and-record (silence only, NEVER a prompt WAV)
+//  5. wait-for-greeting (drain events; look for an assistant turn)
+//  6. stop-and-hangup  7. assert-greeting-heard
+func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	if !cfg.HasGptLive() {
+		t.Log("GPTLIVE_API_KEY not set — passing without exercising gptlive S2S")
+		return
+	}
+	s := Step(t, "preflight-skips")
+	if !cfg.HasDeepgram() || deepgramLabel == "" {
+		s.Done()
+		t.Log("Deepgram not available — passing without exercising gptlive S2S")
+		return
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 180*time.Second)
+	uas := claimUAS(t, ctx)
+	_, sess := claimSession(t)
+
+	s = Step(t, "script-llm-verb")
+	llmVerb := gptLiveVerb(map[string]any{
+		"instructions": gptLiveGreetPrompt,
+		"audio":        map[string]any{"output": map[string]any{"voice": gptLiveVoice}},
+		"delegation":   map[string]any{"type": "client"},
+	}, "eventHook", SessionURL(sess, "llm-gptlive-event"))
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{llmVerb, V("hangup")}))
+	SessionAckEmpty(sess, "llm")
+	SessionAckEmpty(sess, "llm-gptlive-event")
+	s.Done()
+
+	s = Step(t, "place-call")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	s.Done()
+
+	recPath := filepath.Join(t.TempDir(), "llm-gptlive-greeting.pcm")
+
+	s = Step(t, "answer-and-record")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	// Outbound RTP FIRST. jambonz uses symmetric RTP, so it cannot return audio
+	// until our silence has opened the path — starting the recorder before this
+	// loses the very greeting we are measuring, which is the whole assertion.
+	// Silence is also what makes the vendor generate, but the caller says
+	// NOTHING, so anything recorded is the agent's own opening turn.
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	if err := call.StartRecording(recPath); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-greeting")
+	// A FIXED capture window, deliberately not gated on an event. Stopping as
+	// soon as output_audio.playback_started appeared made this test flaky (it
+	// passed alone and failed under parallel load, capturing rms=2.9): that
+	// event can be a queued or very short first burst, so the recorder was
+	// stopped before the substantive greeting arrived. The model decides when to
+	// open — there is no response_create to sequence against — so just record
+	// long enough for it, and use the event stream only to diagnose a failure.
+	var drained []webhook.Callback
+	sawSessionStarted, agentPlayed, firstTurnRole := false, false, ""
+	deadline := time.Now().Add(GptLiveGreetingWindow)
+	for time.Now().Before(deadline) {
+		batch := DrainCallbacks(sess, 2*time.Second)
+		drained = append(drained, batch...)
+		for _, cb := range batch {
+			if cb.Hook != "action/llm-gptlive-event" {
+				continue
+			}
+			switch cb.String("type") {
+			case "session.started":
+				sawSessionStarted = true
+			case "output_audio.playback_started":
+				agentPlayed = true
+			case "turn.done":
+				if firstTurnRole == "" {
+					firstTurnRole = cb.NestedString("turn.role")
+				}
+			}
+		}
+	}
+	if firstTurnRole != "" && firstTurnRole != "assistant" {
+		s.Errorf("the first projected turn was role=%q, not assistant — the agent did not open "+
+			"the conversation", firstTurnRole)
+	}
+	s.Done()
+
+	s = Step(t, "stop-and-hangup")
+	call.StopRecording()
+	HangupAndWaitEnded(t, ctx, call)
+	s.Done()
+
+	s = Step(t, "assert-greeting-heard")
+	if !agentPlayed {
+		// Separate the three causes that are identical from the caller's seat.
+		types := make([]string, 0, len(drained))
+		errMsg := ""
+		interrupted := false
+		for _, cb := range drained {
+			if cb.Hook != "action/llm-gptlive-event" {
+				continue
+			}
+			ty := cb.String("type")
+			if ty != "" {
+				types = append(types, ty)
+			}
+			if ty == "error" {
+				errMsg = cb.NestedString("error.code") + ": " + cb.NestedString("error.message")
+			}
+			if ty == "output_audio.playback_stopped" &&
+				strings.Contains(string(cb.Body), "interrupted") {
+				interrupted = true
+			}
+		}
+		switch {
+		case !sawSessionStarted:
+			s.Errorf("no session.started, so the media server's input gate never lifted and no "+
+				"caller audio (not even silence) reached the vendor — with no audio the model "+
+				"never generates. error=%q events=%v", errMsg, types)
+		case interrupted:
+			s.Errorf("the agent DID generate a greeting and it was then discarded: an "+
+				"output_audio.playback_stopped/interrupted arrived, i.e. barge-in drained the "+
+				"playout. A user turn projected from the caller's silence would do exactly "+
+				"this. events=%v", types)
+		default:
+			s.Errorf("session started and caller silence was flowing, but the vendor never sent "+
+				"any agent audio within 25s — the model chose not to open the conversation. "+
+				"instructions are the only lever (no response_create in this API). "+
+				"error=%q events=%v", errMsg, types)
+		}
+	}
+	// Measure the capture before transcribing it. An empty transcript has two
+	// very different causes — nothing was recorded (RTP/ordering problem on our
+	// side) versus audio was recorded but is silence (the agent's samples never
+	// made it through resampling/playout) — and STT alone cannot tell them apart.
+	if fi, err := os.Stat(recPath); err != nil {
+		s.Errorf("no recording produced: %v", err)
+	} else {
+		pcm, rerr := os.ReadFile(recPath)
+		if rerr != nil {
+			s.Errorf("cannot read recording: %v", rerr)
+		} else {
+			var sum float64
+			var peak int
+			n := len(pcm) / 2
+			for i := 0; i < n; i++ {
+				v := int(int16(uint16(pcm[i*2]) | uint16(pcm[i*2+1])<<8))
+				if v < 0 {
+					v = -v
+				}
+				if v > peak {
+					peak = v
+				}
+				sum += float64(v) * float64(v)
+			}
+			rms := 0.0
+			if n > 0 {
+				rms = math.Sqrt(sum / float64(n))
+			}
+			s.Logf("recording: %d bytes (%d samples), rms=%.1f peak=%d", fi.Size(), n, rms, peak)
+			if n > 0 && peak < 200 {
+				s.Errorf("the recording is effectively silent (peak=%d) even though the media "+
+					"server reported playing agent audio — the greeting's samples did not reach "+
+					"the caller's RTP stream", peak)
+			}
+		}
+	}
+	// The passphrase can only be in the recording if the agent spoke unprompted
+	// AND its 24kHz audio survived resampling and playout to the caller.
+	AssertTranscriptHasMost(s, ctx, recPath, 1, gptLiveGreetPassphrase)
 	s.Done()
 }
