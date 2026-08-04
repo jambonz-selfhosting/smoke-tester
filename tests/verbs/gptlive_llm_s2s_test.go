@@ -871,9 +871,16 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 			}
 			s.Logf("recording: %d bytes (%d samples), rms=%.1f peak=%d", fi.Size(), n, rms, peak)
 			if n > 0 && peak < 200 {
-				s.Errorf("the recording is effectively silent (peak=%d) even though the media "+
-					"server reported playing agent audio — the greeting's samples did not reach "+
-					"the caller's RTP stream", peak)
+				if agentPlayed {
+					s.Errorf("the recording is effectively silent (peak=%d) even though the media "+
+						"server DID report playing agent audio (output_audio.playback_started) — "+
+						"so the vendor generated a greeting and mediajam read it out of the "+
+						"playout ring, but those samples did not reach the caller's RTP stream. "+
+						"This is downstream of the s2s engine, not the vendor.", peak)
+				} else {
+					s.Errorf("the recording is effectively silent (peak=%d) and the media server "+
+						"never reported playing agent audio — the vendor produced nothing.", peak)
+				}
 			}
 		}
 	}
