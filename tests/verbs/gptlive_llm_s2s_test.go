@@ -810,45 +810,12 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 				"lifted and no caller audio reached the vendor — with no audio the model never "+
 				"generates. events=%v", gptLiveGreetAttempts, lastTypes)
 		} else {
-<<<<<<< Updated upstream
-			var sum float64
-			var peak int
-			n := len(pcm) / 2
-			for i := 0; i < n; i++ {
-				v := int(int16(uint16(pcm[i*2]) | uint16(pcm[i*2+1])<<8))
-				if v < 0 {
-					v = -v
-				}
-				if v > peak {
-					peak = v
-				}
-				sum += float64(v) * float64(v)
-			}
-			rms := 0.0
-			if n > 0 {
-				rms = math.Sqrt(sum / float64(n))
-			}
-			s.Logf("recording: %d bytes (%d samples), rms=%.1f peak=%d", fi.Size(), n, rms, peak)
-			if n > 0 && peak < 200 {
-				if agentPlayed {
-					s.Errorf("the recording is effectively silent (peak=%d) even though the media "+
-						"server DID report playing agent audio (output_audio.playback_started) — "+
-						"so the vendor generated a greeting and mediajam read it out of the "+
-						"playout ring, but those samples did not reach the caller's RTP stream. "+
-						"This is downstream of the s2s engine, not the vendor.", peak)
-				} else {
-					s.Errorf("the recording is effectively silent (peak=%d) and the media server "+
-						"never reported playing agent audio — the vendor produced nothing.", peak)
-				}
-			}
-=======
 			s.Errorf("the agent never opened the conversation in %d attempts (best peak=%d, "+
 				"i.e. silence). The vendor streams silent output_audio.delta frames when it "+
 				"declines to speak, and GPT Live offers no way to force a first turn — but %d "+
 				"consecutive declines suggests instructions are no longer reaching the model, "+
 				"or the alpha's behavior changed. events=%v",
 				gptLiveGreetAttempts, bestPeak, gptLiveGreetAttempts, lastTypes)
->>>>>>> Stashed changes
 		}
 		s.Done()
 		return
