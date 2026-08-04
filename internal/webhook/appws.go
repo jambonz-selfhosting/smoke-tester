@@ -18,8 +18,8 @@
 //   - jambonz connects with WS subprotocol "ws.jambonz.org"; we MUST echo it
 //     in the handshake or the upgrade is rejected.
 //   - jambonz → us:  {"type":"session:new","msgid":"..","call_sid":"..","data":{..}}
-//                    {"type":"verb:status", ...}   (no ack expected)
-//                    {"type":"call:status",  ...}  (no ack expected)
+//     {"type":"verb:status", ...}   (no ack expected)
+//     {"type":"call:status",  ...}  (no ack expected)
 //     …and other MTYPE_WANTS_ACK types that do NOT want an ack.
 //   - us → jambonz:  {"type":"ack","msgid":"<their msgid>","data":<verb array>}
 //     The ack to session:new carries the verb script in `data` — the same
@@ -122,6 +122,9 @@ func (s *Server) handleAppWS(w http.ResponseWriter, r *http.Request) {
 		// back to the call_sid binding, then a placeholder.
 		if sess == nil {
 			sess = s.resolveAppWSSession(testID, msg)
+			// Hand the socket to the session so the test can send COMMANDS back
+			// (llm:update etc.) — see Session.SendCommand.
+			sess.BindAppConn(conn)
 		}
 
 		// Bind call_sid → testID on the first message that carries it, so

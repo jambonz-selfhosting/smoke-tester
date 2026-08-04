@@ -2,9 +2,12 @@ package webhook
 
 import (
 	"context"
+	"encoding/json"
 	"fmt"
 	"sync"
 	"time"
+
+	"github.com/gorilla/websocket"
 )
 
 // Registry owns per-test script registration and per-test callback capture.
@@ -103,6 +106,51 @@ type Session struct {
 	pending     chan Callback          // incoming callbacks queued for WaitCallback
 	errs        []error
 	ws          *wsSession // populated when jambonz opens a WS to /ws/<id>
+
+	// appConn is the jambonz application WebSocket (the wss:// call_hook of a
+	// WS-transport app), captured so a test can send COMMANDS back — the thing
+	// a real WebSocket application does and the harness previously could not.
+	// Needed for anything that is only reachable over WS: llm:update
+	// (session.context.append, which is how a GPT Live agent is asked to open
+	// the conversation), llm:tool-output, agent:update. appConnMu serializes
+	// writes because the read loop acks verbs on its own goroutine and gorilla
+	// forbids concurrent writes.
+	appConnMu sync.Mutex
+	appConn   *websocket.Conn
+}
+
+// BindAppConn records the application WebSocket for this session. Called by the
+// appws read loop once it has resolved which test the connection belongs to.
+func (s *Session) BindAppConn(c *websocket.Conn) {
+	s.appConnMu.Lock()
+	defer s.appConnMu.Unlock()
+	s.appConn = c
+}
+
+// SendCommand sends a jambonz app command over the session's application
+// WebSocket, e.g.
+//
+//	SendCommand("llm:update", map[string]any{"type": "session.context.append", ...})
+//
+// which is the only transport for llm:update — the REST updateCall API does not
+// accept it. Returns an error if this test's app is not WS-transport (use
+// placeWSCallTo) or the socket has closed.
+func (s *Session) SendCommand(command string, data any) error {
+	s.appConnMu.Lock()
+	defer s.appConnMu.Unlock()
+	if s.appConn == nil {
+		return fmt.Errorf("session %s has no application WebSocket; "+
+			"place the call with placeWSCallTo to use SendCommand", s.id)
+	}
+	b, err := json.Marshal(map[string]any{"type": "command", "command": command, "data": data})
+	if err != nil {
+		return fmt.Errorf("marshal command %s: %w", command, err)
+	}
+	_ = s.appConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := s.appConn.WriteMessage(websocket.TextMessage, b); err != nil {
+		return fmt.Errorf("send command %s: %w", command, err)
+	}
+	return nil
 }
 
 func (s *Session) ID() string { return s.id }

@@ -79,17 +79,30 @@ const gptLiveEchoPrompt = "You are a test fixture on a phone call. Whatever the 
 // depending on cluster load.
 const GptLiveGreetingWindow = 20 * time.Second
 
-// gptLiveGreetPassphrase is the distinctive word the agent is told to open the
-// call with. It must be a word STT returns reliably and one that cannot appear
-// by chance in a generic greeting.
-const gptLiveGreetPassphrase = "aardvark"
+// gptLiveGreetPassphrase / gptLiveGreetPassphrase2 are the distinctive words the
+// agent is told to open with. Two of them, and both ordinary English: the first
+// attempt at this used "aardvark", the agent said it correctly, and Deepgram
+// transcribed it "ardvoc" — failing the assertion on a working greeting. Asserting
+// that EITHER lands keeps the test about the agent rather than about STT, while
+// neither word can appear by chance in a generic greeting.
+const (
+	gptLiveGreetPassphrase  = "pineapple"
+	gptLiveGreetPassphrase2 = "hotline"
+)
 
-// gptLiveGreetPrompt tells the model to open the conversation. GPT Live has no
-// response_create, so instructions are the only lever on the first turn.
+// gptLiveGreetPrompt is the session persona. Deliberately says NOTHING about
+// greeting: a greeting placed in instructions does not open the call (measured
+// 0/5), so putting it here would test a mechanism that does not work.
 const gptLiveGreetPrompt = "You are a voice assistant on a phone call. " +
-	"Open the conversation yourself the moment the call connects: say exactly " +
-	"\"Welcome to the aardvark hotline, how can I help?\" and nothing else. " +
-	"Do not wait for the caller to speak first. Always speak English."
+	"Keep replies short. Always speak English."
+
+// gptLiveGreetRequest is the session.context.append text that actually opens the
+// call, in the shape OpenAI's prompting guide prescribes: supply the intended
+// WORDING and say WHEN to speak. Measured 5/5 openings reproducing this text,
+// versus 0/5 with instructions alone.
+const gptLiveGreetRequest = "Immediately greet the caller using the exact text below. " +
+	"Do not wait for the caller to speak first. After the greeting, pause and listen.\n\n" +
+	"Welcome to the pineapple hotline, how can I help?"
 
 // gptLiveConnectOptions maps the optional GPTLIVE_HOST / GPTLIVE_PATH env
 // overrides onto the verb's connectOptions, or returns nil so the
@@ -693,17 +706,23 @@ func TestVerb_LLM_GptLive_ToolHook(t *testing.T) {
 // nothing but the background silence symmetric-RTP requires, so audible audio
 // can only be an unprompted first turn.
 //
-// WHY IT RETRIES. GPT Live gives the application no way to force a first turn —
-// the server's own validator confirms there is no response.create client event,
-// no turn_detection, no greeting field, and `include` accepts only
-// 'item.input_audio_transcription.logprobs'. The model decides, and when it
-// decides not to speak it does NOT stay quiet: it streams output_audio.delta
-// frames of DIGITAL SILENCE (measured on a failing call: 166 frames, 250KB,
-// loudest sample 54 of 32767). Measured reliability of the opening turn was 2/3
-// on instructions alone. A single-call assertion is therefore ~1/3 red through
-// no fault of jambonz, so this makes up to gptLiveGreetAttempts calls and passes
-// if any one greets — that is the real contract ("the agent can open"), and it
-// still fails loudly if the capability is actually broken.
+// HOW the agent is made to open the call. GPT Live has no response.create — the
+// server's validator accepts only session.update, session.context.append,
+// delegation.context.append, delegation.function_call_output.create and
+// session.close — and a greeting placed in `instructions` opens the call 0/5
+// times. The working mechanism, per OpenAI's prompting guide, is a
+// session.context.append carrying the intended wording plus when to speak:
+// measured 5/5. That is an llm:update COMMAND, reachable only over the
+// application WebSocket (REST updateCall rejects llm_update), which is why this
+// test uses placeWSCallTo rather than placeWebhookCallTo.
+//
+// WHY IT STILL RETRIES. A context append guides the model; OpenAI states it may
+// stay silent, paraphrase, or be interrupted. When it stays silent it does NOT
+// send nothing — it streams output_audio.delta frames of DIGITAL SILENCE
+// (measured: 166 frames, 250KB, loudest sample 54 of 32767). So a single call
+// can legitimately be quiet; this makes up to gptLiveGreetAttempts calls and
+// passes if any one greets, which is the real contract ("the agent can open"),
+// while still failing loudly if the capability breaks.
 //
 // CRITICAL: output_audio.playback_started is NOT proof the agent spoke — the
 // media server emits it for silent deltas too. Only the recording's amplitude
@@ -743,7 +762,11 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 		SessionAckEmpty(sess, "llm")
 		SessionAckEmpty(sess, "llm-gptlive-event")
 
-		call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+		// WS transport: session.context.append is only reachable as an llm:update
+		// COMMAND over the application WebSocket — the REST updateCall API does
+		// not accept llm_update — so a webhook-transport call cannot ask the
+		// agent to open the conversation at all.
+		call := placeWSCallTo(ctx, t, uas, sess, withTimeLimit(90))
 		if err := call.Answer(); err != nil {
 			st.Fatalf("Answer: %v", err)
 		}
@@ -764,20 +787,41 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 		// fires for silent deltas, so gating on it stopped the recorder before the
 		// real greeting and made this flaky in both directions.
 		var drained []webhook.Callback
+		requested := false
 		deadline := time.Now().Add(GptLiveGreetingWindow)
 		for time.Now().Before(deadline) {
-			drained = append(drained, DrainCallbacks(sess, 2*time.Second)...)
-		}
-		for _, cb := range drained {
-			if cb.Hook != "action/llm-gptlive-event" {
-				continue
-			}
-			if cb.String("type") == "session.started" {
+			batch := DrainCallbacks(sess, 2*time.Second)
+			drained = append(drained, batch...)
+			for _, cb := range batch {
+				if cb.Hook != "action/llm-gptlive-event" {
+					continue
+				}
+				ty := cb.String("type")
+				if ty != "" {
+					types = append(types, ty)
+				}
+				if ty != "session.started" {
+					continue
+				}
 				sawSessionStarted = true
+				if requested {
+					continue
+				}
+				requested = true
+				// Ask the agent to open the call, the moment the session is up.
+				if err := sess.SendCommand("llm:update", map[string]any{
+					"type": "session.context.append",
+					"content": []any{map[string]any{
+						"type": "input_text",
+						"text": gptLiveGreetRequest,
+					}},
+				}); err != nil {
+					st.Fatalf("SendCommand(llm:update session.context.append): %v", err)
+				}
 			}
-			if ty := cb.String("type"); ty != "" {
-				types = append(types, ty)
-			}
+		}
+		if !requested && sawSessionStarted {
+			st.Errorf("session.started arrived but the greeting request was never sent")
 		}
 		call.StopRecording()
 		HangupAndWaitEnded(t, ctx, call)
@@ -811,10 +855,11 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 				"generates. events=%v", gptLiveGreetAttempts, lastTypes)
 		} else {
 			s.Errorf("the agent never opened the conversation in %d attempts (best peak=%d, "+
-				"i.e. silence). The vendor streams silent output_audio.delta frames when it "+
-				"declines to speak, and GPT Live offers no way to force a first turn — but %d "+
-				"consecutive declines suggests instructions are no longer reaching the model, "+
-				"or the alpha's behavior changed. events=%v",
+				"i.e. silence) even though a session.context.append greeting request was sent "+
+				"on each. A context append GUIDES the model — OpenAI's guidance is explicit "+
+				"that it may stay silent — but %d consecutive declines means either the "+
+				"request is no longer reaching the vendor (check for a session.context.appended "+
+				"ack) or the alpha's behavior changed. events=%v",
 				gptLiveGreetAttempts, bestPeak, gptLiveGreetAttempts, lastTypes)
 		}
 		s.Done()
@@ -822,7 +867,7 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 	}
 	// The passphrase can only be present if the agent spoke unprompted AND its
 	// 24kHz audio survived resampling and playout to the caller.
-	AssertTranscriptHasMost(s, ctx, bestPath, 1, gptLiveGreetPassphrase)
+	AssertTranscriptHasMost(s, ctx, bestPath, 1, gptLiveGreetPassphrase, gptLiveGreetPassphrase2)
 	s.Done()
 }
 
