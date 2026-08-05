@@ -87,7 +87,7 @@ func TestVerb_Dialogflow_CES(t *testing.T) {
 	s := Step(t, "preflight-skips")
 	if !cfg.HasDialogflowCES() {
 		s.Done()
-		t.Skip("dialogflow CES test needs DIALOGFLOW_KEYFILE + DIALOGFLOW_PROJECT + DIALOGFLOW_CES_APP + DIALOGFLOW_REGION")
+		t.Skip("dialogflow CES test needs DIALOGFLOW_KEYFILE + DIALOGFLOW_PROJECT + DIALOGFLOW_CES_APP + DIALOGFLOW_CES_LOCATION")
 	}
 	if !cfg.HasDeepgram() {
 		s.Done()
@@ -122,7 +122,7 @@ func TestVerb_Dialogflow_CES(t *testing.T) {
 		"credentials", cfg.DialogflowServiceKey,
 		"project", cfg.DialogflowProject,
 		"agent", cfg.DialogflowCESApp,
-		"region", cfg.DialogflowRegion,
+		"region", cfg.DialogflowCESLocation,
 		"model", "ces",
 		"lang", cfg.DialogflowLang,
 		"actionHook", webhookSrv.PublicURL() + "/action/dialogflow-ces",

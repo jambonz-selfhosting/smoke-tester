@@ -139,6 +139,11 @@ type Settings struct {
 	DialogflowCESApp        string // CES app id
 	DialogflowCESDeployment string // optional CES deployment id; "" => none
 
+	// CES location. NOT the same as DialogflowRegion: a CES app commonly lives
+	// in a MULTI-REGION ("us") while a CX agent lives in a region
+	// ("us-central1"), so the two cannot share one value. Defaults to "us".
+	DialogflowCESLocation string
+
 	// Optional — per-agent tuning for the CES test. The strict assertion is
 	// agent-agnostic (a toolHook callback arrived, carrying a correlatable id),
 	// but everything below depends on how YOUR app is scripted, so it is
@@ -225,7 +230,7 @@ func (s *Settings) HasDialogflow() bool {
 // credential-missing log.
 func (s *Settings) HasDialogflowCES() bool {
 	return s.DialogflowServiceKey != "" && s.DialogflowProject != "" &&
-		s.DialogflowCESApp != "" && s.DialogflowRegion != ""
+		s.DialogflowCESApp != "" && s.DialogflowCESLocation != ""
 }
 
 var (
@@ -297,6 +302,7 @@ func parse() (*Settings, error) {
 		DialogflowProject:       os.Getenv("DIALOGFLOW_PROJECT"),
 		DialogflowCESApp:        os.Getenv("DIALOGFLOW_CES_APP"),
 		DialogflowCESDeployment: os.Getenv("DIALOGFLOW_CES_DEPLOYMENT"),
+		DialogflowCESLocation:   firstNonEmpty(os.Getenv("DIALOGFLOW_CES_LOCATION"), "us"),
 		DialogflowCESPrompt: firstNonEmpty(os.Getenv("DIALOGFLOW_CES_PROMPT"),
 			"hi, I need a flight"),
 		DialogflowCESPrompt2: firstNonEmpty(os.Getenv("DIALOGFLOW_CES_PROMPT2"),
