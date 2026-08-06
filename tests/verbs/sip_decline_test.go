@@ -48,8 +48,9 @@ import (
 // SBC      --hook fetch-->                                       Webhook server
 // Webhook  --[{sip:decline, status=486, reason="Busy Here", ...}]--> Jambonz
 // Jambonz  --486 Busy Here (X-Custom-A:foo)-->                   UAC
-//                                                                 // assert status,
-//                                                                 // reason, header
+//
+//	// assert status,
+//	// reason, header
 func TestVerb_SIPDecline_Basic(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)

@@ -50,23 +50,99 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-// cesReplyKeywords parses DIALOGFLOW_CES_KEYWORDS. Empty => audio is logged but
-// not asserted: against a newly-built app the agent's phrasing is unknown, and a
-// phrasing miss must never mask the tool-round-trip result, which is the actual
-// subject of this test. minHits of 0 makes AssertTranscriptHasMost log-only.
-func cesReplyKeywords() ([]string, int) {
-	raw := strings.Split(cfg.DialogflowCESKeywords, ",")
+var cesSmallWords = []string{"zero", "one", "two", "three", "four", "five", "six",
+	"seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
+	"fifteen", "sixteen", "seventeen", "eighteen", "nineteen"}
+
+var cesTens = []string{"", "", "twenty", "thirty", "forty", "fifty", "sixty",
+	"seventy", "eighty", "ninety"}
+
+// spellInt renders 0..999 the way a TTS voice speaks it ("54" -> "fifty four"),
+// so a numeric value from our tool output can be matched in an STT transcript,
+// which never contains digits. Returns "" outside that range.
+func spellInt(n int) string {
+	switch {
+	case n < 0 || n > 999:
+		return ""
+	case n < 20:
+		return cesSmallWords[n]
+	case n < 100:
+		out := cesTens[n/10]
+		if n%10 != 0 {
+			out += " " + cesSmallWords[n%10]
+		}
+		return out
+	default:
+		out := cesSmallWords[n/100] + " hundred"
+		if n%100 != 0 {
+			out += " " + spellInt(n%100)
+		}
+		return out
+	}
+}
+
+// cesToolEchoes derives, from the tool output WE answered with, the tokens that
+// can only appear in the agent's speech if it actually received our result.
+//
+// This is what makes the test hard rather than merely green: asserting that a
+// toolHook callback arrived only proves the agent ASKED for the tool. An agent
+// that ignored (or never received) our result would still hallucinate a
+// plausible weather reply and pass. Requiring our own values back in the
+// transcript is the only assertion that distinguishes the two.
+//
+// String leaves are used verbatim (they survive TTS/STT intact); integers are
+// spelled out because a transcript has no digits.
+func cesToolEchoes(raw string) []string {
+	var doc any
+	if json.Unmarshal([]byte(raw), &doc) != nil {
+		return nil
+	}
+	var out []string
+	seen := map[string]bool{}
+	add := func(s string) {
+		s = strings.ToLower(strings.TrimSpace(s))
+		if s == "" || seen[s] || !strings.ContainsAny(s, "abcdefghijklmnopqrstuvwxyz") {
+			return
+		}
+		seen[s] = true
+		out = append(out, s)
+	}
+	var walk func(any)
+	walk = func(v any) {
+		switch t := v.(type) {
+		case map[string]any:
+			for _, sub := range t {
+				walk(sub)
+			}
+		case []any:
+			for _, sub := range t {
+				walk(sub)
+			}
+		case string:
+			// single letters / codes are too collision-prone to assert on
+			if len(t) >= 4 {
+				add(t)
+			}
+		case float64:
+			if t == float64(int(t)) {
+				add(spellInt(int(t)))
+			}
+		}
+	}
+	walk(doc)
+	return out
+}
+
+// cesExtraKeywords is the optional DIALOGFLOW_CES_KEYWORDS override, layered on
+// top of the derived echoes (never instead of them).
+func cesExtraKeywords() []string {
 	var words []string
-	for _, w := range raw {
+	for _, w := range strings.Split(cfg.DialogflowCESKeywords, ",") {
 		if w = strings.TrimSpace(w); w != "" {
 			words = append(words, w)
 		}
 	}
-	if len(words) == 0 {
-		// a word that will not match is still needed so the helper transcribes
-		return []string{"\x00no-keywords-configured"}, 0
-	}
-	return words, 1
+	return words
 }
 
 // TestVerb_Dialogflow_CES — client-side tool-call round trip on the CES path.
@@ -198,14 +274,29 @@ func TestVerb_Dialogflow_CES(t *testing.T) {
 	call.StopRecording()
 	s.Done()
 
-	// The strict assertion is the tool round trip below; audio is
-	// LLM-phrasing-dependent, so a miss here is logged, not fatal.
-	s = Step(t, "turn1-assert-reply")
-	kw, minHits := cesReplyKeywords()
-	AssertTranscriptHasMost(s, ctx, rec1, minHits, kw...)
-	if minHits == 0 {
-		s.Logf("audio not asserted (set DIALOGFLOW_CES_KEYWORDS to make it strict)")
+	// STRICT: the agent must speak OUR tool output back. A toolHook callback
+	// alone only proves the agent asked for the tool; an agent that never
+	// received our result would still invent a plausible weather reply. These
+	// tokens are derived from DIALOGFLOW_CES_TOOL_OUTPUT, so this assertion
+	// tracks the configured output automatically.
+	s = Step(t, "turn1-assert-tool-output-spoken")
+	echoes := cesToolEchoes(cfg.DialogflowCESToolOutput)
+	if len(echoes) == 0 {
+		s.Fatalf("cannot derive any verifiable token from DIALOGFLOW_CES_TOOL_OUTPUT=%s; "+
+			"give it at least one string (>=4 chars) or integer value, otherwise the test "+
+			"cannot prove the agent received the tool result", cfg.DialogflowCESToolOutput)
 	}
+	wants := dedupeStrings(append(echoes, cesExtraKeywords()...))
+	// Require TWO independent matches when we have them: a single hit could in
+	// principle be a coincidence (an agent inventing a plausible temperature),
+	// two of our own values co-occurring cannot. Still tolerates the agent
+	// omitting one field of the result.
+	minHits := 2
+	if len(wants) < 2 {
+		minHits = 1
+	}
+	s.Logf("requiring >=%d of our own tool-output values in the reply: %v", minHits, wants)
+	AssertTranscriptHasMost(s, ctx, rec1, minHits, wants...)
 	s.Done()
 
 	s = Step(t, "turn2-continue-conversation")
@@ -256,8 +347,29 @@ func TestVerb_Dialogflow_CES(t *testing.T) {
 	if name := first.NestedString("tool_call.display_name"); name == "" {
 		s.Errorf("CES tool_call.display_name is empty: %s", string(first.Body))
 	}
+	// tool is the resource path CES correlates on alongside id. It may be
+	// legitimately absent for a toolset-sourced tool, but when present it must
+	// be a real path, not a bare display name.
 	if tool := first.NestedString("tool_call.tool"); tool == "" {
 		s.Logf("WARNING: CES tool_call.tool is empty (toolset-sourced tool?): %s", string(first.Body))
+	} else if !strings.Contains(tool, "/apps/") || !strings.Contains(tool, "/tools/") {
+		s.Errorf("CES tool_call.tool is not a tool resource path: %q", tool)
+	}
+
+	// args must be populated: it proves the agent extracted parameters from the
+	// caller's utterance and passed them through, rather than firing an empty
+	// tool call. An empty args object is a real defect, not phrasing noise.
+	var tcBody struct {
+		ToolCall struct {
+			Args map[string]any `json:"args"`
+		} `json:"tool_call"`
+	}
+	if err := json.Unmarshal(first.Body, &tcBody); err != nil {
+		s.Errorf("cannot parse tool_call body: %v", err)
+	} else if len(tcBody.ToolCall.Args) == 0 {
+		s.Errorf("CES tool_call.args is empty — the agent passed no parameters: %s", string(first.Body))
+	} else {
+		s.Logf("tool_call.args = %v", tcBody.ToolCall.Args)
 	}
 	s.Logf("CES tool callbacks: %d (first: display_name=%q id=%q)", len(toolCBs),
 		first.NestedString("tool_call.display_name"), first.NestedString("tool_call.id"))
@@ -265,9 +377,11 @@ func TestVerb_Dialogflow_CES(t *testing.T) {
 
 	// A reply after the tool result proves the mid-stream send unblocked the
 	// agent instead of stalling or tearing down the session.
+	// The stream must have survived the mid-stream tool result: the agent is
+	// still conversing on the SAME session. A restart-based implementation
+	// would have abandoned the turn here.
 	s = Step(t, "assert-conversation-continued")
-	kw2, minHits2 := cesReplyKeywords()
-	AssertTranscriptHasMost(s, ctx, rec2, minHits2, kw2...)
+	AssertTranscriptNonEmpty(s, ctx, rec2)
 	s.Done()
 
 	s = Step(t, "assert-event-plumbing")
@@ -286,9 +400,15 @@ func TestVerb_Dialogflow_CES(t *testing.T) {
 		}
 	}
 	if len(types) == 0 {
-		s.Logf("WARNING: no dialogflow CES eventHook callbacks captured")
-	} else {
-		s.Logf("dialogflow CES event types: %v (tool-calls seen: %v)", types, sawToolCalls)
+		s.Errorf("no dialogflow CES eventHook callbacks captured, but the verb subscribed to %v",
+			[]string{"session-output", "transcription", "tool-calls", "start-play", "stop-play"})
 	}
+	// The verb subscribed to 'tool-calls', so the app MUST have been notified.
+	// Before the fix mediajam emitted no such event at all, so this is the
+	// event-plumbing half of the regression.
+	if !sawToolCalls {
+		s.Errorf("eventHook never delivered a 'tool-calls' event despite being subscribed; got %v", types)
+	}
+	s.Logf("dialogflow CES event types: %v (tool-calls seen: %v)", types, sawToolCalls)
 	s.Done()
 }

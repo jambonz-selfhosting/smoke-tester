@@ -7,14 +7,14 @@
 //
 // Flow (mirror of sip:decline_test.go):
 //
-//   1. Provision a webhook Application whose call_hook returns
-//      [answer, pause, hangup]. Jambonz auto-creates a dialable URI
-//      `sip:app-<application_sid>@<domain>`.
-//   2. UAC INVITEs that URI with our X-Test-Id header.
-//   3. Jambonz fetches the hook, runs `answer` → returns 200 OK explicitly,
-//      then `pause` for 1s, then `hangup` (BYE to us).
-//   4. Assert the 200 came back with our chosen status, and the call ran
-//      to completion.
+//  1. Provision a webhook Application whose call_hook returns
+//     [answer, pause, hangup]. Jambonz auto-creates a dialable URI
+//     `sip:app-<application_sid>@<domain>`.
+//  2. UAC INVITEs that URI with our X-Test-Id header.
+//  3. Jambonz fetches the hook, runs `answer` → returns 200 OK explicitly,
+//     then `pause` for 1s, then `hangup` (BYE to us).
+//  4. Assert the 200 came back with our chosen status, and the call ran
+//     to completion.
 //
 // Phase-2 test; skipped without NGROK_AUTHTOKEN.
 package verbs

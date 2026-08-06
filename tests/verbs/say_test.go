@@ -36,7 +36,7 @@ func TestVerb_Say_Basic(t *testing.T) {
 		tag:        "say-basic",
 		minDur:     1 * time.Second,
 		// ~2s spoken + ~1.5s startup overhead; 9s leaves headroom for jitter.
-		maxDur: 9 * time.Second,
+		maxDur:    9 * time.Second,
 		verb:      V("say", "text", "Hello from jambonz integration tests."),
 		wantWords: []string{"hello", "jambonz", "integration"},
 	})
@@ -56,8 +56,8 @@ func TestVerb_Say_SSML(t *testing.T) {
 		// "Hello" + 500ms break + "world" → observed ~900ms on this cluster;
 		// TTS voices compress short utterances. Upper bound covers the ~1.5s
 		// streaming-TTS startup overhead on top of the short utterance.
-		minDur: 500 * time.Millisecond,
-		maxDur: 9 * time.Second,
+		minDur:    500 * time.Millisecond,
+		maxDur:    9 * time.Second,
 		verb:      V("say", "text", "<speak>Hello <break time='500ms'/> world.</speak>"),
 		wantWords: []string{"hello", "world"},
 		// We asked for 500ms of silence in the middle. TTS engines often

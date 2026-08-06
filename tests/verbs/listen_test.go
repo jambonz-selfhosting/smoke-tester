@@ -38,6 +38,7 @@ import (
 //  7. post-speech-silence — trailing silence so last frames flush
 //  8. hangup-and-wait-ws-close — hangup + wait up to 10s for WS close
 //  9. collect-ws-frames — drain captured WS messages
+//
 // 10. assert-audio-nontrivial — received audio has >=32 distinct byte values
 // 11. save-capture — write raw µ-law to t.TempDir() for offline inspection
 func TestVerb_Listen_Basic(t *testing.T) {
@@ -192,8 +193,8 @@ func writeMulawWAV(path string, payload []byte) error {
 	hdr = put32(hdr, chunkLen)
 	hdr = append(hdr, "WAVE"...)
 	hdr = append(hdr, "fmt "...)
-	hdr = put32(hdr, 16)             // fmt chunk size
-	hdr = put16(hdr, audioFormat)    // µ-law
+	hdr = put32(hdr, 16)          // fmt chunk size
+	hdr = put16(hdr, audioFormat) // µ-law
 	hdr = put16(hdr, channels)
 	hdr = put32(hdr, sampleRate)
 	hdr = put32(hdr, sampleRate*channels*bitsPerSample/8) // byte rate

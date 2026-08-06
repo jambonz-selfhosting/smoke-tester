@@ -1002,6 +1002,42 @@ func AssertTranscriptHasMost(s *StepCtx, ctx context.Context, recording string, 
 	}
 }
 
+// dedupeStrings removes duplicates while preserving order. Keyword lists are
+// assembled from several sources that legitimately overlap, and duplicates
+// would distort a minHits threshold by letting one match count twice.
+func dedupeStrings(in []string) []string {
+	seen := make(map[string]bool, len(in))
+	out := make([]string, 0, len(in))
+	for _, v := range in {
+		if v == "" || seen[v] {
+			continue
+		}
+		seen[v] = true
+		out = append(out, v)
+	}
+	return out
+}
+
+// AssertTranscriptNonEmpty asserts the recording contains intelligible speech,
+// without pinning any particular wording. Use it when the point is that the
+// agent is still talking at all — e.g. proving a long-lived session survived a
+// mid-conversation control message — rather than what it said.
+func AssertTranscriptNonEmpty(s *StepCtx, ctx context.Context, recording string) {
+	s.t.Helper()
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		return
+	}
+	transcript, err := stt.Transcribe(ctx, recording)
+	if err != nil {
+		s.Fatalf("stt.Transcribe(%s): %v", recording, err)
+	}
+	s.Logf("transcript: %q", transcript)
+	if len(strings.Fields(transcript)) < 3 {
+		s.Errorf("transcript has fewer than 3 words (%q) — the agent went silent", transcript)
+	}
+}
+
 // AssertAudioBytes is like AssertAudioDuration but gates on raw PCM bytes
 // received, useful when upstream duration reporting is unreliable (play
 // verb with transcoding). Failures are reported via the step context so

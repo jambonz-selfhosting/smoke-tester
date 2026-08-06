@@ -1,0 +1,41 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jambonz.org/schema/callbacks/dialogflow-ces-tool",
+  "$comment": "TODO: upstream — not in @jambonz/schema callbacks/",
+  "title": "Dialogflow CES toolHook Request",
+  "description": "Request body sent to the dialogflow verb's toolHook when a CES (model 'ces') agent requests a client-side tool. NOTE the shape differs from the CX variant, which sends {tool, action, input_parameters}: CES sends a per-call id plus display_name/args, and the id must be echoed back so the agent can correlate the result.",
+  "type": "object",
+  "required": ["event", "tool_call"],
+  "properties": {
+    "event": {
+      "const": "tool-call",
+      "description": "Discriminator; the dialogflow verb posts 'tool-call' for both CX and CES."
+    },
+    "tool_call": {
+      "type": "object",
+      "required": ["id", "display_name"],
+      "properties": {
+        "id": {
+          "type": "string",
+          "minLength": 1,
+          "description": "CES per-call identifier. The feature-server echoes this back in the tool result; without it the agent cannot correlate and the turn stalls. CX has no equivalent field."
+        },
+        "display_name": {
+          "type": "string",
+          "minLength": 1,
+          "description": "Human-readable tool name, e.g. get_weather. Note snake_case: the CES REST API renders this as camelCase displayName, but the jambonz event uses snake_case."
+        },
+        "tool": {
+          "type": "string",
+          "description": "Tool resource path, projects/{p}/locations/{l}/apps/{a}/tools/{t}. May be absent for a toolset-sourced tool."
+        },
+        "args": {
+          "type": "object",
+          "description": "Parameters the agent extracted for the call, e.g. {\"city\":\"Boston\"}."
+        }
+      },
+      "additionalProperties": true
+    }
+  },
+  "additionalProperties": true
+}

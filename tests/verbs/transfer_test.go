@@ -248,6 +248,7 @@ func TestVerb_Transfer_Blind(t *testing.T) {
 //  7. wait-target-done            — wait for target goroutine to finish
 //  8. assert-target-sip-wire      — target received INVITE, sent 100/180/200
 //  9. assert-target-caller-id-fallback — no callerId configured: target INVITE From falls back to the parent caller number, never anonymous/empty
+//
 // 10. wait-action-transfer-callback — block on /action/transfer HTTP callback (20s sub-context)
 //
 // 11. assert-transfer-status-bridged — transfer_result=="bridged", transfer_reason=="completed", sip_status==200

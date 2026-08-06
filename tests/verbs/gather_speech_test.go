@@ -43,6 +43,7 @@ const (
 //  7. send-wav — stream testdata/test_audio.wav into the call
 //  8. post-speech-silence — trailing silence to trigger end-of-utterance
 //  9. wait-action-gather-callback — block on /action/gather HTTP callback
+//
 // 10. assert-transcript-sun-shining — returned transcript contains "sun" + "shining"
 // 11. hangup — best-effort tear-down
 //

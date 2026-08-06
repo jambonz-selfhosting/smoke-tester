@@ -14,8 +14,8 @@
 //     prompt + flags.
 //   - Contract validation: webhook URLs are chosen so the server's
 //     validateInbound path maps each callback to a real schema:
-//        /action/verb-hook   → callbacks/<verb>.schema.json (n/a here — base only)
-//        /action/agent-turn  → callbacks/agent-turn.schema.json (eventHook payloads)
+//     /action/verb-hook   → callbacks/<verb>.schema.json (n/a here — base only)
+//     /action/agent-turn  → callbacks/agent-turn.schema.json (eventHook payloads)
 //     For actionHook on agent verb completion, jambonz POSTs the standard
 //     verb:hook callInfo+results envelope (see task.js:performAction). There
 //     is no `agent-complete` schema — base.schema.json applies. We POST to
@@ -248,6 +248,7 @@ func ScriptAgent(sess *webhook.Session, opts agentVerbOpts, extra ...map[string]
 //     WAV, wait for agent reply, stop recording
 //  9. turn-N-assert-echo (per turn): STT the recording, assert every
 //     content word from the prompt is present
+//
 // 10. hangup-and-wait-ended
 func TestVerb_Agent_Echo(t *testing.T) {
 	t.Parallel()
@@ -385,6 +386,7 @@ func formatAgentTurnRecPath(n int) string {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-events — silence while LLM thinks + TTS streams
+//
 // 10. drain-anon-events
 // 11. assert-user-transcript — find a user_transcript event with our keywords
 // 12. assert-llm-response — find an llm_response event with non-empty body
@@ -554,15 +556,15 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 //
 // Two independent, content-free proofs that the greeting fired:
 //
-//   1. Audio energy in the first 6s — BEFORE we send any user audio — proves
-//      the agent put speech on the wire unprompted (a non-greeting agent is
-//      silent until the user speaks). Bytes-level, immune to LLM phrasing.
+//  1. Audio energy in the first 6s — BEFORE we send any user audio — proves
+//     the agent put speech on the wire unprompted (a non-greeting agent is
+//     silent until the user speaks). Bytes-level, immune to LLM phrasing.
 //
-//   2. EventHook ordering — the agent emits at least one llm_response/turn_end
-//      event with NO preceding user_transcript. The agent producing a turn
-//      before it has heard a single user utterance is the deterministic
-//      signature of an unprompted greeting; it can't be faked by noise or by
-//      echoing user audio (there was none yet). This is the strong assertion.
+//  2. EventHook ordering — the agent emits at least one llm_response/turn_end
+//     event with NO preceding user_transcript. The agent producing a turn
+//     before it has heard a single user utterance is the deterministic
+//     signature of an unprompted greeting; it can't be faked by noise or by
+//     echoing user audio (there was none yet). This is the strong assertion.
 //
 // Turn 2 then sends a user prompt and we assert only that the agent took a
 // SECOND turn (more events fire after the user_transcript) — i.e. the call
@@ -580,9 +582,9 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 //  7. wait-for-greeting — listen for ~6s while agent says hello (user silent)
 //  8. assert-greeting-audio — recording has substantial inbound bytes already
 //  9. record-and-send-user-prompt — now user speaks (turn 2)
-// 10. wait-for-second-turn — silence while LLM replies again
-// 11. hangup-and-wait-ended
-// 12. assert-greeting-fired-unprompted — eventHook shows an agent turn before
+//  10. wait-for-second-turn — silence while LLM replies again
+//  11. hangup-and-wait-ended
+//  12. assert-greeting-fired-unprompted — eventHook shows an agent turn before
 //     any user_transcript (the deterministic greeting signature)
 func TestVerb_Agent_Greeting(t *testing.T) {
 	t.Parallel()
@@ -861,6 +863,7 @@ func TestVerb_Agent_ActionHookOnEnd(t *testing.T) {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-tool-call — block on /action/agent-tool callback
+//
 // 10. assert-tool-payload — name + arguments + tool_call_id present
 // 11. wait-for-llm-reply — silence while agent speaks the secret word
 // 12. hangup-and-wait-ended
@@ -1039,6 +1042,7 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-tool-call — block on /action/agent-tool callback
+//
 // 10. assert-tool-payload — name + tool_call_id present
 // 11. assert-tool-arguments — arguments.location contains "chicago"
 // 12. wait-for-llm-reply — silence while agent speaks the weather report
@@ -1274,6 +1278,7 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 //  7. wait-into-greeting — let agent start speaking
 //  8. send-prompt-wav — interrupt mid-greeting
 //  9. wait-for-events — collect user_interruption + later turn_end
+//
 // 10. assert-user-interruption — event landed in _anon
 // 11. hangup-and-wait-ended
 func TestVerb_Agent_BargeIn(t *testing.T) {
@@ -1392,6 +1397,7 @@ func TestVerb_Agent_BargeIn(t *testing.T) {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-llm-reply
+//
 // 10. hangup-and-wait-ended
 // 11. assert-reply-keywords
 func TestVerb_Agent_KrispTurnDetection(t *testing.T) {
@@ -1508,8 +1514,8 @@ func TestVerb_Agent_KrispTurnDetection(t *testing.T) {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-llm-reply
-// 10. hangup-and-wait-ended
-// 11. assert-noise-isolation-accepted — call ran with live inbound RTP
+//  10. hangup-and-wait-ended
+//  11. assert-noise-isolation-accepted — call ran with live inbound RTP
 //     (verb's object form accepted, not rejected at exec-time)
 func TestVerb_Agent_NoiseIsolation(t *testing.T) {
 	t.Parallel()
@@ -1617,10 +1623,10 @@ func TestVerb_Agent_NoiseIsolation(t *testing.T) {
 // agent re-prompts the user after that many seconds of silence in the
 // Idle state (state-machine.js _startNoResponseTimer). We:
 //
-//   1. Set greeting=true so the agent emits its first turn (then enters Idle).
-//   2. Stay silent for noResponseTimeout + a buffer.
-//   3. Expect a SECOND llm_response event (the re-prompt — typically
-//      "Are you still there?").
+//  1. Set greeting=true so the agent emits its first turn (then enters Idle).
+//  2. Stay silent for noResponseTimeout + a buffer.
+//  3. Expect a SECOND llm_response event (the re-prompt — typically
+//     "Are you still there?").
 //
 // Asserts at least two `llm_response` events appeared in the eventHook
 // stream during the silent window, proving the re-prompt path fired.

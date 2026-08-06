@@ -295,6 +295,7 @@ func TestVerb_LLM_OpenAI_Handoff(t *testing.T) {
 //  7. assert-target-caller-id      — target INVITE From contains the configured callerId
 //  8. assert-target-custom-header  — target INVITE carries the handoff's custom SIP header
 //  9. wait-onhold-callback         — /action/onhold was invoked with event_type=="transfer.on-hold"
+//
 // 10. wait-action-agent-callback   — block on /action/agent-complete
 // 11. assert-completion-transferred — completion_reason=="transferred"
 func TestVerb_Agent_OpenAI_Handoff_WarmCallerID(t *testing.T) {
