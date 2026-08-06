@@ -30,8 +30,10 @@
 // Assertions below key off display_name / args accordingly.
 //
 // Skips when CES is unconfigured (cfg.HasDialogflowCES) or DEEPGRAM_API_KEY is
-// missing. Note DIALOGFLOW_AGENT (a CX agent) is NOT a substitute for
-// DIALOGFLOW_CES_APP — a CES app is a different GCP resource.
+// missing. Only the app's coordinates are env-supplied (DIALOGFLOW_CES_APP /
+// _DEPLOYMENT / _LOCATION); the prompts and canned tool output are hardcoded
+// fixtures, as in the CX test. Note DIALOGFLOW_AGENT (a CX agent) is NOT a
+// substitute for DIALOGFLOW_CES_APP — a CES app is a different GCP resource.
 //
 // Provisioning the app: it must expose a client-side (Function) tool WITH A
 // NON-EMPTY DESCRIPTION. A tool imported with an empty description is never
@@ -49,6 +51,29 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
+
+// The app under test is Google's CES "weather tool demo": a client-side
+// (Function) tool get_weather(city). These fixtures are hardcoded rather than
+// configurable because the assertions below are specific to THIS app — they key
+// off get_weather and args.city — so making them tunable would only pretend the
+// test is app-agnostic. The app's coordinates (id / deployment / location) DO
+// live in env, since those differ per environment. Mirrors the CX test, which
+// hardcodes its prompts and canned tool results the same way.
+
+// cesPrompt drives the agent into its get_weather call.
+const cesPrompt = "what is the weather in Boston"
+
+// cesPrompt2 continues the conversation after the tool result, which is what
+// proves the mid-stream send did not disturb the session.
+const cesPrompt2 = "what about New York"
+
+// cesToolOutput is what our toolHook answers with; it must fit get_weather's
+// declared output schema, since CES can reject a mismatched shape. The values
+// are deliberately ordinary-looking but specific: cesToolEchoes derives the
+// expected spoken tokens from them, so the agent has to say OUR numbers back.
+// To re-run the mutation check, temporarily change these (e.g. 7 / "heavy snow"
+// / 11) — the agent must then speak the new values.
+const cesToolOutput = `{"temperature_f":54,"conditions":"light rain","humidity_pct":82}`
 
 var cesSmallWords = []string{"zero", "one", "two", "three", "four", "five", "six",
 	"seven", "eight", "nine", "ten", "eleven", "twelve", "thirteen", "fourteen",
@@ -133,18 +158,6 @@ func cesToolEchoes(raw string) []string {
 	return out
 }
 
-// cesExtraKeywords is the optional DIALOGFLOW_CES_KEYWORDS override, layered on
-// top of the derived echoes (never instead of them).
-func cesExtraKeywords() []string {
-	var words []string
-	for _, w := range strings.Split(cfg.DialogflowCESKeywords, ",") {
-		if w = strings.TrimSpace(w); w != "" {
-			words = append(words, w)
-		}
-	}
-	return words
-}
-
 // TestVerb_Dialogflow_CES — client-side tool-call round trip on the CES path.
 //
 // Steps:
@@ -175,13 +188,13 @@ func TestVerb_Dialogflow_CES(t *testing.T) {
 	uas := claimUAS(t, ctx)
 
 	s = Step(t, "ensure-prompt-wavs")
-	promptWAV, err := tts.EnsureWAV(ctx, "testdata/dialogflow", cfg.DialogflowCESPrompt, tts.PromptOptions{
+	promptWAV, err := tts.EnsureWAV(ctx, "testdata/dialogflow", cesPrompt, tts.PromptOptions{
 		Model: "aura-asteria-en",
 	})
 	if err != nil {
 		s.Fatalf("EnsureWAV turn 1: %v", err)
 	}
-	prompt2WAV, err := tts.EnsureWAV(ctx, "testdata/dialogflow", cfg.DialogflowCESPrompt2, tts.PromptOptions{
+	prompt2WAV, err := tts.EnsureWAV(ctx, "testdata/dialogflow", cesPrompt2, tts.PromptOptions{
 		Model: "aura-asteria-en",
 	})
 	if err != nil {
@@ -219,11 +232,11 @@ func TestVerb_Dialogflow_CES(t *testing.T) {
 	// It must fit the tool's DECLARED OUTPUT SCHEMA — CES can reject a
 	// mismatched shape, which would look like the agent ignoring the result.
 	// Override with DIALOGFLOW_CES_TOOL_OUTPUT to match your app's tool.
-	if !json.Valid([]byte(cfg.DialogflowCESToolOutput)) {
-		s.Fatalf("DIALOGFLOW_CES_TOOL_OUTPUT is not valid JSON: %s", cfg.DialogflowCESToolOutput)
+	if !json.Valid([]byte(cesToolOutput)) {
+		s.Fatalf("DIALOGFLOW_CES_TOOL_OUTPUT is not valid JSON: %s", cesToolOutput)
 	}
 	cesToolResultBody, err := json.Marshal(map[string]any{
-		"outputParameters": json.RawMessage(cfg.DialogflowCESToolOutput),
+		"outputParameters": json.RawMessage(cesToolOutput),
 	})
 	if err != nil {
 		s.Fatalf("marshal tool result: %v", err)
@@ -280,13 +293,13 @@ func TestVerb_Dialogflow_CES(t *testing.T) {
 	// tokens are derived from DIALOGFLOW_CES_TOOL_OUTPUT, so this assertion
 	// tracks the configured output automatically.
 	s = Step(t, "turn1-assert-tool-output-spoken")
-	echoes := cesToolEchoes(cfg.DialogflowCESToolOutput)
+	echoes := cesToolEchoes(cesToolOutput)
 	if len(echoes) == 0 {
-		s.Fatalf("cannot derive any verifiable token from DIALOGFLOW_CES_TOOL_OUTPUT=%s; "+
-			"give it at least one string (>=4 chars) or integer value, otherwise the test "+
-			"cannot prove the agent received the tool result", cfg.DialogflowCESToolOutput)
+		s.Fatalf("cannot derive any verifiable token from cesToolOutput=%s; it needs at least "+
+			"one string (>=4 chars) or integer value, otherwise the test cannot prove the "+
+			"agent received the tool result", cesToolOutput)
 	}
-	wants := dedupeStrings(append(echoes, cesExtraKeywords()...))
+	wants := echoes
 	// Require TWO independent matches when we have them: a single hit could in
 	// principle be a coincidence (an agent inventing a plausible temperature),
 	// two of our own values co-occurring cannot. Still tolerates the agent

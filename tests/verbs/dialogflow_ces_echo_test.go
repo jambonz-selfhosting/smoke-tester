@@ -28,16 +28,17 @@ func TestSpellInt(t *testing.T) {
 }
 
 func TestCESToolEchoes(t *testing.T) {
-	// The default weather output, and the transcript actually observed from the
-	// live agent. Every derived token must appear in that transcript, otherwise
-	// the assertion is testing the wrong wording.
-	const out = `{"temperature_f":54,"conditions":"light rain","humidity_pct":82}`
-	const observed = "it is fifty four degrees fahrenheit in boston with light rain " +
-		"and eighty two percent humidity would you like the weather for another city"
+	// Derive from the REAL fixture, not a copy: editing cesToolOutput must not be
+	// able to silently desync this test from what the smoke test actually sends.
+	// observed is a transcript genuinely captured from the live agent, so a
+	// derived token missing from it means we would be asserting wrong wording.
+	out := cesToolOutput
+	const observed = "in boston its fifty four degrees fahrenheit with light rain " +
+		"and the humidity is eighty two percent would you like the weather for another city"
 
 	echoes := cesToolEchoes(out)
 	if len(echoes) == 0 {
-		t.Fatal("derived no echoes from the default tool output")
+		t.Fatal("derived no echoes from cesToolOutput — the round-trip assertion would be vacuous")
 	}
 	for _, e := range echoes {
 		if !strings.Contains(observed, e) {

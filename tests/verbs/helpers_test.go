@@ -1002,22 +1002,6 @@ func AssertTranscriptHasMost(s *StepCtx, ctx context.Context, recording string, 
 	}
 }
 
-// dedupeStrings removes duplicates while preserving order. Keyword lists are
-// assembled from several sources that legitimately overlap, and duplicates
-// would distort a minHits threshold by letting one match count twice.
-func dedupeStrings(in []string) []string {
-	seen := make(map[string]bool, len(in))
-	out := make([]string, 0, len(in))
-	for _, v := range in {
-		if v == "" || seen[v] {
-			continue
-		}
-		seen[v] = true
-		out = append(out, v)
-	}
-	return out
-}
-
 // AssertTranscriptNonEmpty asserts the recording contains intelligible speech,
 // without pinning any particular wording. Use it when the point is that the
 // agent is still talking at all — e.g. proving a long-lived session survived a
