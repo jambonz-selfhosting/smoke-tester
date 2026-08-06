@@ -55,14 +55,18 @@ func (c *Client) CreateAccountSpeechCredential(ctx context.Context, accountSID s
 	return ok.SID, nil
 }
 
-// DeleteAccountSpeechCredential removes a credential. 404 is treated as
-// success so cleanup is idempotent.
+// DeleteAccountSpeechCredential removes a credential. Cleanup is idempotent:
+// 404 means already gone, and so does 401 — an account-scope token dies with
+// its account, and a credential cannot outlive the account it hangs off, so a
+// dead token here means the cascade already removed the credential. Swallowing
+// it keeps teardown from logging `Unauthorized` for work that is already done.
 func (c *Client) DeleteAccountSpeechCredential(ctx context.Context, accountSID, sid string) error {
 	path := fmt.Sprintf("/Accounts/%s/SpeechCredentials/%s", accountSID, sid)
 	_, err := c.Request(ctx, http.MethodDelete, path, nil, "", http.StatusNoContent)
 	if err != nil {
 		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+		if errors.As(err, &apiErr) &&
+			(apiErr.Status == http.StatusNotFound || apiErr.Status == http.StatusUnauthorized) {
 			return nil
 		}
 		return err

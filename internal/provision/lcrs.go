@@ -31,7 +31,9 @@ func (c *Client) CreateLcr(ctx context.Context, body LcrCreate) (string, error) 
 	if err != nil {
 		return "", err
 	}
-	var ok struct{ SID string `json:"sid"` }
+	var ok struct {
+		SID string `json:"sid"`
+	}
 	if err := json.Unmarshal(raw, &ok); err != nil {
 		return "", fmt.Errorf("decode SuccessfulAdd: %w", err)
 	}

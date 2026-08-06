@@ -129,6 +129,21 @@ type Settings struct {
 	DialogflowRegion     string // GCP region (e.g. "us-central1")
 	DialogflowLang       string // language code; default "en-US"
 
+	// Optional — Conversational Agents (CES, model "ces") coordinates. A CES
+	// app is a DIFFERENT resource from a CX agent, so it cannot be derived
+	// from DialogflowAgent: the CES test needs its own app id and reuses
+	// DialogflowServiceKey / DialogflowProject / DialogflowRegion. The app must
+	// expose a client-side (Function) tool WITH A NON-EMPTY DESCRIPTION — a
+	// tool imported with an empty description is never offered to the model,
+	// which presents as a silent stall rather than an error. See HasDialogflowCES.
+	DialogflowCESApp        string // CES app id
+	DialogflowCESDeployment string // optional CES deployment id; "" => none
+
+	// CES location. NOT the same as DialogflowRegion: a CES app commonly lives
+	// in a MULTI-REGION ("us") while a CX agent lives in a region
+	// ("us-central1"), so the two cannot share one value. Defaults to "us".
+	DialogflowCESLocation string
+
 	// Required — ngrok auth token. Phase-2 verb tests + Phase-1 status
 	// callbacks both need a public URL forwarded to the local webhook
 	// server. The whole verb suite gates on this.
@@ -189,6 +204,16 @@ func (s *Settings) HasDialogflow() bool {
 		s.DialogflowAgent != "" && s.DialogflowRegion != ""
 }
 
+// HasDialogflowCES reports whether the Conversational Agents (CES) verb test
+// can run. It needs the service-account JSON plus the CES app coordinates
+// (project + app + region); DIALOGFLOW_AGENT is a CX agent and is NOT a
+// substitute. Optional: when any is unset the test skips (passes) with a
+// credential-missing log.
+func (s *Settings) HasDialogflowCES() bool {
+	return s.DialogflowServiceKey != "" && s.DialogflowProject != "" &&
+		s.DialogflowCESApp != "" && s.DialogflowCESLocation != ""
+}
+
 var (
 	loadOnce sync.Once
 	loaded   *Settings
@@ -239,30 +264,33 @@ func MustLoad() *Settings {
 
 func parse() (*Settings, error) {
 	s := &Settings{
-		APIBaseURL:             strings.TrimRight(os.Getenv("JAMBONZ_API_URL"), "/"),
-		SPAPIKey:               os.Getenv("JAMBONZ_SP_API_KEY"),
-		SPSID:                  os.Getenv("JAMBONZ_SP_SID"),
-		SIPRealmZone:           firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
-		DeepgramAPIKey:         os.Getenv("DEEPGRAM_API_KEY"),
-		DeepseekAPIKey:         os.Getenv("DEEPSEEK_API_KEY"),
-		OpenAIAPIKey:           os.Getenv("OPENAI_API_KEY"),
-		MurfAPIKey:             os.Getenv("MURF_API_KEY"),
-		XaiAPIKey:              os.Getenv("XAI_API_KEY"),
-		GptLiveAPIKey:          os.Getenv("GPTLIVE_API_KEY"),
-		GptLiveModel:           firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
-		GptLiveHost:            os.Getenv("GPTLIVE_HOST"),
-		GptLivePath:            os.Getenv("GPTLIVE_PATH"),
-		GptLiveDelegationModel: firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
-		SpeechmaticsAPIKey:     os.Getenv("SPEECHMATICS_API_KEY"),
-		SpeechmaticsSTTURI:     firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
-		DialogflowProject:      os.Getenv("DIALOGFLOW_PROJECT"),
-		DialogflowAgent:        os.Getenv("DIALOGFLOW_AGENT"),
-		DialogflowRegion:       firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
-		DialogflowLang:         firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
-		NgrokAuthToken:         os.Getenv("NGROK_AUTHTOKEN"),
-		NgrokDomain:            os.Getenv("NGROK_DOMAIN"),
-		RunID:                  os.Getenv("RUN_ID"),
-		LogLevel:               strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
+		APIBaseURL:              strings.TrimRight(os.Getenv("JAMBONZ_API_URL"), "/"),
+		SPAPIKey:                os.Getenv("JAMBONZ_SP_API_KEY"),
+		SPSID:                   os.Getenv("JAMBONZ_SP_SID"),
+		SIPRealmZone:            firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
+		DeepgramAPIKey:          os.Getenv("DEEPGRAM_API_KEY"),
+		DeepseekAPIKey:          os.Getenv("DEEPSEEK_API_KEY"),
+		OpenAIAPIKey:            os.Getenv("OPENAI_API_KEY"),
+		MurfAPIKey:              os.Getenv("MURF_API_KEY"),
+		XaiAPIKey:               os.Getenv("XAI_API_KEY"),
+		GptLiveAPIKey:           os.Getenv("GPTLIVE_API_KEY"),
+		GptLiveModel:            firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
+		GptLiveHost:             os.Getenv("GPTLIVE_HOST"),
+		GptLivePath:             os.Getenv("GPTLIVE_PATH"),
+		GptLiveDelegationModel:  firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
+		SpeechmaticsAPIKey:      os.Getenv("SPEECHMATICS_API_KEY"),
+		SpeechmaticsSTTURI:      firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
+		DialogflowProject:       os.Getenv("DIALOGFLOW_PROJECT"),
+		DialogflowCESApp:        os.Getenv("DIALOGFLOW_CES_APP"),
+		DialogflowCESDeployment: os.Getenv("DIALOGFLOW_CES_DEPLOYMENT"),
+		DialogflowCESLocation:   firstNonEmpty(os.Getenv("DIALOGFLOW_CES_LOCATION"), "us"),
+		DialogflowAgent:         os.Getenv("DIALOGFLOW_AGENT"),
+		DialogflowRegion:        firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
+		DialogflowLang:          firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
+		NgrokAuthToken:          os.Getenv("NGROK_AUTHTOKEN"),
+		NgrokDomain:             os.Getenv("NGROK_DOMAIN"),
+		RunID:                   os.Getenv("RUN_ID"),
+		LogLevel:                strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
 	}
 
 	// required

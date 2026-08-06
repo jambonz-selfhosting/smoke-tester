@@ -103,6 +103,7 @@ var llmEchoTurns = []struct {
 //  8. turn-N-record-and-speak (per turn): start recording, send prompt
 //     WAV, wait for agent reply, stop recording
 //  9. turn-N-assert-echo (per turn): STT the recording, assert keywords
+//
 // 10. hangup-and-wait-ended
 // 11. drain-callbacks
 // 12. assert-action-payload — completion_reason + call_sid present
@@ -385,10 +386,10 @@ const llmWeatherToolResult = "The weather is heavy hail with a temperature of se
 //  8. wait-for-tool-call — WaitCallbackFor(action/llm-tool); assert
 //     name == "get_weather" and tool_call_id is non-empty
 //  9. assert-tool-args — assert args.location contains "chicago"
-// 10. wait-for-reply-and-stop — let the agent speak the tool result back,
+//  10. wait-for-reply-and-stop — let the agent speak the tool result back,
 //     then stop recording
-// 11. hangup-and-wait-ended
-// 12. assert-tool-result-spoken — independently STT the recording and
+//  11. hangup-and-wait-ended
+//  12. assert-tool-result-spoken — independently STT the recording and
 //     assert it contains the tool result's distinctive word ("hail"),
 //     proving the FunctionCallResponse envelope round-tripped
 func TestVerb_LLM_Deepgram_ToolHook(t *testing.T) {

@@ -17,14 +17,14 @@ import (
 //   - phone number via carrier: {type:"phone", number:"+15551234", trunk:"..."}
 //   - arbitrary SIP URI: {type:"sip", sipUri:"sip:foo@example.com"}
 type CallTarget struct {
-	Type       string `json:"type"` // "user" | "phone" | "sip"
-	Name       string `json:"name,omitempty"`
-	Number     string `json:"number,omitempty"`
-	Trunk      string `json:"trunk,omitempty"`
-	SipURI     string `json:"sipUri,omitempty"`
-	AuthUser   string `json:"auth_user,omitempty"`
-	AuthPass   string `json:"auth_password,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
+	Type     string            `json:"type"` // "user" | "phone" | "sip"
+	Name     string            `json:"name,omitempty"`
+	Number   string            `json:"number,omitempty"`
+	Trunk    string            `json:"trunk,omitempty"`
+	SipURI   string            `json:"sipUri,omitempty"`
+	AuthUser string            `json:"auth_user,omitempty"`
+	AuthPass string            `json:"auth_password,omitempty"`
+	Headers  map[string]string `json:"headers,omitempty"`
 }
 
 // CallCreate is the body of POST /Accounts/{sid}/Calls.
@@ -40,14 +40,14 @@ type CallCreate struct {
 	// jambonz re-parses it server-side.
 	AppJSON string `json:"app_json,omitempty"`
 
-	From       string            `json:"from"`
-	FromHost   string            `json:"fromHost,omitempty"`
-	To         CallTarget        `json:"to"`
-	Timeout    int               `json:"timeout,omitempty"`
-	TimeLimit  int               `json:"timeLimit,omitempty"`
-	Tag        map[string]any    `json:"tag,omitempty"`
-	Headers    map[string]string `json:"headers,omitempty"`
-	AnswerOnBridge bool          `json:"answerOnBridge,omitempty"`
+	From           string            `json:"from"`
+	FromHost       string            `json:"fromHost,omitempty"`
+	To             CallTarget        `json:"to"`
+	Timeout        int               `json:"timeout,omitempty"`
+	TimeLimit      int               `json:"timeLimit,omitempty"`
+	Tag            map[string]any    `json:"tag,omitempty"`
+	Headers        map[string]string `json:"headers,omitempty"`
+	AnswerOnBridge bool              `json:"answerOnBridge,omitempty"`
 
 	// Speech overrides. `*_label` selects a specific provisioned
 	// SpeechCredential when the account has multiple under the same

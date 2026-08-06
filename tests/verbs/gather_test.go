@@ -1,13 +1,13 @@
 // Tests for the `gather` verb — needs the webhook path (actionHook).
 //
 // Flow:
-//   1. Test creates a webhook session + registers a script: gather + hangup.
-//   2. Test registers an action-hook handler that returns an empty verb list
-//      (acknowledgement) when jambonz posts the collected digits.
-//   3. Test POSTs /Calls with application_sid=webhookApp + tag for correlation.
-//   4. jambonz fetches the call_hook, runs gather, dials us via the `to`
-//      user target, we answer, send DTMF, jambonz posts actionHook.
-//   5. Test reads the captured actionHook body and asserts digits.
+//  1. Test creates a webhook session + registers a script: gather + hangup.
+//  2. Test registers an action-hook handler that returns an empty verb list
+//     (acknowledgement) when jambonz posts the collected digits.
+//  3. Test POSTs /Calls with application_sid=webhookApp + tag for correlation.
+//  4. jambonz fetches the call_hook, runs gather, dials us via the `to`
+//     user target, we answer, send DTMF, jambonz posts actionHook.
+//  5. Test reads the captured actionHook body and asserts digits.
 //
 // NOTE: Phase 2 tests only. Skipped if NGROK_AUTHTOKEN is unset.
 package verbs

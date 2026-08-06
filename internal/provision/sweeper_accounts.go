@@ -14,20 +14,20 @@ import (
 //
 // Safety properties (audited 2026-05-01 after a destructive incident):
 //
-//   1. Never deletes an account whose `name` does not start with `it-`.
-//      We DO NOT trust upstream filters; both the prefix check and the
-//      protectRunID exclusion are evaluated client-side.
-//   2. Deletes the account's clients first, because the upstream
-//      `DELETE /Accounts/<sid>` handler doesn't cascade `clients` and
-//      otherwise fails with a foreign-key constraint error. Client
-//      enumeration uses ListSIPClientsForAccount, which filters
-//      client-side (the upstream `GET /Clients?account_sid=X` endpoint
-//      ignores its query parameter).
-//   3. Per-client double-check: only deletes a client whose AccountSID
-//      matches the account we are about to delete. Belt-and-braces.
-//   4. The sweeper only runs with an SP-scoped client; it has no
-//      reach outside the SP (no admin scope), so worst-case scope is
-//      exactly "accounts under our SP".
+//  1. Never deletes an account whose `name` does not start with `it-`.
+//     We DO NOT trust upstream filters; both the prefix check and the
+//     protectRunID exclusion are evaluated client-side.
+//  2. Deletes the account's clients first, because the upstream
+//     `DELETE /Accounts/<sid>` handler doesn't cascade `clients` and
+//     otherwise fails with a foreign-key constraint error. Client
+//     enumeration uses ListSIPClientsForAccount, which filters
+//     client-side (the upstream `GET /Clients?account_sid=X` endpoint
+//     ignores its query parameter).
+//  3. Per-client double-check: only deletes a client whose AccountSID
+//     matches the account we are about to delete. Belt-and-braces.
+//  4. The sweeper only runs with an SP-scoped client; it has no
+//     reach outside the SP (no admin scope), so worst-case scope is
+//     exactly "accounts under our SP".
 type AccountSweeper struct {
 	C *Client
 }

@@ -1002,6 +1002,26 @@ func AssertTranscriptHasMost(s *StepCtx, ctx context.Context, recording string, 
 	}
 }
 
+// AssertTranscriptNonEmpty asserts the recording contains intelligible speech,
+// without pinning any particular wording. Use it when the point is that the
+// agent is still talking at all — e.g. proving a long-lived session survived a
+// mid-conversation control message — rather than what it said.
+func AssertTranscriptNonEmpty(s *StepCtx, ctx context.Context, recording string) {
+	s.t.Helper()
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		return
+	}
+	transcript, err := stt.Transcribe(ctx, recording)
+	if err != nil {
+		s.Fatalf("stt.Transcribe(%s): %v", recording, err)
+	}
+	s.Logf("transcript: %q", transcript)
+	if len(strings.Fields(transcript)) < 3 {
+		s.Errorf("transcript has fewer than 3 words (%q) — the agent went silent", transcript)
+	}
+}
+
 // AssertAudioBytes is like AssertAudioDuration but gates on raw PCM bytes
 // received, useful when upstream duration reporting is unreliable (play
 // verb with transcoding). Failures are reported via the step context so
@@ -1086,6 +1106,48 @@ func DrainCallbacks(sess *webhook.Session, within time.Duration) []webhook.Callb
 			return out
 		}
 		out = append(out, cb)
+	}
+}
+
+// WaitCallbackForCollecting is Session.WaitCallbackFor without the data loss.
+// WaitCallbackFor DISCARDS every non-matching callback it skips past, so a test
+// that later needs those events loses them depending purely on arrival order —
+// e.g. an eventHook turn_end that races the toolHook POST for the same turn.
+// Returns the match plus, separately, everything skipped on the way to it.
+func WaitCallbackForCollecting(ctx context.Context, sess *webhook.Session,
+	hook string) (webhook.Callback, []webhook.Callback, error) {
+	var skipped []webhook.Callback
+	for {
+		cb, err := sess.WaitCallback(ctx)
+		if err != nil {
+			return webhook.Callback{}, skipped, err
+		}
+		if cb.Hook == hook {
+			return cb, skipped, nil
+		}
+		skipped = append(skipped, cb)
+	}
+}
+
+// WaitCallbacksUntil accumulates callbacks until pred is satisfied by the set
+// collected so far, or the context expires. Returns everything seen either way,
+// so a timeout still yields the evidence for a useful failure message. Prefer
+// this over a fixed sleep when the test has a real completion signal to wait on.
+func WaitCallbacksUntil(ctx context.Context, sess *webhook.Session,
+	pred func([]webhook.Callback) bool) []webhook.Callback {
+	var out []webhook.Callback
+	if pred(out) {
+		return out
+	}
+	for {
+		cb, err := sess.WaitCallback(ctx)
+		if err != nil {
+			return out
+		}
+		out = append(out, cb)
+		if pred(out) {
+			return out
+		}
 	}
 }
 

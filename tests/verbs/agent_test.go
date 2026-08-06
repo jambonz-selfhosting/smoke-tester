@@ -14,8 +14,8 @@
 //     prompt + flags.
 //   - Contract validation: webhook URLs are chosen so the server's
 //     validateInbound path maps each callback to a real schema:
-//        /action/verb-hook   → callbacks/<verb>.schema.json (n/a here — base only)
-//        /action/agent-turn  → callbacks/agent-turn.schema.json (eventHook payloads)
+//     /action/verb-hook   → callbacks/<verb>.schema.json (n/a here — base only)
+//     /action/agent-turn  → callbacks/agent-turn.schema.json (eventHook payloads)
 //     For actionHook on agent verb completion, jambonz POSTs the standard
 //     verb:hook callInfo+results envelope (see task.js:performAction). There
 //     is no `agent-complete` schema — base.schema.json applies. We POST to
@@ -196,6 +196,24 @@ func findAgentEvents(cbs []webhook.Callback, wantType string) []webhook.Callback
 	return out
 }
 
+// agentTurnEndNamesTool reports whether any turn_end summary in cbs lists a
+// tool call named name. Used both as the wait condition for the tool-calling
+// turn completing and as the assertion on it, so the two cannot disagree.
+func agentTurnEndNamesTool(cbs []webhook.Callback, name string) bool {
+	for _, te := range findAgentEvents(cbs, "turn_end") {
+		toolCalls, ok := te.JSON["tool_calls"].([]any)
+		if !ok {
+			continue
+		}
+		for _, tc := range toolCalls {
+			if m, ok := tc.(map[string]any); ok && m["name"] == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ScriptAgent registers the canonical agent-verb call_hook script on sess
 // + the empty action-hook acks for the two agent callbacks
 // (`agent-complete` + `agent-turn`). It also wires the per-session
@@ -248,6 +266,7 @@ func ScriptAgent(sess *webhook.Session, opts agentVerbOpts, extra ...map[string]
 //     WAV, wait for agent reply, stop recording
 //  9. turn-N-assert-echo (per turn): STT the recording, assert every
 //     content word from the prompt is present
+//
 // 10. hangup-and-wait-ended
 func TestVerb_Agent_Echo(t *testing.T) {
 	t.Parallel()
@@ -385,6 +404,7 @@ func formatAgentTurnRecPath(n int) string {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-events — silence while LLM thinks + TTS streams
+//
 // 10. drain-anon-events
 // 11. assert-user-transcript — find a user_transcript event with our keywords
 // 12. assert-llm-response — find an llm_response event with non-empty body
@@ -554,15 +574,15 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 //
 // Two independent, content-free proofs that the greeting fired:
 //
-//   1. Audio energy in the first 6s — BEFORE we send any user audio — proves
-//      the agent put speech on the wire unprompted (a non-greeting agent is
-//      silent until the user speaks). Bytes-level, immune to LLM phrasing.
+//  1. Audio energy in the first 6s — BEFORE we send any user audio — proves
+//     the agent put speech on the wire unprompted (a non-greeting agent is
+//     silent until the user speaks). Bytes-level, immune to LLM phrasing.
 //
-//   2. EventHook ordering — the agent emits at least one llm_response/turn_end
-//      event with NO preceding user_transcript. The agent producing a turn
-//      before it has heard a single user utterance is the deterministic
-//      signature of an unprompted greeting; it can't be faked by noise or by
-//      echoing user audio (there was none yet). This is the strong assertion.
+//  2. EventHook ordering — the agent emits at least one llm_response/turn_end
+//     event with NO preceding user_transcript. The agent producing a turn
+//     before it has heard a single user utterance is the deterministic
+//     signature of an unprompted greeting; it can't be faked by noise or by
+//     echoing user audio (there was none yet). This is the strong assertion.
 //
 // Turn 2 then sends a user prompt and we assert only that the agent took a
 // SECOND turn (more events fire after the user_transcript) — i.e. the call
@@ -580,9 +600,9 @@ func TestVerb_Agent_EventHook(t *testing.T) {
 //  7. wait-for-greeting — listen for ~6s while agent says hello (user silent)
 //  8. assert-greeting-audio — recording has substantial inbound bytes already
 //  9. record-and-send-user-prompt — now user speaks (turn 2)
-// 10. wait-for-second-turn — silence while LLM replies again
-// 11. hangup-and-wait-ended
-// 12. assert-greeting-fired-unprompted — eventHook shows an agent turn before
+//  10. wait-for-second-turn — silence while LLM replies again
+//  11. hangup-and-wait-ended
+//  12. assert-greeting-fired-unprompted — eventHook shows an agent turn before
 //     any user_transcript (the deterministic greeting signature)
 func TestVerb_Agent_Greeting(t *testing.T) {
 	t.Parallel()
@@ -861,6 +881,7 @@ func TestVerb_Agent_ActionHookOnEnd(t *testing.T) {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-tool-call — block on /action/agent-tool callback
+//
 // 10. assert-tool-payload — name + arguments + tool_call_id present
 // 11. wait-for-llm-reply — silence while agent speaks the secret word
 // 12. hangup-and-wait-ended
@@ -957,9 +978,11 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	// URL — no _anon contention with parallel agent tests.
 	waitCtx, wcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer wcancel()
-	toolCB, err := sess.WaitCallbackFor(waitCtx, "action/agent-tool")
+	// Collect rather than discard: turn_end for this turn races the toolHook
+	// POST, and WaitCallbackFor would throw it away (see the sibling test).
+	toolCB, earlyCBs, err := WaitCallbackForCollecting(waitCtx, sess, "action/agent-tool")
 	if err != nil {
-		s.Fatalf("WaitCallbackFor action/agent-tool: %v", err)
+		s.Fatalf("waiting for action/agent-tool: %v", err)
 	}
 	s.Logf("action/agent-tool body: %s", string(toolCB.Body))
 	s.Done()
@@ -996,10 +1019,25 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "wait-for-llm-reply")
+	s = Step(t, "wait-for-turn-end")
 	// Tool result fed back to LLM → second LLM round-trip → TTS streams the
-	// word. Allow ~10s for the full second pass.
-	time.Sleep(12 * time.Second)
+	// word. Wait for the turn_end summary naming the tool rather than sleeping a
+	// fixed budget: measurements on the sibling test show turn_end lands ~20-24s
+	// after the tool call, so a 12s sleep truncated the recording this test then
+	// reads. Callbacks are collected, not discarded.
+	teCtx, tecancel := context.WithTimeout(ctx, 45*time.Second)
+	defer tecancel()
+	seen := WaitCallbacksUntil(teCtx, sess, func(cbs []webhook.Callback) bool {
+		return agentTurnEndNamesTool(append(earlyCBs, cbs...), "get_secret_word")
+	})
+	if !agentTurnEndNamesTool(append(earlyCBs, seen...), "get_secret_word") {
+		s.Logf("no turn_end naming get_secret_word within budget; %d callback(s) seen",
+			len(earlyCBs)+len(seen))
+	}
+	// Short pad so TTS finishes streaming into the recording, then stop
+	// recording explicitly rather than relying on teardown ordering.
+	time.Sleep(2 * time.Second)
+	call.StopRecording()
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
@@ -1039,6 +1077,7 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-tool-call — block on /action/agent-tool callback
+//
 // 10. assert-tool-payload — name + tool_call_id present
 // 11. assert-tool-arguments — arguments.location contains "chicago"
 // 12. wait-for-llm-reply — silence while agent speaks the weather report
@@ -1139,11 +1178,18 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 	// URL — no _anon contention with parallel agent tests.
 	waitCtx, wcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer wcancel()
-	toolCB, err := sess.WaitCallbackFor(waitCtx, "action/agent-tool")
+	// Collect (do NOT discard) the eventHook callbacks we skip past: the
+	// turn_end summary for this same turn races the toolHook POST, and
+	// WaitCallbackFor would throw it away whenever it happens to arrive first —
+	// making assert-turn-end-tool-calls below fail on arrival order alone.
+	toolCB, earlyCBs, err := WaitCallbackForCollecting(waitCtx, sess, "action/agent-tool")
 	if err != nil {
-		s.Fatalf("WaitCallbackFor action/agent-tool: %v", err)
+		s.Fatalf("waiting for action/agent-tool: %v", err)
 	}
 	s.Logf("action/agent-tool body: %s", string(toolCB.Body))
+	if len(earlyCBs) > 0 {
+		s.Logf("collected %d callback(s) that arrived before the tool POST", len(earlyCBs))
+	}
 	s.Done()
 
 	s = Step(t, "assert-tool-payload")
@@ -1190,20 +1236,32 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "wait-for-llm-reply")
+	s = Step(t, "wait-for-turn-end")
 	// Tool result fed back to LLM → second LLM round-trip → TTS streams the
-	// weather report. Allow ~10s for the full second pass.
-	time.Sleep(12 * time.Second)
+	// weather report. Wait for the turn_end summary that names the tool rather
+	// than sleeping a fixed budget: a blind sleep either races TTS (truncating
+	// the recording that assert-weather-spoken reads) or wastes wall-clock.
+	teCtx, tecancel := context.WithTimeout(ctx, 45*time.Second)
+	defer tecancel()
+	cbs := append(earlyCBs, WaitCallbacksUntil(teCtx, sess, func(seen []webhook.Callback) bool {
+		return agentTurnEndNamesTool(append(earlyCBs, seen...), "get_weather")
+	})...)
+	if !agentTurnEndNamesTool(cbs, "get_weather") {
+		s.Logf("no turn_end naming get_weather within budget; %d callback(s) seen", len(cbs))
+	}
+	// Small pad so TTS finishes streaming into the recording after the turn
+	// summary lands, then stop recording explicitly rather than relying on
+	// teardown ordering.
+	time.Sleep(2 * time.Second)
+	call.StopRecording()
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
 
 	s = Step(t, "drain-trailing-callbacks")
-	// The tool-calling turn's turn_end summary may land right around
-	// hangup; drain the session briefly so it's captured before we assert
-	// on it.
-	cbs := DrainCallbacks(sess, 5*time.Second)
-	s.Logf("captured %d agent events after hangup", len(cbs))
+	// Anything still in flight around hangup.
+	cbs = append(cbs, DrainCallbacks(sess, 5*time.Second)...)
+	s.Logf("captured %d agent events in total", len(cbs))
 	s.Done()
 
 	s = Step(t, "assert-turn-end-tool-calls")
@@ -1214,30 +1272,8 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 	turnEnds := findAgentEvents(cbs, "turn_end")
 	if len(turnEnds) == 0 {
 		s.Errorf("no turn_end event in %d agent events", len(cbs))
-	} else {
-		found := false
-		for _, te := range turnEnds {
-			toolCalls, ok := te.JSON["tool_calls"].([]any)
-			if !ok {
-				continue
-			}
-			for _, tc := range toolCalls {
-				m, ok := tc.(map[string]any)
-				if !ok {
-					continue
-				}
-				if m["name"] == "get_weather" {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if !found {
-			s.Errorf("no turn_end event has tool_calls containing get_weather: %d turn_end events", len(turnEnds))
-		}
+	} else if !agentTurnEndNamesTool(cbs, "get_weather") {
+		s.Errorf("no turn_end event has tool_calls containing get_weather: %d turn_end events", len(turnEnds))
 	}
 	s.Done()
 
@@ -1245,7 +1281,14 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 	// Round-trip corroboration only — the arguments + turn_end assertions
 	// above are the strong proofs that the LLM understood and populated
 	// the tool call correctly.
-	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail")
+	//
+	// Accept EITHER field of the tool result. Both come only from our toolBody,
+	// so one match still proves the result was spoken back, but requiring a
+	// specific word is STT-fragile: "hail" is short and acoustically ambiguous,
+	// and a real run had Deepgram render "heavy hail" as "heavy though". The
+	// spelled-out temperature is far more robust, so it carries the assertion
+	// when the conditions word gets mangled.
+	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail", "seventy one")
 	s.Done()
 }
 
@@ -1274,6 +1317,7 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 //  7. wait-into-greeting — let agent start speaking
 //  8. send-prompt-wav — interrupt mid-greeting
 //  9. wait-for-events — collect user_interruption + later turn_end
+//
 // 10. assert-user-interruption — event landed in _anon
 // 11. hangup-and-wait-ended
 func TestVerb_Agent_BargeIn(t *testing.T) {
@@ -1392,6 +1436,7 @@ func TestVerb_Agent_BargeIn(t *testing.T) {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-llm-reply
+//
 // 10. hangup-and-wait-ended
 // 11. assert-reply-keywords
 func TestVerb_Agent_KrispTurnDetection(t *testing.T) {
@@ -1508,8 +1553,8 @@ func TestVerb_Agent_KrispTurnDetection(t *testing.T) {
 //  7. wait-for-stt
 //  8. send-prompt-wav
 //  9. wait-for-llm-reply
-// 10. hangup-and-wait-ended
-// 11. assert-noise-isolation-accepted — call ran with live inbound RTP
+//  10. hangup-and-wait-ended
+//  11. assert-noise-isolation-accepted — call ran with live inbound RTP
 //     (verb's object form accepted, not rejected at exec-time)
 func TestVerb_Agent_NoiseIsolation(t *testing.T) {
 	t.Parallel()
@@ -1617,10 +1662,10 @@ func TestVerb_Agent_NoiseIsolation(t *testing.T) {
 // agent re-prompts the user after that many seconds of silence in the
 // Idle state (state-machine.js _startNoResponseTimer). We:
 //
-//   1. Set greeting=true so the agent emits its first turn (then enters Idle).
-//   2. Stay silent for noResponseTimeout + a buffer.
-//   3. Expect a SECOND llm_response event (the re-prompt — typically
-//      "Are you still there?").
+//  1. Set greeting=true so the agent emits its first turn (then enters Idle).
+//  2. Stay silent for noResponseTimeout + a buffer.
+//  3. Expect a SECOND llm_response event (the re-prompt — typically
+//     "Are you still there?").
 //
 // Asserts at least two `llm_response` events appeared in the eventHook
 // stream during the silent window, proving the re-prompt path fired.

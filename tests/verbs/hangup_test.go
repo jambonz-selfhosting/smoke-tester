@@ -6,14 +6,14 @@
 // ---- template for verb tests ---------------------------------------------
 // Each test is preceded by a minimal ASCII sequence diagram. Conventions:
 //
-//   Test     = the test goroutine (what Go code does)
-//   Jambonz  = the jambonz cluster under test
-//   UAS      = our SIP user agent answering an inbound INVITE
-//   UAC      = our SIP user agent placing an outbound INVITE
-//   Webhook  = our local webhook server (Phase-2 tests only)
-//   -->      SIP or HTTP message
-//   ==>      media / RTP
-//   //       assertion or note
+//	Test     = the test goroutine (what Go code does)
+//	Jambonz  = the jambonz cluster under test
+//	UAS      = our SIP user agent answering an inbound INVITE
+//	UAC      = our SIP user agent placing an outbound INVITE
+//	Webhook  = our local webhook server (Phase-2 tests only)
+//	-->      SIP or HTTP message
+//	==>      media / RTP
+//	//       assertion or note
 //
 // Keep it terse. Diagram should show only messages this test actually cares
 // about; boilerplate (Trying, ACK) is elided unless asserted on.
@@ -88,8 +88,9 @@ func TestVerb_Hangup_Basic(t *testing.T) {
 // Jambonz --INVITE-->                          UAS
 // UAS     --200 OK-->                          Jambonz   (Answer)
 // Jambonz --BYE (X-Custom-A/B)-->              UAS       // end=remote-bye
-//                                                        // BYE headers include
-//                                                        // X-Custom-A/B
+//
+//	// BYE headers include
+//	// X-Custom-A/B
 func TestVerb_Hangup_WithHeaders(t *testing.T) {
 	t.Parallel()
 	ctx := WithTimeout(t, 15*time.Second)

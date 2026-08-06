@@ -70,6 +70,7 @@ const (
 //  7. wait-ws-connect — block until jambonz opens /ws/<id>
 //  8. stream-audio-and-mark — binary PCM frames, then {mark name}, then flush frames
 //  9. await-playout-mark — assert {type:mark,event:playout,name} comes back
+//
 // 10. assert-caller-heard-audio — caller recording has real audio (RMS/bytes)
 // 11. hangup
 func TestVerb_Listen_Mark_Playout(t *testing.T) {
@@ -184,6 +185,7 @@ func TestVerb_Listen_Mark_Playout(t *testing.T) {
 //  7. wait-ws-connect
 //  8. stream-audio-mark-then-kill — binary PCM, {mark name}, more PCM, {killAudio}
 //  9. await-cleared-mark — assert {type:mark,event:cleared,name}
+//
 // 10. hangup
 func TestVerb_Listen_Mark_Cleared(t *testing.T) {
 	t.Parallel()
