@@ -1109,6 +1109,48 @@ func DrainCallbacks(sess *webhook.Session, within time.Duration) []webhook.Callb
 	}
 }
 
+// WaitCallbackForCollecting is Session.WaitCallbackFor without the data loss.
+// WaitCallbackFor DISCARDS every non-matching callback it skips past, so a test
+// that later needs those events loses them depending purely on arrival order —
+// e.g. an eventHook turn_end that races the toolHook POST for the same turn.
+// Returns the match plus, separately, everything skipped on the way to it.
+func WaitCallbackForCollecting(ctx context.Context, sess *webhook.Session,
+	hook string) (webhook.Callback, []webhook.Callback, error) {
+	var skipped []webhook.Callback
+	for {
+		cb, err := sess.WaitCallback(ctx)
+		if err != nil {
+			return webhook.Callback{}, skipped, err
+		}
+		if cb.Hook == hook {
+			return cb, skipped, nil
+		}
+		skipped = append(skipped, cb)
+	}
+}
+
+// WaitCallbacksUntil accumulates callbacks until pred is satisfied by the set
+// collected so far, or the context expires. Returns everything seen either way,
+// so a timeout still yields the evidence for a useful failure message. Prefer
+// this over a fixed sleep when the test has a real completion signal to wait on.
+func WaitCallbacksUntil(ctx context.Context, sess *webhook.Session,
+	pred func([]webhook.Callback) bool) []webhook.Callback {
+	var out []webhook.Callback
+	if pred(out) {
+		return out
+	}
+	for {
+		cb, err := sess.WaitCallback(ctx)
+		if err != nil {
+			return out
+		}
+		out = append(out, cb)
+		if pred(out) {
+			return out
+		}
+	}
+}
+
 // ContainsHook returns true if any callback in cbs is named hook.
 func ContainsHook(cbs []webhook.Callback, hook string) bool {
 	for _, cb := range cbs {

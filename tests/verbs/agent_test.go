@@ -196,6 +196,24 @@ func findAgentEvents(cbs []webhook.Callback, wantType string) []webhook.Callback
 	return out
 }
 
+// agentTurnEndNamesTool reports whether any turn_end summary in cbs lists a
+// tool call named name. Used both as the wait condition for the tool-calling
+// turn completing and as the assertion on it, so the two cannot disagree.
+func agentTurnEndNamesTool(cbs []webhook.Callback, name string) bool {
+	for _, te := range findAgentEvents(cbs, "turn_end") {
+		toolCalls, ok := te.JSON["tool_calls"].([]any)
+		if !ok {
+			continue
+		}
+		for _, tc := range toolCalls {
+			if m, ok := tc.(map[string]any); ok && m["name"] == name {
+				return true
+			}
+		}
+	}
+	return false
+}
+
 // ScriptAgent registers the canonical agent-verb call_hook script on sess
 // + the empty action-hook acks for the two agent callbacks
 // (`agent-complete` + `agent-turn`). It also wires the per-session
@@ -1143,11 +1161,18 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 	// URL — no _anon contention with parallel agent tests.
 	waitCtx, wcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer wcancel()
-	toolCB, err := sess.WaitCallbackFor(waitCtx, "action/agent-tool")
+	// Collect (do NOT discard) the eventHook callbacks we skip past: the
+	// turn_end summary for this same turn races the toolHook POST, and
+	// WaitCallbackFor would throw it away whenever it happens to arrive first —
+	// making assert-turn-end-tool-calls below fail on arrival order alone.
+	toolCB, earlyCBs, err := WaitCallbackForCollecting(waitCtx, sess, "action/agent-tool")
 	if err != nil {
-		s.Fatalf("WaitCallbackFor action/agent-tool: %v", err)
+		s.Fatalf("waiting for action/agent-tool: %v", err)
 	}
 	s.Logf("action/agent-tool body: %s", string(toolCB.Body))
+	if len(earlyCBs) > 0 {
+		s.Logf("collected %d callback(s) that arrived before the tool POST", len(earlyCBs))
+	}
 	s.Done()
 
 	s = Step(t, "assert-tool-payload")
@@ -1194,20 +1219,32 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "wait-for-llm-reply")
+	s = Step(t, "wait-for-turn-end")
 	// Tool result fed back to LLM → second LLM round-trip → TTS streams the
-	// weather report. Allow ~10s for the full second pass.
-	time.Sleep(12 * time.Second)
+	// weather report. Wait for the turn_end summary that names the tool rather
+	// than sleeping a fixed budget: a blind sleep either races TTS (truncating
+	// the recording that assert-weather-spoken reads) or wastes wall-clock.
+	teCtx, tecancel := context.WithTimeout(ctx, 45*time.Second)
+	defer tecancel()
+	cbs := append(earlyCBs, WaitCallbacksUntil(teCtx, sess, func(seen []webhook.Callback) bool {
+		return agentTurnEndNamesTool(append(earlyCBs, seen...), "get_weather")
+	})...)
+	if !agentTurnEndNamesTool(cbs, "get_weather") {
+		s.Logf("no turn_end naming get_weather within budget; %d callback(s) seen", len(cbs))
+	}
+	// Small pad so TTS finishes streaming into the recording after the turn
+	// summary lands, then stop recording explicitly rather than relying on
+	// teardown ordering.
+	time.Sleep(2 * time.Second)
+	call.StopRecording()
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
 
 	s = Step(t, "drain-trailing-callbacks")
-	// The tool-calling turn's turn_end summary may land right around
-	// hangup; drain the session briefly so it's captured before we assert
-	// on it.
-	cbs := DrainCallbacks(sess, 5*time.Second)
-	s.Logf("captured %d agent events after hangup", len(cbs))
+	// Anything still in flight around hangup.
+	cbs = append(cbs, DrainCallbacks(sess, 5*time.Second)...)
+	s.Logf("captured %d agent events in total", len(cbs))
 	s.Done()
 
 	s = Step(t, "assert-turn-end-tool-calls")
@@ -1218,30 +1255,8 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 	turnEnds := findAgentEvents(cbs, "turn_end")
 	if len(turnEnds) == 0 {
 		s.Errorf("no turn_end event in %d agent events", len(cbs))
-	} else {
-		found := false
-		for _, te := range turnEnds {
-			toolCalls, ok := te.JSON["tool_calls"].([]any)
-			if !ok {
-				continue
-			}
-			for _, tc := range toolCalls {
-				m, ok := tc.(map[string]any)
-				if !ok {
-					continue
-				}
-				if m["name"] == "get_weather" {
-					found = true
-					break
-				}
-			}
-			if found {
-				break
-			}
-		}
-		if !found {
-			s.Errorf("no turn_end event has tool_calls containing get_weather: %d turn_end events", len(turnEnds))
-		}
+	} else if !agentTurnEndNamesTool(cbs, "get_weather") {
+		s.Errorf("no turn_end event has tool_calls containing get_weather: %d turn_end events", len(turnEnds))
 	}
 	s.Done()
 
