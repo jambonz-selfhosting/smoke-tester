@@ -42,7 +42,9 @@ func (c *Client) CreateVoipCarrier(ctx context.Context, body VoipCarrierCreate) 
 	if err != nil {
 		return "", err
 	}
-	var ok struct{ SID string `json:"sid"` }
+	var ok struct {
+		SID string `json:"sid"`
+	}
 	if err := json.Unmarshal(raw, &ok); err != nil {
 		return "", fmt.Errorf("decode SuccessfulAdd: %w", err)
 	}
@@ -117,7 +119,9 @@ func (c *Client) CreateVoipCarrierUnderSP(ctx context.Context, spSID string, bod
 	if err != nil {
 		return "", err
 	}
-	var ok struct{ SID string `json:"sid"` }
+	var ok struct {
+		SID string `json:"sid"`
+	}
 	if err := json.Unmarshal(raw, &ok); err != nil {
 		return "", fmt.Errorf("decode SuccessfulAdd: %w", err)
 	}

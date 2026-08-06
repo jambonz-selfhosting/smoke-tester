@@ -94,14 +94,35 @@ func (c *Client) UpdateAccount(ctx context.Context, sid string, body AccountUpda
 // DeleteAccount removes an account; idempotent on 404.
 func (c *Client) DeleteAccount(ctx context.Context, sid string) error {
 	_, err := c.Request(ctx, http.MethodDelete, "/Accounts/"+sid, nil, "", http.StatusNoContent)
-	if err != nil {
-		var apiErr *APIError
-		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
-			return nil
-		}
+	if err == nil {
+		return nil
+	}
+	var apiErr *APIError
+	if !errors.As(err, &apiErr) {
 		return err
 	}
-	return nil
+	switch apiErr.Status {
+	case http.StatusNotFound:
+		return nil
+	case http.StatusForbidden:
+		// jambonz answers 403 — not 404 — for an account SID outside the
+		// caller's service-provider scope, and a deleted account is outside it.
+		// So a 403 here usually means "already gone", which otherwise shows up
+		// as a scary `insufficient permissions` line at teardown. Confirm with a
+		// read before swallowing it, so a genuine permission regression (the
+		// account still there, we just can't delete it) still surfaces.
+		if !c.accountVisible(ctx, sid) {
+			return nil
+		}
+	}
+	return err
+}
+
+// accountVisible reports whether the account is still readable by this client.
+// Used only on a delete error path to distinguish "already gone" from "denied".
+func (c *Client) accountVisible(ctx context.Context, sid string) bool {
+	_, err := c.Request(ctx, http.MethodGet, "/Accounts/"+sid, nil, "", http.StatusOK)
+	return err == nil
 }
 
 // SetSipRealm assigns a sip_realm to an account via the dedicated endpoint

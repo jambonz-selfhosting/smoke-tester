@@ -978,9 +978,11 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	// URL — no _anon contention with parallel agent tests.
 	waitCtx, wcancel := context.WithTimeout(ctx, 30*time.Second)
 	defer wcancel()
-	toolCB, err := sess.WaitCallbackFor(waitCtx, "action/agent-tool")
+	// Collect rather than discard: turn_end for this turn races the toolHook
+	// POST, and WaitCallbackFor would throw it away (see the sibling test).
+	toolCB, earlyCBs, err := WaitCallbackForCollecting(waitCtx, sess, "action/agent-tool")
 	if err != nil {
-		s.Fatalf("WaitCallbackFor action/agent-tool: %v", err)
+		s.Fatalf("waiting for action/agent-tool: %v", err)
 	}
 	s.Logf("action/agent-tool body: %s", string(toolCB.Body))
 	s.Done()
@@ -1017,10 +1019,25 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "wait-for-llm-reply")
+	s = Step(t, "wait-for-turn-end")
 	// Tool result fed back to LLM → second LLM round-trip → TTS streams the
-	// word. Allow ~10s for the full second pass.
-	time.Sleep(12 * time.Second)
+	// word. Wait for the turn_end summary naming the tool rather than sleeping a
+	// fixed budget: measurements on the sibling test show turn_end lands ~20-24s
+	// after the tool call, so a 12s sleep truncated the recording this test then
+	// reads. Callbacks are collected, not discarded.
+	teCtx, tecancel := context.WithTimeout(ctx, 45*time.Second)
+	defer tecancel()
+	seen := WaitCallbacksUntil(teCtx, sess, func(cbs []webhook.Callback) bool {
+		return agentTurnEndNamesTool(append(earlyCBs, cbs...), "get_secret_word")
+	})
+	if !agentTurnEndNamesTool(append(earlyCBs, seen...), "get_secret_word") {
+		s.Logf("no turn_end naming get_secret_word within budget; %d callback(s) seen",
+			len(earlyCBs)+len(seen))
+	}
+	// Short pad so TTS finishes streaming into the recording, then stop
+	// recording explicitly rather than relying on teardown ordering.
+	time.Sleep(2 * time.Second)
+	call.StopRecording()
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
@@ -1264,7 +1281,14 @@ func TestVerb_Agent_ToolHook_Arguments(t *testing.T) {
 	// Round-trip corroboration only — the arguments + turn_end assertions
 	// above are the strong proofs that the LLM understood and populated
 	// the tool call correctly.
-	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail")
+	//
+	// Accept EITHER field of the tool result. Both come only from our toolBody,
+	// so one match still proves the result was spoken back, but requiring a
+	// specific word is STT-fragile: "hail" is short and acoustically ambiguous,
+	// and a real run had Deepgram render "heavy hail" as "heavy though". The
+	// spelled-out temperature is far more robust, so it carries the assertion
+	// when the conditions word gets mangled.
+	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail", "seventy one")
 	s.Done()
 }
 

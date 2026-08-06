@@ -13,7 +13,7 @@ import (
 // Webhook mirrors the swagger's Webhook component.
 type Webhook struct {
 	URL      string `json:"url"`
-	Method   string `json:"method,omitempty"`   // "get" | "post"
+	Method   string `json:"method,omitempty"` // "get" | "post"
 	Username string `json:"username,omitempty"`
 	Password string `json:"password,omitempty"`
 }
@@ -25,35 +25,35 @@ type Webhook struct {
 // — they pick a specific SpeechCredential row when the account has multiple
 // under the same vendor.
 type ApplicationCreate struct {
-	Name                     string                 `json:"name"`
-	AccountSID               string                 `json:"account_sid"`
-	CallHook                 Webhook                `json:"call_hook"`
-	CallStatusHook           Webhook                `json:"call_status_hook"`
-	MessagingHook            *Webhook               `json:"messaging_hook,omitempty"`
-	AppJSON                  string                 `json:"app_json,omitempty"`
-	SpeechSynthesisVendor    string                 `json:"speech_synthesis_vendor,omitempty"`
-	SpeechSynthesisLabel     string                 `json:"speech_synthesis_label,omitempty"`
-	SpeechSynthesisVoice     string                 `json:"speech_synthesis_voice,omitempty"`
-	SpeechRecognizerVendor   string                 `json:"speech_recognizer_vendor,omitempty"`
-	SpeechRecognizerLabel    string                 `json:"speech_recognizer_label,omitempty"`
-	SpeechRecognizerLanguage string                 `json:"speech_recognizer_language,omitempty"`
-	EnvVars                  map[string]any         `json:"env_vars,omitempty"`
+	Name                     string         `json:"name"`
+	AccountSID               string         `json:"account_sid"`
+	CallHook                 Webhook        `json:"call_hook"`
+	CallStatusHook           Webhook        `json:"call_status_hook"`
+	MessagingHook            *Webhook       `json:"messaging_hook,omitempty"`
+	AppJSON                  string         `json:"app_json,omitempty"`
+	SpeechSynthesisVendor    string         `json:"speech_synthesis_vendor,omitempty"`
+	SpeechSynthesisLabel     string         `json:"speech_synthesis_label,omitempty"`
+	SpeechSynthesisVoice     string         `json:"speech_synthesis_voice,omitempty"`
+	SpeechRecognizerVendor   string         `json:"speech_recognizer_vendor,omitempty"`
+	SpeechRecognizerLabel    string         `json:"speech_recognizer_label,omitempty"`
+	SpeechRecognizerLanguage string         `json:"speech_recognizer_language,omitempty"`
+	EnvVars                  map[string]any `json:"env_vars,omitempty"`
 }
 
 // Application is the server-returned shape (matches the swagger Application
 // component — all required fields are present, nullable fields decoded as zero-
 // values or *T).
 type Application struct {
-	ApplicationSID           string  `json:"application_sid"`
-	Name                     string  `json:"name"`
-	AccountSID               string  `json:"account_sid"`
-	CallHook                 Webhook `json:"call_hook"`
-	CallStatusHook           Webhook `json:"call_status_hook"`
+	ApplicationSID           string   `json:"application_sid"`
+	Name                     string   `json:"name"`
+	AccountSID               string   `json:"account_sid"`
+	CallHook                 Webhook  `json:"call_hook"`
+	CallStatusHook           Webhook  `json:"call_status_hook"`
 	MessagingHook            *Webhook `json:"messaging_hook,omitempty"`
-	SpeechSynthesisVendor    string  `json:"speech_synthesis_vendor,omitempty"`
-	SpeechSynthesisVoice     string  `json:"speech_synthesis_voice,omitempty"`
-	SpeechRecognizerVendor   string  `json:"speech_recognizer_vendor,omitempty"`
-	SpeechRecognizerLanguage string  `json:"speech_recognizer_language,omitempty"`
+	SpeechSynthesisVendor    string   `json:"speech_synthesis_vendor,omitempty"`
+	SpeechSynthesisVoice     string   `json:"speech_synthesis_voice,omitempty"`
+	SpeechRecognizerVendor   string   `json:"speech_recognizer_vendor,omitempty"`
+	SpeechRecognizerLanguage string   `json:"speech_recognizer_language,omitempty"`
 }
 
 // CreateApplication POSTs /Applications. Returns the new SID.
