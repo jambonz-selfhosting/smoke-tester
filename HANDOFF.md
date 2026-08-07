@@ -409,6 +409,105 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-08-07 — call-leak audit: guaranteed dialog teardown
+
+**Symptom:** after a full suite run (verbs + `-tags drachtio`), jambonz kept
+live calls around. Root cause was teardown-by-happy-path: hangups sat at the
+tail of test bodies, so every `s.Fatalf` / watchdog-timeout path skipped them,
+and `sip.Stack.Stop()` deregistered + closed the UA with no knowledge of live
+dialogs — so a BYE we owed never went out, and jambonz's inbound BYE arrived at
+a closed UA (no 200).
+
+**Fix — one choke point plus a REST backstop:**
+
+- `internal/sip/drain.go` (new): `drainCalls(calls, perCall, total)` hangs every
+  call up concurrently, waits for terminal state, and is bounded by an overall
+  deadline (the hangup itself included — `Call.Hangup` has its own 10s ctx and
+  would otherwise blow the budget). Panic-safe, positional results.
+  `internal/sip/drain_test.go` pins the contract (12 tests, race-clean).
+- `internal/sip/uas.go` / `uac.go`: `Stack` now tracks every `*Call` born on it
+  (`track()` in both `Invite` and `dispatchInbound`); `Stop()` drains live calls
+  **before** the deregister → cancel → `ua.Close()` sequence, and `slog.Warn`s
+  any that didn't end cleanly. Since every test gets its stack from `claimUAS`,
+  whose `t.Cleanup` calls `Stop()`, teardown is now guaranteed on *every* exit
+  path with zero per-test wiring. Also deleted a dead ctx-watcher goroutine.
+- `tests/verbs/helpers_test.go`: `claimUAS`'s inbound handler selects on the
+  stack ctx as well as `call.Done()`, so `dispatchInbound`'s safety-net hangup
+  becomes reachable for abandoned legs; `placeWebhookCallToNoWait` now registers
+  a `t.Cleanup` DELETE (hand-rolled rather than `provision.ManagedCall`, which
+  raises a raw `t.Fatalf` that would bypass the FAILURE SUMMARY).
+- `tests/verbs/builtin_hangup_test.go` (`inviteInbound`) and `answer_test.go`:
+  `t.Cleanup(call.Hangup)` registered immediately after `Invite`, before the
+  first assertion that can `Fatalf`. `inviteInbound`'s app deliberately has no
+  trailing hangup verb, so nothing else would ever have ended those calls.
+- `tests/drachtio/main_test.go`: suite `app_json` gains a trailing
+  `{"verb":"hangup"}` so an abandoned dialog dies at pause end. The 150s pause
+  stays (session-timer tests need `sessionInterval + 30` = 120s).
+- `internal/provision/calls.go` + `suite.go`: `ListLiveCalls()` (GET
+  `/Accounts/{sid}/Calls`, contract-validated against the new
+  `schemas/rest/calls/listCalls.response.200.json`), `CallSummary.IsLive()`,
+  `HangupCall()`, and a sweep at the head of `SuiteAccount.Teardown`.
+  `internal/provision/calls_list_test.go` covers it (8 tests, httptest).
+
+**⚠ The most important thing learned this session — `DeleteCall` does not hang
+up a call.** `DELETE /Accounts/{sid}/Calls/{callSid}`
+(`api-server/lib/routes/api/accounts.js:1052`) resolves to
+`@jambonz/realtimedb-helpers/lib/delete-call.js`, which is only
+`redis.multi().del(key).zrem(CALL_SET, key)`. It never signals the
+feature-server. It returns 204 while the SIP dialog stays up — and it deletes
+the Redis record that made the leak discoverable, so it makes a leak *invisible*
+rather than fixing it. The only REST path that actually ends a call is
+`POST /Accounts/{sid}/Calls/{callSid}` with `{"call_status":"completed"}` →
+`${call.serviceUrl}/v1/updateCall/{sid}` → feature-server `_lccCallStatus` →
+`_jambonzHangup()`, acked 202. That is now wrapped as `Client.HangupCall`, and
+every cleanup path calls it *before* `DeleteCall`. `provision.ManagedCall`'s doc
+("hangs it up if still active") has been wrong since it was written.
+
+Related: `GET /Accounts/{sid}/Calls` is **not** filtered to live calls.
+`list-calls.js` filters by `callStatus` only when the caller passes that query
+param, and `update-call-status.js` leaves completed calls in `CALL_SET` for
+`MAX_CALL_LIFETIME_AFTER_COMPLETED` (default 3600s). A whole run's completed
+calls come back — hence `CallSummary.IsLive()`, which callers MUST apply.
+
+**Also fixed (found in review):**
+
+- `Call.Hangup()` ran `stopMedia()` *before* the BYE, and `stopMedia` waited
+  unbounded on the audio pump — which blocks in an RTP read with **no read
+  deadline**. A far end that stopped sending RTP (exactly the stalled-call case)
+  wedged `Hangup` forever and the BYE never went out. Now bounded by
+  `recordingStopGrace` (2s), after which the recording is abandoned (file
+  deliberately NOT closed — the pump goroutine is still writing to it). The
+  order was left alone on purpose: BYE-first would surface a "use of closed
+  connection" error into `Call.Err()` and change what tests observe.
+- The `hctx` fix was initially applied to only one of four inbound handlers.
+  `tests/verbs/dial_srtp_test.go`, `dial_nat_tls_ack_test.go` and
+  `cmd/probe/main.go` had the same unconditional `<-call.Done()`.
+- Both probe tests registered `t.Cleanup(probe.Stop)` *before*
+  `t.Cleanup(closeTun)`, so LIFO tore the ngrok tunnel down first and the
+  drain's BYE had no transport to travel on. A second (idempotent) `probe.Stop`
+  registration after `closeTun` fixes the order.
+- `tests/verbs/lcc_transfer_test.go:50` was the only asserting goroutine in
+  `tests/verbs` with no `t.Cleanup` join; on an early Goexit the drain could
+  race it into a spurious `[target:answer] FAILED` summary line.
+- The drachtio trailing `hangup` verb turns out to be **inert** — the
+  feature-server's `_clearResources` already BYEs at end-of-application. Kept
+  for explicitness; the comment now says so rather than claiming it bounds
+  anything.
+
+**Verified:** `go build ./...`, `go vet ./...`, `go test -race ./internal/...`
+all green; `tests/verbs` and `tests/drachtio` compile. Two adversarial review
+passes; verdict **assertion-neutral** — no passing test's meaning changed.
+**Not** run against the live cluster — next full run should show zero live calls
+at teardown, with any straggler surfacing as a
+`sip: call did not end cleanly at stack stop` warning.
+
+**Known residuals:** `tport_reconnect_test.go`'s post-reconnect deregister 403s
+(acknowledged in-code), so that registration lingers until the 300s expiry —
+registrations, not calls. Pre-existing and untouched: the `WithTimeout` watchdog
+can `t.Errorf` after the test completes (`helpers_test.go:1599`, `Timer.Stop()`
+doesn't wait for a firing callback), and `claimUAS2` deadlocks if `claimUAS`
+Goexits in the child goroutine (`helpers_test.go:159`).
+
 ### 2026-07-14 — onHoldHook + transfer-kill coverage (feature-server transfer fixes)
 
 **Scope:** the feature-server gained (a) onHoldHook execution on warm/parked

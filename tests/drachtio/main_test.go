@@ -88,14 +88,26 @@ func TestMain(m *testing.M) {
 	// feature-server short-circuits on app_json and never fetches the hook
 	// URL at call time, so no webhook server is needed here. answer, then a
 	// long pause so session-timer refreshes/expiries have room to occur
-	// mid-call.
+	// mid-call. The trailing hangup makes the app's self-termination
+	// explicit rather than relying on feature-server end-of-application
+	// behaviour (_clearResources already sends a BYE once the app's verb
+	// list runs out, so the call would end at the pause's expiry either
+	// way) — it does not change when the call ends. The pause length (150s)
+	// must stay comfortably above the session-timer tests' longest required
+	// in-call window: TestDrachtio_SessionTimer_UACRefresherKeepalive
+	// (tests/drachtio/session_timer_test.go) sends two refreshes at
+	// delta/2 apart (2*(delta/2) == sessionInterval, since the SBC's
+	// Min-SE=90 floor equals the offered sessionInterval) and then asserts
+	// the call is STILL UP 30s after that — a required in-call floor of
+	// sessionInterval + 30s == 120s. 150s clears that by a 30s margin, so
+	// do not shorten it.
 	appCtx, appCancel := context.WithTimeout(context.Background(), 30*time.Second)
 	appSID, err = client.CreateApplication(appCtx, provision.ApplicationCreate{
 		Name:           provision.Name("drachtio-app"),
 		AccountSID:     suite.AccountSID,
 		CallHook:       provision.Webhook{URL: "https://example.invalid/hook", Method: "POST"},
 		CallStatusHook: provision.Webhook{URL: "https://example.invalid/status", Method: "POST"},
-		AppJSON:        `[{"verb":"answer"},{"verb":"pause","length":150}]`,
+		AppJSON:        `[{"verb":"answer"},{"verb":"pause","length":150},{"verb":"hangup"}]`,
 	})
 	appCancel()
 	if err != nil {

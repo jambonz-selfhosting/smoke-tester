@@ -146,13 +146,20 @@ func main() {
 		Pass:      password,
 		Transport: "tcp",
 		Resolver:  resolver.Resolver(),
-	}, func(_ context.Context, call *jsip.Call) error {
+	}, func(hctx context.Context, call *jsip.Call) error {
 		log.Printf("  INVITE received: From=%s To=%s", call.From(), call.To())
 		select {
 		case inbound <- call:
 		default:
 		}
-		<-call.Done()
+		// Honour the stack's serve ctx: when Stack.Stop cancels it, return so
+		// dispatchInbound's safety-net Hangup runs on a leg the caller
+		// abandoned. Blocking unconditionally leaves the leg until jambonz's
+		// own timers fire.
+		select {
+		case <-call.Done():
+		case <-hctx.Done():
+		}
 		return nil
 	})
 	if err != nil {

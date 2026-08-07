@@ -45,9 +45,18 @@ func TestLCC_Transfer_BlindDial(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "spawn-target-goroutine")
+	targetCtx, targetCancel := context.WithCancel(ctx)
 	targetDone := make(chan struct{})
 	var targetCall *jsip.Call
-	go answerAndIdleTarget(t, ctx, targetUAS, targetDone, &targetCall)()
+	go answerAndIdleTarget(t, targetCtx, targetUAS, targetDone, &targetCall)()
+	// Always join the goroutine, even if a later Step fatals (t.Fatalf →
+	// runtime.Goexit skips the explicit <-targetDone below). Registered after
+	// the spawn so it runs (LIFO) before claimUAS's stk.Stop and before
+	// WithTimeout's ctx-cancel, while t is still valid.
+	t.Cleanup(func() {
+		targetCancel()
+		<-targetDone
+	})
 	s.Done()
 
 	s = Step(t, "place-caller")

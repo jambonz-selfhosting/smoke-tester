@@ -97,13 +97,86 @@ func (c *Client) UpdateCall(ctx context.Context, callSID string, body any) error
 	return err
 }
 
-// DeleteCall ends a live call (204). Idempotent on 404.
+// DeleteCall removes the call's record from jambonz's Redis store (204).
+// It does NOT hang up a live dialog — the api-server's delete handler only
+// touches Redis and never signals the feature-server. To actually end a call
+// use HangupCall. Idempotent on 404.
 func (c *Client) DeleteCall(ctx context.Context, callSID string) error {
 	if c.accountSID == "" {
 		return fmt.Errorf("DeleteCall requires an account-scoped client")
 	}
 	path := "/Accounts/" + c.accountSID + "/Calls/" + callSID
 	_, err := c.Request(ctx, http.MethodDelete, path, nil, "", http.StatusNoContent)
+	if err != nil {
+		var apiErr *APIError
+		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {
+			return nil
+		}
+		return err
+	}
+	return nil
+}
+
+// CallSummary is the subset of a listed live call the harness needs.
+type CallSummary struct {
+	CallSID    string `json:"call_sid"`
+	CallStatus string `json:"call_status"`
+	Direction  string `json:"direction"`
+	From       string `json:"from"`
+	To         string `json:"to"`
+}
+
+// liveCallStatuses are the jambonz call_status values that mean the call is
+// still up. Completed calls linger in Redis for up to an hour
+// (MAX_CALL_LIFETIME_AFTER_COMPLETED) and are still returned by ListLiveCalls,
+// so callers must filter.
+var liveCallStatuses = map[string]bool{
+	"trying": true, "ringing": true, "early-media": true,
+	"in-progress": true, "queued": true,
+}
+
+// IsLive reports whether the call is still up. An empty call_status is
+// treated as live: better to send a redundant hangup than to skip a leak.
+func (c CallSummary) IsLive() bool {
+	if c.CallStatus == "" {
+		return true
+	}
+	return liveCallStatuses[c.CallStatus]
+}
+
+// ListLiveCalls GETs /Accounts/{AccountSid}/Calls. Despite the method name,
+// jambonz returns recent calls in ANY call_status, not only live ones:
+// @jambonz/realtimedb-helpers' list-calls.js filters by callStatus only when
+// the caller passes that query param (which this client does not), and
+// update-call-status.js leaves a completed call in Redis's CALL_SET for
+// MAX_CALL_LIFETIME_AFTER_COMPLETED (default 3600s) instead of removing it.
+// So a whole run's already-COMPLETED calls come back too. Callers MUST
+// filter with CallSummary.IsLive() — see SuiteAccount.Teardown for the
+// pattern this endpoint requires. Requires an account-scoped client.
+func (c *Client) ListLiveCalls(ctx context.Context) ([]CallSummary, error) {
+	if c.accountSID == "" {
+		return nil, fmt.Errorf("ListLiveCalls requires an account-scoped client")
+	}
+	path := "/Accounts/" + c.accountSID + "/Calls"
+	raw, err := c.Request(ctx, http.MethodGet, path, nil,
+		"rest/calls/listCalls.response.200.json", http.StatusOK)
+	if err != nil {
+		return nil, err
+	}
+	var calls []CallSummary
+	if err := json.Unmarshal(raw, &calls); err != nil {
+		return nil, fmt.Errorf("decode listCalls: %w", err)
+	}
+	return calls, nil
+}
+
+// HangupCall ends a live call the way jambonz actually supports it: a Live
+// Call Control POST with call_status=completed, which the api-server relays
+// to the feature-server's updateCall handler (DELETE only drops the Redis
+// record). 404 is treated as success so cleanup is idempotent. Best-effort:
+// jambonz acknowledges with 202 and applies the hangup asynchronously.
+func (c *Client) HangupCall(ctx context.Context, callSID string) error {
+	err := c.UpdateCall(ctx, callSID, map[string]any{"call_status": "completed"})
 	if err != nil {
 		var apiErr *APIError
 		if errors.As(err, &apiErr) && apiErr.Status == http.StatusNotFound {

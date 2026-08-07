@@ -123,6 +123,33 @@ func (s *SuiteAccount) Teardown(ctx context.Context) []error {
 
 	var errs []error
 
+	// Backstop: hang up any call still live under this account. In-process
+	// cleanup (SIP stack drain + per-test t.Cleanup) covers legs the harness
+	// held a *jsip.Call for, but it never held one for: dial B-legs, and
+	// UAC-originated calls placed via Stack.Invite where jambonz assigns the
+	// SID. It also catches anything an in-process cleanup itself failed to
+	// end. HangupCall runs first because that's the command that actually
+	// ends the dialog; DeleteCall afterward just tidies the Redis record.
+	// Runs in its own bounded sub-context so a slow sweep can't eat into the
+	// budget the client-deletion + DeleteAccount calls below share via cctx.
+	sweepCtx, sweepCancel := context.WithTimeout(cctx, 20*time.Second)
+	if live, err := s.AccountClient.ListLiveCalls(sweepCtx); err != nil {
+		errs = append(errs, fmt.Errorf("list live calls: %w", err))
+	} else {
+		for _, lc := range live {
+			if !lc.IsLive() {
+				continue
+			}
+			if err := s.AccountClient.HangupCall(sweepCtx, lc.CallSID); err != nil {
+				errs = append(errs, fmt.Errorf("hangup live call %s: %w", lc.CallSID, err))
+			}
+			if err := s.AccountClient.DeleteCall(sweepCtx, lc.CallSID); err != nil {
+				errs = append(errs, fmt.Errorf("delete live call %s: %w", lc.CallSID, err))
+			}
+		}
+	}
+	sweepCancel()
+
 	// Enumerate clients via SP scope (it sees all clients under the SP);
 	// filter client-side to match THIS account.
 	clients, err := s.SPClient.ListSIPClientsForAccount(cctx, s.AccountSID)

@@ -1,0 +1,28 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$comment": "TODO: upstream — hand-derived from api-server/lib/swagger/swagger.yaml operationId: listCalls (components.schemas.Call), because upstream publishes OpenAPI, not JSON Schema, for REST.",
+  "title": "listCalls 200 response",
+  "description": "GET /Accounts/{AccountSid}/Calls — 200 returns a bare JSON array of Call (only calls still live; completed calls move to RecentCalls). Snake_case keys per accounts.js handler (snakeCase(calls)).",
+  "type": "array",
+  "items": {
+    "type": "object",
+    "required": ["call_sid"],
+    "properties": {
+      "account_sid": { "type": ["string", "null"] },
+      "application_sid": { "type": ["string", "null"] },
+      "call_id": { "type": ["string", "null"] },
+      "call_sid": { "type": "string" },
+      "call_status": { "type": ["string", "null"] },
+      "caller_name": { "type": ["string", "null"] },
+      "direction": { "type": ["string", "null"] },
+      "duration": { "type": ["number", "null"] },
+      "from": { "type": ["string", "null"] },
+      "originating_sip_trunk_name": { "type": ["string", "null"] },
+      "parent_call_sid": { "type": ["string", "null"] },
+      "service_url": { "type": ["string", "null"] },
+      "sip_status": { "type": ["number", "null"] },
+      "to": { "type": ["string", "null"] }
+    },
+    "additionalProperties": true
+  }
+}

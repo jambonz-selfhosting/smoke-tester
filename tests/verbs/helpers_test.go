@@ -103,7 +103,7 @@ func claimUAS(t *testing.T, ctx context.Context) *UAS {
 		// recording archives (RECORD_LEGS, ADR-0016) land under
 		// recordings/<test>/<leg>.wav with zero per-test wiring.
 		Owner: t.Name(),
-	}, func(_ context.Context, call *jsip.Call) error {
+	}, func(hctx context.Context, call *jsip.Call) error {
 		// Best-effort handoff: if the test's select has already picked up
 		// or the test ended, drop the call rather than leak the goroutine.
 		select {
@@ -114,7 +114,15 @@ func claimUAS(t *testing.T, ctx context.Context) *UAS {
 			_ = call.Reject(486, "Busy Here")
 			return nil
 		}
-		<-call.Done()
+		// Honour the stack's serve ctx: when Stack.Stop cancels it, return so
+		// dispatchInbound's safety-net Hangup runs on any leg the test
+		// abandoned (Errorf-then-return paths, watchdog timeouts). Blocking
+		// unconditionally here strands the leg — and the goroutine — until
+		// jambonz's own timeLimit fires.
+		select {
+		case <-call.Done():
+		case <-hctx.Done():
+		}
 		return nil
 	})
 	if err != nil {
@@ -279,7 +287,8 @@ func placeWebhookCallTo(ctx context.Context, t *testing.T, uas *UAS, session *we
 // placeWebhookCallToNoWait is placeWebhookCallTo without the inbound-INVITE
 // wait — for the side of a multi-leg test that doesn't need the *jsip.Call
 // (it'll be picked up off uas.Inbound by a goroutine instead). Returns the
-// jambonz call_sid so the caller can DeleteCall it later.
+// jambonz call_sid so the caller can DeleteCall it later. Cleanup of the leg
+// is guaranteed even if the caller never gets that far.
 func placeWebhookCallToNoWait(ctx context.Context, t *testing.T, uas *UAS, session *webhook.Session, extras ...func(*provision.CallCreate)) string {
 	t.Helper()
 	requireWebhook(t)
@@ -302,6 +311,24 @@ func placeWebhookCallToNoWait(ctx context.Context, t *testing.T, uas *UAS, sessi
 	if err != nil {
 		helperFatalf(t, "create-call", "%v", err)
 	}
+	// Guaranteed hangup+delete, so a mid-test Fatalf can't strand this leg on
+	// jambonz until its 20s timeLimit. Hand-rolled rather than
+	// provision.ManagedCall because that helper raises a raw t.Fatalf on
+	// create failure, which skips the run's FAILURE SUMMARY; helperFatalf
+	// above records it. HangupCall actually ends the dialog (DELETE only
+	// drops the Redis record); DeleteCall afterward tidies the record.
+	// Callers that hang up the leg themselves mid-test are unaffected — both
+	// calls are idempotent on 404.
+	t.Cleanup(func() {
+		cctx, cancel := context.WithTimeout(context.Background(), 10*time.Second)
+		defer cancel()
+		if err := client.HangupCall(cctx, sid); err != nil {
+			t.Logf("cleanup: hangup call %s: %v", sid, err)
+		}
+		if err := client.DeleteCall(cctx, sid); err != nil {
+			t.Logf("cleanup: delete call %s: %v", sid, err)
+		}
+	})
 	return sid
 }
 

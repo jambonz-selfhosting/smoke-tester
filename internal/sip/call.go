@@ -1230,6 +1230,10 @@ func (c *Call) SendSilence() error {
 	return nil
 }
 
+// recordingStopGrace bounds how long stopMedia waits for the audio pump to
+// exit. Short on purpose: it sits in front of the BYE in Hangup.
+const recordingStopGrace = 2 * time.Second
+
 func (c *Call) stopMedia() {
 	c.mediaMu.Lock()
 	if c.silenceCancel != nil {
@@ -1241,9 +1245,21 @@ func (c *Call) stopMedia() {
 	c.mediaMu.Unlock()
 	if rec != nil {
 		rec.cancel()
-		<-rec.done
-		_ = rec.file.Close()
-		c.finalizeRecording(rec)
+		select {
+		case <-rec.done:
+			_ = rec.file.Close()
+			c.finalizeRecording(rec)
+		case <-time.After(recordingStopGrace):
+			// The audio pump blocks in an RTP read with no deadline, so a
+			// far end that stopped sending RTP would wedge us here forever —
+			// and stopMedia runs BEFORE the BYE in Hangup, so that wedge is
+			// exactly how a call leaks on the cluster. Give up on the
+			// recording rather than block the hangup. Deliberately do NOT
+			// close the file or finalize: the pump goroutine is still live
+			// and still writing to it.
+			slog.Warn("sip: audio pump did not stop in time; abandoning recording so the hangup can proceed",
+				"call_id", c.CallID(), "grace", recordingStopGrace)
+		}
 	}
 }
 

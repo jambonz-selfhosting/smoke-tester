@@ -51,14 +51,21 @@ func TestVerb_Dial_Sip_SRTP_TLS(t *testing.T) {
 		TLSBindPort: localPort,
 		LogLevel:    cfg.LogLevel,
 		Owner:       t.Name(),
-	}, func(_ context.Context, call *jsip.Call) error {
+	}, func(hctx context.Context, call *jsip.Call) error {
 		select {
 		case probeInbound <- call:
 		default:
 			_ = call.Reject(486, "Busy Here")
 			return nil
 		}
-		<-call.Done()
+		// Honour the stack's serve ctx: when Stack.Stop cancels it, return so
+		// dispatchInbound's safety-net Hangup runs on a leg the test
+		// abandoned. Blocking unconditionally leaves the leg until jambonz's
+		// own timers fire.
+		select {
+		case <-call.Done():
+		case <-hctx.Done():
+		}
 		return nil
 	})
 	if err != nil {
@@ -70,6 +77,12 @@ func TestVerb_Dial_Sip_SRTP_TLS(t *testing.T) {
 	s = Step(t, "open-ngrok-tcp-tunnel")
 	host, pubPort, closeTun := startSIPTCPTunnel(t, localPort)
 	t.Cleanup(closeTun)
+	// LIFO: this runs before closeTun, so Stack.Stop's drain can still reach
+	// the cluster through the tunnel to BYE any leg the probe still holds.
+	// The earlier t.Cleanup(probe.Stop) above stays as the safety net for a
+	// Fatalf during tunnel setup; Stop is idempotent (sync.Once), so the
+	// second invocation is a no-op.
+	t.Cleanup(probe.Stop)
 	s.Logf("tunnel tcp://%s:%d -> 127.0.0.1:%d", host, pubPort, localPort)
 	s.Done()
 

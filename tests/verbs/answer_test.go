@@ -86,6 +86,10 @@ func TestVerb_Answer_Basic(t *testing.T) {
 	if err != nil {
 		s.Fatalf("Invite: %v", err)
 	}
+	// Teardown owner for this leg, registered before any assertion that can
+	// Fatalf. Hangup is idempotent, so the app self-hanging up first (the
+	// happy path) leaves the assertions untouched.
+	t.Cleanup(func() { _ = call.Hangup() })
 	s.Done()
 
 	s = Step(t, "assert-answered-200")

@@ -209,6 +209,14 @@ func inviteInbound(s *StepCtx, ctx context.Context, uas *UAS, testID, appSuffix 
 	if err != nil {
 		s.Fatalf("Invite %s: %v", dest, err)
 	}
+	// Teardown owner for this leg. Registered here, before the first
+	// assertion that can Fatalf, so an early failure (e.g. the LLM tool
+	// never fires and waitServerBye times out) can't strand the call on
+	// jambonz — this app deliberately has no trailing hangup verb, so
+	// nothing else would ever end it. Hangup is idempotent and a no-op
+	// once the server's BYE has already ended the call, so the happy-path
+	// "remote-bye" assertions are unaffected.
+	s.t.Cleanup(func() { _ = call.Hangup() })
 	if got := call.AnsweredStatus(); got != 200 {
 		s.Fatalf("inbound INVITE answered status: got %d want 200", got)
 	}

@@ -76,6 +76,11 @@ type Stack struct {
 
 	handlerMu sync.RWMutex
 	handler   InboundHandler
+
+	// calls tracks every Call born on this stack (UAC via Invite, UAS via
+	// dispatchInbound) so Stop can drain any that are still live.
+	callsMu sync.Mutex
+	calls   []*Call
 }
 
 // Start constructs a Stack, registers (if SIPDomain/User/Pass are set), and
@@ -153,16 +158,64 @@ func (s *Stack) SetHandler(h InboundHandler) {
 	s.handlerMu.Unlock()
 }
 
-// Stop deregisters (over the live registration connection) then cancels the
-// serve loop and closes the UA. Safe to call more than once.
+// track records a live call on this stack so Stop can drain it.
+func (s *Stack) track(c *Call) {
+	if c == nil {
+		return
+	}
+	s.callsMu.Lock()
+	s.calls = append(s.calls, c)
+	s.callsMu.Unlock()
+}
+
+// liveCalls snapshots the calls that have not reached a terminal state.
+func (s *Stack) liveCalls() []drainable {
+	s.callsMu.Lock()
+	calls := make([]*Call, len(s.calls))
+	copy(calls, s.calls)
+	s.callsMu.Unlock()
+
+	live := make([]drainable, 0, len(calls))
+	for _, c := range calls {
+		select {
+		case <-c.Done():
+			// already ended; nothing to drain
+		default:
+			live = append(live, c)
+		}
+	}
+	return live
+}
+
+// Stop drains any calls still live on this stack, deregisters (over the live
+// registration connection), then cancels the serve loop and closes the UA.
+// Safe to call more than once.
 //
-// Order matters: the de-REGISTER must go out BEFORE s.cancel() tears down
-// the transport, so sipgo reuses the same TCP connection — and thus the same
-// local source port — that the original REGISTER created. The registrar
-// matches the de-REGISTER to that binding only when the source port matches;
+// Order matters: the drain must run BEFORE the de-REGISTER, because sending
+// a BYE for a live dialog needs the same live transport the de-REGISTER
+// needs — draining after would race the connection teardown below. The
+// de-REGISTER itself must go out BEFORE s.cancel() tears down the transport,
+// so sipgo reuses the same TCP connection — and thus the same local source
+// port — that the original REGISTER created. The registrar matches the
+// de-REGISTER to that binding only when the source port matches;
 // deregistering on a fresh ephemeral port gets a 403.
 func (s *Stack) Stop() {
 	s.stopOnce.Do(func() {
+		// Drain first: a test that hit t.Fatalf mid-call, or whose callee
+		// goroutine abandoned a leg, never sends BYE. Without this, jambonz's
+		// inbound BYE arrives at a UA we've already closed and the session
+		// leaks server-side.
+		if live := s.liveCalls(); len(live) > 0 {
+			slog.Debug("sip: draining live calls at stack stop", "user", s.cfg.User, "count", len(live))
+			results := drainCalls(live, 5*time.Second, 10*time.Second)
+			for _, r := range results {
+				if !r.Ended || r.HangupErr != nil {
+					slog.Warn("sip: call did not end cleanly at stack stop",
+						"user", s.cfg.User, "callID", r.CallID, "ended", r.Ended, "err", r.HangupErr)
+				}
+			}
+		}
+
 		if s.regTx != nil {
 			// Fresh, short ctx: s.ctx may already be near its deadline, and
 			// the deregister is best-effort cleanup either way.
@@ -226,6 +279,7 @@ func (s *Stack) register() error {
 // configured handler.
 func (s *Stack) dispatchInbound(d *diago.DialogServerSession) {
 	call := newInboundCall(d, s.cfg.Owner)
+	s.track(call)
 	slog.Info("sip: inbound call",
 		"call_id", call.CallID(),
 		"from", call.From(),

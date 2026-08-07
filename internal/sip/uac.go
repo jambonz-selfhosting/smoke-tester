@@ -118,6 +118,9 @@ func (s *Stack) Invite(ctx context.Context, dest string, opts InviteOptions) (*C
 		return nil, fmt.Errorf("invite: %w", err)
 	}
 	call := newOutboundCall(dialog, s.cfg.Owner)
+	// Register with the stack immediately so Stop() can drain this call if
+	// the test never gets around to Hangup (e.g. t.Fatalf mid-call).
+	s.track(call)
 	// The dialog is already in the "answered" state after a blocking Invite.
 	call.setState(StateAnswered, "")
 	// Record the final 2xx response from the peer so tests can assert on
@@ -134,11 +137,5 @@ func (s *Stack) Invite(ctx context.Context, dest string, opts InviteOptions) (*C
 	call.codec = props.Codec.Name
 	call.mediaMu.Unlock()
 
-	// Start a watcher that flips to StateEnded when the dialog terminates.
-	go func() {
-		<-ctx.Done()
-		// best-effort: if dialog still active when ctx is cancelled, we
-		// rely on the caller's Hangup; no extra action.
-	}()
 	return call, nil
 }
