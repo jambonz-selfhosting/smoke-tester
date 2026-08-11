@@ -1,4 +1,4 @@
-.PHONY: help build test test-rest test-sip test-verbs test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio lint clean deps
+.PHONY: help build test test-rest test-sip test-verbs test-release-gate test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio lint clean deps
 
 # Parallelism: default to min(NumCPU, 4). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
@@ -20,6 +20,14 @@
 #   make test PARALLEL=8
 # Or to debug serially:
 #   make test PARALLEL=1
+# One RUN_ID shared by every test package of a single make invocation.
+# `make test` runs tests/rest and tests/verbs as concurrent processes; if
+# each minted its own per-process runID, each package's account sweeper
+# would see the other's live suite account as a stale orphan and delete it
+# mid-run (cascading its api_keys → 401s). ?= respects an explicit
+# RUN_ID=... override on the command line or in the environment.
+export RUN_ID ?= $(shell openssl rand -hex 4)
+
 NUM_CPU := $(shell sysctl -n hw.ncpu 2>/dev/null || nproc 2>/dev/null || echo 4)
 PARALLEL ?= $(shell echo $$(( $(NUM_CPU) < 4 ? $(NUM_CPU) : 4 )))
 
@@ -75,7 +83,7 @@ build:
 # use `./...` because that would walk every package and emit a noisy
 # `[no test files]` line for each one. `make build` already verifies
 # the non-test packages compile; here we only want to run real tests.
-TEST_PACKAGES := ./tests/... ./internal/contract/...
+TEST_PACKAGES := ./tests/... ./internal/contract/... ./internal/provision/...
 
 # Per-package timeouts. Sized to ~2× the observed parallel runtime, so
 # one wedged test can hang past its in-test watchdog without the suite
@@ -86,17 +94,62 @@ TEST_PACKAGES := ./tests/... ./internal/contract/...
 #   verbs: ~80-90s observed parallel → 180s
 #   rest:  ~22s   observed parallel → 60s
 #   all:   verbs + rest serial      → 300s
+#
+# The defaults assume a well-resourced cluster near the harness. Against a
+# small or distant cluster (e.g. a release-gate mini in another region),
+# every call stretches and the verbs package can overrun — override with
+# TIMEOUT, e.g.:  make test-verbs TIMEOUT=600s
+TIMEOUT ?= 300s
+TIMEOUT_VERBS ?= $(TIMEOUT)
+
 test:
-	go test -count=1 -timeout 300s -parallel $(PARALLEL) $(TEST_PACKAGES)
+	go test -count=1 -timeout $(TIMEOUT) -parallel $(PARALLEL) $(TEST_PACKAGES)
 
 test-rest:
-	go test -count=1 -timeout 60s -parallel $(PARALLEL) ./tests/rest/...
+	go test -count=1 -timeout 120s -parallel $(PARALLEL) ./tests/rest/...
 
 test-sip:
 	go test -count=1 -timeout 180s -parallel $(PARALLEL) ./tests/sip/...
 
 test-verbs:
-	go test -count=1 -timeout 180s -parallel $(PARALLEL) ./tests/verbs/...
+	go test -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) ./tests/verbs/...
+
+# Release-gate subset: platform-path tests with DETERMINISTIC pass
+# conditions, for smoke testing a freshly built image/deployment (the fatp
+# release pipeline). Excludes the Agent_*/LLM_* families (an LLM's choice
+# must never decide a release) and vendor-matrix coverage (Murf, xai,
+# Dialogflow, S2S vendors) — vendor regressions belong to app-repo CI, not
+# an image gate. Deepgram is the one speech vendor exercised, as the
+# platform's TTS/STT workhorse path.
+RELEASE_GATE_VERBS := \
+	TestVerb_Answer_Basic \
+	TestVerb_Hangup_Basic \
+	TestVerb_Hangup_WithHeaders \
+	TestVerb_Pause_1s \
+	TestVerb_Play_Basic \
+	TestVerb_Play_ArrayOfURLs \
+	TestVerb_Say_Basic \
+	TestVerb_Say_Loop2 \
+	TestVerb_Gather_Digits \
+	TestVerb_Gather_Speech \
+	TestVerb_Dtmf_SingleDigit \
+	TestVerb_Dtmf_MultiDigit \
+	TestVerb_Listen_Basic \
+	TestVerb_Transcribe_Basic \
+	TestVerb_Dial_User_Bridge \
+	TestVerb_Conference_TwoParty \
+	TestVerb_Enqueue_Dequeue_Bridge \
+	TestVerb_Transfer_Blind \
+	TestVerb_Redirect_FetchesNewHook \
+	TestVerb_Tag_DataInCallbacks
+
+# `\|` join -> ^(A|B|...)$ anchored regex for -run
+release_gate_pattern = $(shell echo "$(strip $(RELEASE_GATE_VERBS))" | tr ' ' '|')
+
+test-release-gate:
+	go test -count=1 -timeout 120s -parallel $(PARALLEL) ./tests/rest/...
+	go test -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) \
+		-run "^($(release_gate_pattern))$$" ./tests/verbs/...
 
 # Run a single test by typing its name as the make goal:
 #

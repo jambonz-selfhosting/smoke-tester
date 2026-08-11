@@ -56,7 +56,7 @@ func TestMain(m *testing.M) {
 		provision.WithLabel("sp"))
 
 	// Sweep stale ephemeral accounts from previous (crashed) runs.
-	swept, err := (&provision.AccountSweeper{C: sp}).Sweep(provision.RunID())
+	swept, err := (&provision.AccountSweeper{C: sp, MinAge: cfg.OrphanTTL}).Sweep(provision.RunID())
 	if err != nil {
 		log.Printf("tests/drachtio: account sweep failed: %v", err)
 	} else if swept > 0 {
