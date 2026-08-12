@@ -6,6 +6,7 @@ package sip
 
 import (
 	"context"
+	"errors"
 	"fmt"
 	"log/slog"
 	"net"
@@ -235,7 +236,49 @@ func (s *Stack) Stop() {
 	})
 }
 
+// registerAttempts bounds the retry loop in register(). Under heavy parallel
+// stack churn, sipgo's TCP transport occasionally closes a connection right
+// after the REGISTER goes out on it (the "TCP ref went negative" refcount
+// bug — drachtio sees our FIN arrive 0.2ms behind the REGISTER), so the 401
+// challenge has no path back and the attempt dies on Timer_B after ~32s.
+// The poisoned connection is already gone by then; a fresh transaction on a
+// fresh connection succeeds, so a bounded retry converts a hard claimUAS
+// fatal into a logged hiccup. SIP-level rejections (401 with bad creds,
+// 403) are returned immediately — retrying can't fix credentials, and some
+// tests assert on them.
+const registerAttempts = 3
+
 func (s *Stack) register() error {
+	var lastErr error
+	for attempt := 1; attempt <= registerAttempts; attempt++ {
+		err := s.registerOnce()
+		if err == nil {
+			if attempt > 1 {
+				slog.Info("sip: register succeeded after retry",
+					"user", s.cfg.User, "attempt", attempt)
+			}
+			return nil
+		}
+		lastErr = err
+		var rejected *diago.RegisterResponseError
+		if errors.As(err, &rejected) {
+			// The registrar answered with a final non-2xx: a real rejection,
+			// not a transport failure.
+			return err
+		}
+		if s.ctx.Err() != nil {
+			return err
+		}
+		if attempt < registerAttempts {
+			slog.Warn("sip: register attempt failed, retrying",
+				"user", s.cfg.User, "attempt", attempt, "err", err)
+			time.Sleep(time.Duration(attempt) * 500 * time.Millisecond)
+		}
+	}
+	return lastErr
+}
+
+func (s *Stack) registerOnce() error {
 	params := sip.NewParams()
 	params.Add("transport", s.cfg.Transport)
 	regURI := sip.Uri{User: s.cfg.User, Host: s.cfg.SIPDomain, UriParams: params}

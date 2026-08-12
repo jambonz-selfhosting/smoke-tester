@@ -101,6 +101,13 @@ TEST_PACKAGES := ./tests/... ./internal/contract/... ./internal/provision/...
 # TIMEOUT, e.g.:  make test-verbs TIMEOUT=600s
 TIMEOUT ?= 300s
 TIMEOUT_VERBS ?= $(TIMEOUT)
+# test-report runs the WHOLE suite (154 tests and growing) in one go test
+# invocation, so it needs a far larger budget than any single package: at
+# -parallel 4 the full suite is ~10 minutes wall-clock. When the go-test
+# timeout fires mid-run it kills every in-flight test, which reads as a
+# mass failure — if report.html shows dozens of tests cut off mid-step,
+# raise this before suspecting the cluster.
+TIMEOUT_REPORT ?= 900s
 
 test:
 	go test -count=1 -timeout $(TIMEOUT) -parallel $(PARALLEL) $(TEST_PACKAGES)
@@ -250,7 +257,7 @@ test-report:
 	@# `go test -json` streams NDJSON test events; cmd/testreport renders
 	@# them into a self-contained HTML file. Don't fail make on test
 	@# failures — the point is to produce a viewable report even when red.
-	go test -json -count=1 -timeout 300s -parallel $(PARALLEL) $(TEST_PACKAGES) | go run ./cmd/testreport > report.html || true
+	go test -json -count=1 -timeout $(TIMEOUT_REPORT) -parallel $(PARALLEL) $(TEST_PACKAGES) | go run ./cmd/testreport > report.html || true
 	@echo "wrote report.html (open it in your browser)"
 
 lint:
