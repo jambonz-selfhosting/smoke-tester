@@ -40,7 +40,7 @@ func TestMain(m *testing.M) {
 	// AND not the current run's prefix). Hardened: re-checks each account
 	// name client-side and deletes its clients first to dodge the upstream
 	// FK constraint.
-	swept, err := (&provision.AccountSweeper{C: spClient}).Sweep(provision.RunID())
+	swept, err := (&provision.AccountSweeper{C: spClient, MinAge: cfg.OrphanTTL}).Sweep(provision.RunID())
 	if err != nil {
 		log.Printf("tests/rest: account sweep failed: %v", err)
 	} else if swept > 0 {

@@ -155,7 +155,7 @@ func TestMain(m *testing.M) {
 	// prefix) are considered. Sweeper has the post-incident hardening:
 	// double-checks every account's name before delete and cleans up its
 	// clients first to avoid the upstream FK constraint failure.
-	swept, err := (&provision.AccountSweeper{C: sp}).Sweep(provision.RunID())
+	swept, err := (&provision.AccountSweeper{C: sp, MinAge: cfg.OrphanTTL}).Sweep(provision.RunID())
 	if err != nil {
 		log.Printf("tests/verbs: account sweep failed: %v", err)
 	} else if swept > 0 {

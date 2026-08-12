@@ -39,16 +39,25 @@ $EDITOR .env                   # fill in credentials (see below)
 make test                      # full release-gate run, ~90s parallel
 ```
 
-**Required credentials in `.env`:**
+**Required credentials in `.env`** (authoritative contract:
+`internal/config/config.go`):
 
 | Variable | What it's for |
 |---|---|
-| `JAMBONZ_API_URL` | REST base (e.g. `https://jambonz.me/api/v1`) |
-| `JAMBONZ_SIP_DOMAIN` | SIP endpoint (e.g. `sip.jambonz.me`) |
-| `JAMBONZ_API_KEY` + `JAMBONZ_ACCOUNT_SID` | Account scope — for verb tests, /Clients, /SpeechCredentials |
-| `JAMBONZ_SP_API_KEY` + `JAMBONZ_SP_SID` | Service-provider scope — for REST tests |
-| `NGROK_AUTHTOKEN` | Webhook tunnel for Phase-2 verbs and call-status callbacks |
+| `JAMBONZ_API_URL` | REST base (e.g. `https://jambonz.me/api/v1`). Plain `http://` works; `https://` needs a publicly-trusted cert. |
+| `JAMBONZ_SP_API_KEY` + `JAMBONZ_SP_SID` | Service-provider scope — the only persistent identity; every test resource is created under an ephemeral account beneath this SP |
+| `JAMBONZ_SBC_PUBLIC_IP` | Public IP of the cluster SBC; all SIP traffic is sent here (no DNS/SRV records needed — the harness runs its own resolver for the synthetic sip realm) |
+| `NGROK_AUTHTOKEN` | Webhook tunnel for verb hooks and call-status callbacks |
 | `DEEPGRAM_API_KEY` | TTS + STT inside jambonz, plus offline transcript verification |
+| `DEEPSEEK_API_KEY` | LLM for the agent verb test (passed inline; no credential provisioned) |
+
+**Commercial (licensed) clusters only:** an unlicensed commercial cluster
+accepts REGISTERs but refuses call setup with
+`480 Temporarily Unavailable - Unlicensed`, so every verb test times out.
+Activate a license before running (the fatp release harness stores
+per-size smoke-test licenses as `FATP_LICENSE_MINI|MEDIUM|LARGE` in this
+`.env` and activates the right one at cluster bootstrap). Not needed for
+OSS/unlicensed clusters.
 
 See [.env.example](.env.example) for the full annotated template.
 
