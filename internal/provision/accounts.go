@@ -29,6 +29,7 @@ type Account struct {
 	QueueEventHook              *Webhook `json:"queue_event_hook,omitempty"`
 	DeviceCallingApplicationSID string   `json:"device_calling_application_sid,omitempty"`
 	WebhookSecret               string   `json:"webhook_secret,omitempty"`
+	CreatedAt                   string   `json:"created_at,omitempty"`
 }
 
 // CreateAccount POSTs /Accounts. Requires SP-scoped token.
