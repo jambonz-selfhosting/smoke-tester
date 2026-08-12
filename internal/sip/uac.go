@@ -7,6 +7,7 @@ import (
 	"net"
 
 	"github.com/emiago/diago"
+	"github.com/emiago/diago/media/sdp"
 	"github.com/emiago/sipgo"
 	"github.com/emiago/sipgo/sip"
 )
@@ -50,6 +51,19 @@ type InviteOptions struct {
 	Password  string // digest password (defaults to Stack cfg.Pass)
 	Headers   H      // custom request headers (e.g. X-Test-Id)
 	PublicIP  net.IP // advertise this IP in SDP + Contact (optional)
+
+	// SDPMode sets the direction attribute of the initial SDP offer:
+	// "sendonly" / "recvonly" / "sendrecv" / "inactive". Empty keeps diago's
+	// default (sendrecv). Used to emulate carriers that offer one-way media
+	// on the first INVITE (e.g. Five9 sends a=sendonly). Anything else is
+	// rejected by Invite before any SIP traffic is sent — diago never
+	// validates the local mode, so a typo would land verbatim on the wire.
+	//
+	// ADR-0014 caveat: with "recvonly" or "inactive" diago's RTP writer
+	// silently drops outbound packets, so SendSilence/SendWAV on such a call
+	// sends nothing and the symmetric-RTP NAT pinhole never opens. Fine for
+	// signaling-only tests; do not combine with media assertions.
+	SDPMode string
 }
 
 // Invite places an outbound call to dest and returns a *Call already in
@@ -88,12 +102,35 @@ func (s *Stack) Invite(ctx context.Context, dest string, opts InviteOptions) (*C
 		hdrs = append(hdrs, sip.NewHeader(k, v))
 	}
 
-	dialog, err := s.dg.Invite(ctx, destURI, diago.InviteOptions{
-		Transport: opts.Transport,
-		Username:  opts.Username,
-		Password:  opts.Password,
-		Headers:   hdrs,
-	})
+	switch opts.SDPMode {
+	case "", sdp.ModeSendrecv, sdp.ModeSendonly, sdp.ModeRecvonly, sdp.ModeInactive:
+	default:
+		return nil, fmt.Errorf("invite: invalid SDPMode %q (want sendrecv/sendonly/recvonly/inactive)", opts.SDPMode)
+	}
+
+	// This is diago.Diago.Invite's own NewDialog → Invite → Ack sequence,
+	// inlined because Diago.Invite offers no hook between dialog creation and
+	// the offer being built. The media session's Mode (default sendrecv) is
+	// what lands in the initial SDP's a= line, and dialog.Invite generates
+	// the offer body from the session — so setting Mode here is the only
+	// extra step versus calling Diago.Invite directly.
+	dialog, err := s.dg.NewDialog(destURI, diago.NewDialogOptions{Transport: opts.Transport})
+	if err == nil {
+		if opts.SDPMode != "" {
+			dialog.MediaSession().Mode = opts.SDPMode
+		}
+		err = dialog.Invite(ctx, diago.InviteClientOptions{
+			Username: opts.Username,
+			Password: opts.Password,
+			Headers:  hdrs,
+		})
+		if err == nil {
+			err = dialog.Ack(ctx)
+		}
+		if err != nil {
+			err = errors.Join(err, dialog.Close())
+		}
+	}
 	if err != nil {
 		// Non-2xx final responses from jambonz surface as ErrDialogResponse.
 		// Diago returns it as both value and pointer depending on site, so

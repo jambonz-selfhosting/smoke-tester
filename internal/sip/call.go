@@ -1292,11 +1292,27 @@ func (c *Call) RemoteRTPAddr() string {
 }
 
 // LocalSDP returns the SDP we offered or answered with. nil before Answer.
+//
+// Note this re-renders from the media session's CURRENT negotiated state
+// (diago also bumps the o= sess-version on every call) — it is not the body
+// that went out on the wire. To assert on the offer actually transmitted in
+// the initial INVITE, use InviteOfferSDP.
 func (c *Call) LocalSDP() []byte {
 	if ms := c.mediaSession(); ms != nil {
 		return ms.LocalSDP()
 	}
 	return nil
+}
+
+// InviteOfferSDP returns the SDP body of the INVITE this side sent, exactly
+// as transmitted (outbound calls only; nil otherwise). Unlike LocalSDP it is
+// unaffected by what the far end answered — the right source for "did our
+// offer really carry X" assertions.
+func (c *Call) InviteOfferSDP() []byte {
+	if c.direction != Outbound || c.out == nil || c.out.InviteRequest == nil {
+		return nil
+	}
+	return c.out.InviteRequest.Body()
 }
 
 // mediaSession resolves to diago's MediaSession for either direction.
