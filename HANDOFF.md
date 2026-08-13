@@ -503,6 +503,51 @@ remap reaches the SDP but not the session's DTMF PT.
 deployed mediajam binary carries both fix commits (verified by finding the
 `answer SDP re-rendered on modify` log string in it).
 
+### 2026-08-12 (night) — "make test-report fails" debugged: 4 stacked causes, none the suspected merge
+
+User suspected merge 4796ced (release-gate hardening) broke the suite.
+Verified innocent — the same tree was green at 13:45. The actual causes,
+peeled in order:
+
+1. **ngrok monthly HTTP quota exhausted (ERR_NGROK_727).** Every hook
+   fetch got 403 HTML from the ngrok edge → feature-server "error
+   retrieving or parsing application" → 480 on every webhook call.
+   Proven by curling the tunnel URL from the bastion itself. NOTE: the
+   fresh token the user made went into `.env.jambonz.me`, which NOTHING
+   reads — config loads `.env` only. Moved the token; fixed.
+2. **Concurrent suite runs fight over ngrok** (free tier = 1 live
+   endpoint). A backgrounded run held the tunnel; the user's own run
+   died in verbs TestMain with "endpoint already online" → verbs
+   reported 0 tests. Also: after killing an agent hard, ngrok takes
+   ~1-2min to release the session — immediate reruns hit the same error.
+3. **test-report's hardcoded 300s go-test timeout** (predates the
+   merge) vs a suite that has grown to 154 tests (~10min at
+   -parallel 4). The timeout fired mid-run and killed 79 in-flight
+   tests — the "mass failure" look. Fixed: `TIMEOUT_REPORT ?= 900s`.
+4. **REGISTER Timer_B cascade under churn.** drachtio log trace: our
+   own FIN arrives 0.2ms behind the REGISTER (sipgo "TCP ref went
+   negative" refcount bug closes the conn right after the write), the
+   401 challenge has no path back, claimUAS dies after 32s, failures
+   accelerate churn → cascade. Fixed: bounded retry (3 attempts) in
+   `Stack.register()`; SIP-level rejections (`*diago.
+   RegisterResponseError`) still fail immediately. Upstream sipgo issue
+   worth filing.
+
+**Post-fix full run: 154 tests — 136 pass / 5 fail / 13 skip, zero
+cut-off.** The 5 remaining are cluster-side casualties of today's
+redeploy/mediajam-revert, exactly what the gate exists to catch:
+3× handoff (feature-server warm-transfer/handoff hotfixes from
+2026-07-13/14 rolled back by the 11.0.4 redeploy — they were never
+mirrored upstream, as HANDOFF warned), Dial_EarlyMedia_CodecChange
+(sbc-outbound empty-m= regression back in the deployed build), and
+Say_Stream_DeepgramFlux (rms=0 — `DEEPGRAMFLUX_TTS_URI` env likely
+missing from `/etc/default/mediajam` after the revert).
+
+Fixes on branch `fix/test-report-timeout-register-retry` (pushed).
+Related: the sendonly test work + mediajam fix sit on
+`test/sdp-sendonly-direction` and mediajam `fix/sdp-answer-direction`;
+the mediajam revert means those drachtio tests are RED again until the
+mediajam PR merges + deploys.
 ### 2026-08-12 (evening) — adversarial code review of the sendonly work; all findings fixed
 
 **Scope:** /code-review (high) over both change sets. 10 findings survived
