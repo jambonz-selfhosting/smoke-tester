@@ -141,7 +141,11 @@ RELEASE_GATE_VERBS := \
 	TestVerb_Enqueue_Dequeue_Bridge \
 	TestVerb_Transfer_Blind \
 	TestVerb_Redirect_FetchesNewHook \
-	TestVerb_Tag_DataInCallbacks
+	TestVerb_Tag_DataInCallbacks \
+	TestSDP_Sendonly_InitialOffer \
+	TestSDP_Sendonly_ReinviteLoop \
+	TestSDP_Sendonly_HoldResume \
+	TestSDP_OfferMode_EarlyAnswerDirectionChange
 
 # `\|` join -> ^(A|B|...)$ anchored regex for -run
 release_gate_pattern = $(shell echo "$(strip $(RELEASE_GATE_VERBS))" | tr ' ' '|')

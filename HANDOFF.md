@@ -450,6 +450,59 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-08-13 — SDP-direction tests promoted into the default gate + offer-mode coverage
+
+Two coverage gaps closed after verifying the Five9 fix live.
+
+**1. The regression guard now runs by default.** The three sendonly tests
+were in `tests/drachtio`, behind the `drachtio` build tag — so `make test`,
+`make test-report` and the release gate never ran them; only an explicit
+`make test-drachtio` did. A customer-facing carrier-interop guard that
+nobody runs rots. Moved to `tests/verbs/sdp_direction_test.go` (renamed
+`TestSDP_Sendonly_*`), rewritten to the CLAUDE.md failure-fast pattern
+(`WithTimeout` + `Step` + `s.Fatalf`, so failures reach the FAILURE SUMMARY
+— which the drachtio package structurally cannot do), and added to
+`RELEASE_GATE_VERBS`. Whole file costs ~20s. The drachtio package keeps only
+its genuinely slow session-timer tests.
+
+**2. New: `TestSDP_OfferMode_EarlyAnswerDirectionChange`** — the side of the
+fix nothing exercised over SIP. Everything else drives the leg where jambonz
+ANSWERS; this drives the leg where jambonz OFFERS (`dial` verb B leg), where
+the far end's SDP arrives as an answer, possibly twice (183 then 200). A
+media server must not re-render its own offer as an answer there — mediajam's
+first cut of the fix did exactly that for the second answer. The callee
+answers twice with DIFFERENT directions (183 `a=recvonly`, then 200
+sendrecv) and the test asserts the dial completes AND real audio bridges
+afterwards, which it cannot if the B-leg SDP was rewritten mid-sequence.
+Needed one harness addition: `jsip.EarlyMediaSDPWithDirection` (the old
+`EarlyMediaSDP` hardcoded `a=sendrecv`; it now delegates, so no caller
+changed).
+
+Gotcha found in the first run: all three sendonly tests shared one
+Application name and 422'd on `applications_idx_name` under `-parallel`.
+`sdpDirectionApp` now derives the name from `t.Name()`.
+
+**mediajam side (branch `fix/sdp-answer-direction`, commit 5ac62d3).** An
+independent verification review confirmed the four earlier findings are
+genuinely fixed (each mutation-tested) and turned up three more, now fixed:
+`Endpoint.LocalSDP()` became a data race once `Modify` started re-rendering
+`localSDP` mid-call (unreachable today — control dispatch is serial — but
+the write-once invariant it relied on is gone, so it takes `e.mu`);
+`offerPending` was left write-only with a misleading doc comment (deleted);
+and `TestModifyDynamicPTRemap` asserted only the SDP, so deleting the
+`SwapCodec` remap left the suite green — added `media.Session.PayloadType()`
+plus an assertion, verified by mutation. Two limitations are now recorded in
+`docs/control-protocol.md` rather than left implicit: an offer-mode endpoint
+still answers a genuine hold re-INVITE with its verbatim offer (the control
+protocol has no answer-vs-offer discriminator on `endpoint.modify` — the SIP
+layer knows, the protocol can't say), and a mid-call telephone-event PT
+remap reaches the SDP but not the session's DTMF PT.
+
+**Cluster state:** the DB migration to 11.1.1 landed (schema_version 11.1.1,
+40 → 50 tables), deepgramflux both green, release gate green, and the
+deployed mediajam binary carries both fix commits (verified by finding the
+`answer SDP re-rendered on modify` log string in it).
+
 ### 2026-08-12 (evening) — adversarial code review of the sendonly work; all findings fixed
 
 **Scope:** /code-review (high) over both change sets. 10 findings survived
