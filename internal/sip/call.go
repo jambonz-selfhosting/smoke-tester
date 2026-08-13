@@ -247,8 +247,28 @@ func (c *Call) SendEarlyMedia183(sdp []byte) error {
 // codec + telephone-event). codec is "PCMU" or "PCMA". host/port name the RTP
 // endpoint; routability is irrelevant to a signaling reproduction. sessionID
 // varies the origin line so successive bodies aren't byte-identical (some
-// stacks ignore a repeated o= version).
+// stacks ignore a repeated o= version). The body carries a=sendrecv; use
+// EarlyMediaSDPWithDirection to send a one-way early answer.
 func EarlyMediaSDP(codec, host string, port, sessionID int) ([]byte, error) {
+	return EarlyMediaSDPWithDirection(codec, host, port, sessionID, "sendrecv")
+}
+
+// EarlyMediaSDPWithDirection is EarlyMediaSDP with control over the media
+// direction attribute ("sendrecv" / "sendonly" / "recvonly" / "inactive").
+//
+// A 183-with-SDP is an ANSWER to the far end's offer, so a direction here
+// that differs from the direction of the eventual 200 OK answer makes the
+// far end process two answers with different directions on one offer — the
+// multi-answer sequence real carriers produce (progress, then connect) and
+// the path where an offering media server can wrongly re-render its own
+// offer as an answer. See tests/verbs/sdp_direction_test.go.
+func EarlyMediaSDPWithDirection(codec, host string, port, sessionID int, direction string) ([]byte, error) {
+	switch direction {
+	case "sendrecv", "sendonly", "recvonly", "inactive":
+	default:
+		return nil, fmt.Errorf("EarlyMediaSDPWithDirection: invalid direction %q "+
+			"(want sendrecv/sendonly/recvonly/inactive)", direction)
+	}
 	var pt int
 	up := strings.ToUpper(codec)
 	switch up {
@@ -270,8 +290,8 @@ func EarlyMediaSDP(codec, host string, port, sessionID int) ([]byte, error) {
 			"a=rtpmap:101 telephone-event/8000\r\n"+
 			"a=fmtp:101 0-16\r\n"+
 			"a=ptime:20\r\n"+
-			"a=sendrecv\r\n",
-		sessionID, sessionID, host, host, port, pt, pt, up)
+			"a=%s\r\n",
+		sessionID, sessionID, host, host, port, pt, pt, up, direction)
 	return []byte(body), nil
 }
 
@@ -1292,11 +1312,27 @@ func (c *Call) RemoteRTPAddr() string {
 }
 
 // LocalSDP returns the SDP we offered or answered with. nil before Answer.
+//
+// Note this re-renders from the media session's CURRENT negotiated state
+// (diago also bumps the o= sess-version on every call) — it is not the body
+// that went out on the wire. To assert on the offer actually transmitted in
+// the initial INVITE, use InviteOfferSDP.
 func (c *Call) LocalSDP() []byte {
 	if ms := c.mediaSession(); ms != nil {
 		return ms.LocalSDP()
 	}
 	return nil
+}
+
+// InviteOfferSDP returns the SDP body of the INVITE this side sent, exactly
+// as transmitted (outbound calls only; nil otherwise). Unlike LocalSDP it is
+// unaffected by what the far end answered — the right source for "did our
+// offer really carry X" assertions.
+func (c *Call) InviteOfferSDP() []byte {
+	if c.direction != Outbound || c.out == nil || c.out.InviteRequest == nil {
+		return nil
+	}
+	return c.out.InviteRequest.Body()
 }
 
 // mediaSession resolves to diago's MediaSession for either direction.

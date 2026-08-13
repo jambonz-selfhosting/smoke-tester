@@ -18,6 +18,47 @@
 
 ### Now (in progress)
 
+- **SDP direction negotiation (Five9 a=sendonly interop) — 3 new drachtio
+  tests, all RED against jambonz.me (2026-08-12).**
+  `tests/drachtio/sdp_direction_test.go`: `TestDrachtio_Sendonly_InitialOffer`
+  (a=sendonly initial offer → answer must be recvonly/inactive per RFC 3264
+  §6.1), `_ReinviteLoop` (Five9's corrective a=sendonly re-INVITE → 200 +
+  complement + dialog survives), `_HoldResume` (sendrecv call → sendonly
+  hold → sendrecv resume). **Live finding:** the current jambonz.me build
+  (mediajam — answer o= says "Jambonz Media Server") answers `a=sendrecv`
+  to a sendonly offer on BOTH the initial INVITE and re-INVITEs. The
+  re-INVITEs do get 200 (not 488) and the dialog survives, so the hard
+  endpoint-update breakage isn't visible on this path — but the wrong
+  direction complement is exactly the trigger that makes Five9 loop
+  corrective a=sendonly re-INVITEs.
+  **FIXED + DEPLOYED same day (2026-08-12):** the believed-existing
+  mediajam fix did NOT exist — `buildLocalSDP` hardcoded `a=sendrecv`
+  and `Endpoint.Modify` returned the answer SDP cached at creation.
+  Fixed on mediajam branch `fix/sdp-answer-direction` (pushed to
+  github.com/jambonz/mediajam, commit b68cc20, no PR opened yet):
+  answers now carry the RFC 3264 §6.1 complement, Modify re-renders the
+  cached answer on direction change (o= sess-id kept, sess-version
+  bumped), offers stay sendrecv, and an answer to our OWN offer never
+  rewrites our local SDP. RTP send behaviour deliberately untouched
+  (signalling-only fix). Deployed to jambonz.me by cherry-picking the
+  commit onto the box's build tree (`/usr/local/src/mediajam` is on
+  `feat/dialogflow_ces_tool_calls`, 5 commits AHEAD of origin — do NOT
+  overwrite it with main; the patch was applied in a copy at
+  `~/build/mediajam-sendonly` and built with the krisp flags from the
+  box's own `build.sh`). Pre-fix binary saved at
+  `/usr/local/bin/mediajam.bak-sendonly-fix` on the box. All 3 sendonly
+  tests now GREEN against jambonz.me
+  (`make test-drachtio RUN=TestDrachtio_Sendonly`).
+  Unrelated pre-existing red: `TestDrachtio_SessionTimer_UASRefresher`
+  fails ("200 OK has no Session-Expires") — verified identical against
+  the pre-fix binary via A/B binary swap, so it's drachtio
+  session-timer config drift on the cluster, not the mediajam change.
+  Investigate drachtio.conf.xml default-refresher config separately.
+  New infra: `jsip.InviteOptions.SDPMode` (internal/sip/uac.go) — sets the
+  initial offer's direction attribute via diago's NewDialog → set
+  `MediaSession().Mode` → Invite → Ack sequence (diago's one-shot
+  `Diago.Invite` offers no pre-offer hook).
+
 - **Tier 4 AMD (answering machine detection) on the `dial` verb (2026-07-07).**
   New `tests/verbs/amd_test.go` (coverage-matrix row 4.15). AMD is not a
   standalone verb — it's the `amd` object on `dial`, runs on the dialed
@@ -408,6 +449,210 @@ None.
 ---
 
 ## Session log (reverse-chronological)
+
+### 2026-08-13 — SDP-direction tests promoted into the default gate + offer-mode coverage
+
+Two coverage gaps closed after verifying the Five9 fix live.
+
+**1. The regression guard now runs by default.** The three sendonly tests
+were in `tests/drachtio`, behind the `drachtio` build tag — so `make test`,
+`make test-report` and the release gate never ran them; only an explicit
+`make test-drachtio` did. A customer-facing carrier-interop guard that
+nobody runs rots. Moved to `tests/verbs/sdp_direction_test.go` (renamed
+`TestSDP_Sendonly_*`), rewritten to the CLAUDE.md failure-fast pattern
+(`WithTimeout` + `Step` + `s.Fatalf`, so failures reach the FAILURE SUMMARY
+— which the drachtio package structurally cannot do), and added to
+`RELEASE_GATE_VERBS`. Whole file costs ~20s. The drachtio package keeps only
+its genuinely slow session-timer tests.
+
+**2. New: `TestSDP_OfferMode_EarlyAnswerDirectionChange`** — the side of the
+fix nothing exercised over SIP. Everything else drives the leg where jambonz
+ANSWERS; this drives the leg where jambonz OFFERS (`dial` verb B leg), where
+the far end's SDP arrives as an answer, possibly twice (183 then 200). A
+media server must not re-render its own offer as an answer there — mediajam's
+first cut of the fix did exactly that for the second answer. The callee
+answers twice with DIFFERENT directions (183 `a=recvonly`, then 200
+sendrecv) and the test asserts the dial completes AND real audio bridges
+afterwards, which it cannot if the B-leg SDP was rewritten mid-sequence.
+Needed one harness addition: `jsip.EarlyMediaSDPWithDirection` (the old
+`EarlyMediaSDP` hardcoded `a=sendrecv`; it now delegates, so no caller
+changed).
+
+Gotcha found in the first run: all three sendonly tests shared one
+Application name and 422'd on `applications_idx_name` under `-parallel`.
+`sdpDirectionApp` now derives the name from `t.Name()`.
+
+**mediajam side (branch `fix/sdp-answer-direction`, commit 5ac62d3).** An
+independent verification review confirmed the four earlier findings are
+genuinely fixed (each mutation-tested) and turned up three more, now fixed:
+`Endpoint.LocalSDP()` became a data race once `Modify` started re-rendering
+`localSDP` mid-call (unreachable today — control dispatch is serial — but
+the write-once invariant it relied on is gone, so it takes `e.mu`);
+`offerPending` was left write-only with a misleading doc comment (deleted);
+and `TestModifyDynamicPTRemap` asserted only the SDP, so deleting the
+`SwapCodec` remap left the suite green — added `media.Session.PayloadType()`
+plus an assertion, verified by mutation. Two limitations are now recorded in
+`docs/control-protocol.md` rather than left implicit: an offer-mode endpoint
+still answers a genuine hold re-INVITE with its verbatim offer (the control
+protocol has no answer-vs-offer discriminator on `endpoint.modify` — the SIP
+layer knows, the protocol can't say), and a mid-call telephone-event PT
+remap reaches the SDP but not the session's DTMF PT.
+
+**Cluster state:** the DB migration to 11.1.1 landed (schema_version 11.1.1,
+40 → 50 tables), deepgramflux both green, release gate green, and the
+deployed mediajam binary carries both fix commits (verified by finding the
+`answer SDP re-rendered on modify` log string in it).
+
+### 2026-08-12 (evening) — adversarial code review of the sendonly work; all findings fixed
+
+**Scope:** /code-review (high) over both change sets. 10 findings survived
+adversarial verification; all fixed except the one explicitly deferred.
+
+**mediajam (branch `fix/sdp-answer-direction`, second commit):**
+- **CONFIRMED regression fixed:** only the FIRST answer to our own offer was
+  protected (`offerPending`); a second answer (multi-183 → 200 sequences)
+  was misread as a re-offer and rewrote the offer-mode endpoint's local SDP
+  into a single-codec "answer". New persistent `Endpoint.offerMode` field
+  gates the refresh; offer-mode endpoints never rewrite localSDP in Modify.
+- **CONFIRMED gap fixed:** Modify's third exit (`rekeyCodec` — off-geometry
+  codec change on an isolated leg) returned the creation-time SDP verbatim,
+  so a direction+codec-changing re-INVITE still got the stale sendrecv
+  answer (the Five9 bug on that path).
+- **Staleness fixed structurally:** the three Modify exits now share one
+  helper, `currentLocalSDPLocked()`, which re-renders the cached answer
+  whenever the current negotiation state (direction, codec, payload types)
+  no longer matches it byte-for-byte — keeping o= sess-id, bumping only
+  sess-version. This subsumes the direction-only `refreshAnswerSDPLocked`
+  (deleted, along with the now-redundant `localDir` field).
+- **PT-remap fixed:** Modify's same-codec path now mirrors a re-offer's
+  dynamic payload-type change (e.g. Opus 96→111) into both the media
+  session (`SwapCodec`, same geometry so it cannot fail on it) and the
+  rendered answer.
+- 4 new regression tests: multi-answer offer-mode, rekey+direction,
+  swap-with-unchanged-direction codec freshness, dynamic PT remap.
+
+**smoke-tester:**
+- The initial-offer plumbing guard now asserts on the TRANSMITTED INVITE
+  body via new `Call.InviteOfferSDP()` (internal/sip/call.go) instead of
+  `LocalSDP()`, which diago mutates during negotiation — an RFC-valid
+  `a=inactive` answer would have false-REDed the harness.
+- `Stack.Invite` collapsed to a single NewDialog→Invite→Ack path (verified
+  byte-equivalent to diago's `Diago.Invite`); `SDPMode` is validated against
+  the four RFC 4566 direction constants before any SIP traffic, with an
+  ADR-0014 caveat documented (recvonly/inactive silently disable diago's
+  RTP writer).
+- `tests/drachtio/sdp_direction_test.go`: dead `res == nil` guards removed
+  (SendReinviteWithSDP never returns nil,nil), the thrice-pasted re-INVITE
+  block folded into `reinviteDirection(t, ctx, call, mode, label)`.
+- **Deferred (finding 10):** the drachtio package's raw `t.Fatalf` usage
+  contra CLAUDE.md's failure-fast pattern — package-wide pre-existing
+  convention (~69 raw calls); the mandated Step/WithTimeout helpers are
+  unexported `_test.go` symbols in tests/verbs and structurally unavailable
+  here. Real fix is porting the failure-summary helpers into tests/drachtio
+  (or a shared package) — its own work item, not patched per-file.
+
+**Verification:** mediajam endpoint suite green (incl. 4 new tests) on mac
+and with krisp tags; smoke-tester build/vet/race green; all 3 sendonly
+drachtio tests green LIVE against jambonz.me. NOTE while verifying: the
+whole jambonz.me pm2 stack restarted ~08:50 UTC and `/usr/local/bin/mediajam`
+was replaced at 08:08 UTC by a root-owned build (user's deployment in
+motion — sendonly tests pass against it, so it carries the fix).
+`TestVerb_Answer_Basic` began 480ing after that restart — A/B-verified NOT
+caused by the smoke-tester changes (fails identically with them stashed);
+re-check once the user's deployment settles.
+
+### 2026-08-12 (later) — mediajam fix authored, deployed to jambonz.me, sendonly tests GREEN
+
+**Scope:** fix the a=sendonly answer-direction bug the morning's tests
+reproduced, deploy to jambonz.me, verify.
+
+**Fix (mediajam branch `fix/sdp-answer-direction`, commit b68cc20, pushed;
+no PR yet):** `internal/endpoint/sdp.go` hardcoded `a=sendrecv` in every
+rendered SDP, and `Endpoint.Modify` returned the answer SDP cached at
+endpoint creation, so re-INVITE direction changes were never re-answered.
+Changes: `negotiateRemote` parses the offer's direction attribute
+(session-level, media-level wins); answers carry the RFC 3264 §6.1
+complement; `Modify` re-renders the cached answer when the re-offer needs a
+different direction, keeping o= sess-id and bumping sess-version (§8);
+unchanged direction returns the cached SDP byte-for-byte; an answer to our
+OWN offer (offer-mode endpoint, `offerPending` at entry) never rewrites our
+local SDP. RTP send behaviour deliberately untouched. 9 new unit tests in
+`internal/endpoint/sdp_direction_test.go` incl. a Modify-level hold/resume
+sequence.
+
+**Deploy (jambonz.me):** the box's build tree `/usr/local/src/mediajam` is
+on `feat/dialogflow_ces_tool_calls` **5 commits ahead of origin** (unpushed
+work — the deployed binary is built from it; do NOT deploy main over it).
+So: `git format-patch` the fix → copied tree to `~/build/mediajam-sendonly`
+(krisp SDK staging preserved) → `git apply` → build with the box's own
+`build.sh` flags (`-tags "nolicense krisp"`, CGO krisp paths) → backed up
+old binary to `/usr/local/bin/mediajam.bak-sendonly-fix` → install +
+`systemctl restart mediajam`. Box `.git` has root-owned objects (past sudo
+git run) that block fetches as admin — the patch route avoids that.
+
+**Verification:** all 3 `TestDrachtio_Sendonly_*` GREEN against jambonz.me
+(initial offer answered recvonly; corrective re-INVITE 200 + recvonly with
+o= version bump; hold recvonly → resume sendrecv). Full drachtio suite:
+only pre-existing red is `TestDrachtio_SessionTimer_UASRefresher` ("200 OK
+has no Session-Expires") — **A/B verified against the pre-fix binary:
+fails identically**, so it's drachtio session-timer config drift, not the
+mediajam change. Full verbs suite at `-parallel 8` hit the 600s timeout
+(known agent-family flake pattern, see 2026-07-03 entry); the
+deterministic release-gate subset was run instead — see result below.
+
+**Follow-ups:** (a) open the mediajam PR for `fix/sdp-answer-direction`;
+(b) merge/rebase story for the box's 5-unpushed-commit
+`feat/dialogflow_ces_tool_calls` tree; (c) drachtio session-timer config
+drift (UASRefresher red); (d) decide whether recvonly answers should also
+mute mediajam's RTP sender (deliberately out of scope here).
+
+### 2026-08-12 — Five9 a=sendonly SDP-direction tests (RED: repro on live)
+
+**Scope:** Five9 (as a carrier) sends its initial INVITE with a one-way
+media offer (`a=sendonly`). jambonz answered 200 OK `a=sendrecv` instead of
+the RFC 3264 §6.1 complement (`recvonly`/`inactive`), so Five9 re-INVITEs
+with `a=sendonly` to correct it — and that surprise renegotiation broke the
+freeswitch endpoint update. User asked for tests pinning how jambonz
+behaves on `a=sendonly` (fix believed to exist in mediajam).
+
+**Done — 3 tests in `tests/drachtio/sdp_direction_test.go` (drachtio tag):**
+
+- `TestDrachtio_Sendonly_InitialOffer` — a=sendonly initial offer; asserts
+  the 200 OK SDP direction is recvonly (inactive tolerated + logged).
+  Includes a plumbing guard: negotiated local mode must be sendonly, else
+  the offer never carried the attribute and the test is meaningless.
+- `TestDrachtio_Sendonly_ReinviteLoop` — Five9's second step: after the
+  sendonly INVITE (answer direction logged, not asserted), send the
+  corrective in-dialog re-INVITE re-asserting a=sendonly; asserts 200 (488
+  = endpoint renegotiation broke), recvonly/inactive answer, dialog alive.
+- `TestDrachtio_Sendonly_HoldResume` — generalized surface: sendrecv call,
+  re-INVITE to sendonly (hold), re-INVITE back to sendrecv (resume);
+  asserts 200 + correct direction complement at each step — resume pins
+  that endpoint updates still work AFTER a sendonly renegotiation.
+
+**New infra:** `jsip.InviteOptions.SDPMode` (`internal/sip/uac.go`). diago's
+`Diago.Invite` has no hook between dialog creation and offer generation, so
+when SDPMode is set the harness replicates its NewDialog → Invite → Ack
+sequence and sets `MediaSession().Mode` in between (`MediaSession()` is an
+exported accessor; the offer body is generated from the session inside
+`dialog.Invite`). diago's `negotiateMediaDirection` keeps local mode
+sendonly whatever the far end answers, which the plumbing guard leans on.
+Re-INVITE offers reuse `call.LocalSDP()` (fresh o= version each call — diago
+increments sessionVersion per LocalSDP generation) with the direction
+attribute rewritten by the test-file helper `setSDPDirection`.
+
+**Live result (jambonz.me, 2026-08-12): all 3 RED — bug reproduced.** The
+answer's o= line says "Jambonz Media Server" (mediajam), and it answers
+`a=sendrecv` to sendonly offers on the initial INVITE AND on re-INVITEs.
+Re-INVITEs return 200 and the dialog survives (no 488), so the freeswitch
+hard-breakage isn't visible — but the wrong complement is precisely the
+Five9 loop trigger. Either the mediajam fix isn't deployed to jambonz.me,
+or it fixed endpoint-update robustness without fixing the answer's
+direction complement. Re-run after deploying the fixed build:
+`make test-drachtio RUN=TestDrachtio_Sendonly`.
+
+**Files:** new `tests/drachtio/sdp_direction_test.go`; modified
+`internal/sip/uac.go` (SDPMode), `HANDOFF.md`.
 
 ### 2026-08-07 — call-leak audit: guaranteed dialog teardown
 
