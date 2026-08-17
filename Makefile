@@ -137,7 +137,6 @@ RELEASE_GATE_VERBS := \
 	TestVerb_Play_ArrayOfURLs \
 	TestVerb_Say_Basic \
 	TestVerb_Say_Loop2 \
-	TestVerb_Gather_Digits \
 	TestVerb_Gather_Speech \
 	TestVerb_Dtmf_SingleDigit \
 	TestVerb_Dtmf_MultiDigit \
@@ -154,13 +153,47 @@ RELEASE_GATE_VERBS := \
 	TestSDP_Sendonly_HoldResume \
 	TestSDP_OfferMode_EarlyAnswerDirectionChange
 
+# Report-only: run and show the result, but never fail the release on it.
+#
+# A release gate's whole value is that red means stop. A test that fails for
+# harness-timing reasons teaches the operator to re-run until green, and once
+# that habit exists the gate stops working for EVERY test — including the ones
+# that catch real defects. So a known-flaky test goes here rather than staying
+# in the blocking set or being deleted outright: the signal stays visible, the
+# false blocking goes away.
+#
+# TestVerb_Gather_Digits — flaky on GCP: 6 failures in 14 runs (2026-08-17),
+# always `[step:assert-digits-1234] digits mismatch: got ""` with the action
+# hook reporting reason "timeout". Cause is in the harness, not the platform:
+# the test sleeps a fixed 1500ms after answering to let gather's DTMF detector
+# arm behind the server-side [answer, pause 1s] warmup, leaving ~500ms of
+# margin. Raising it to 3500ms took a mini from 2/5 to 4/5 passing — better,
+# still not deterministic, which is the point: no sleep value fixes this.
+# Digits come back EMPTY rather than partial, so there is likely a second
+# factor in the inbound 2833 path worth a Homer capture.
+# Fix: replace the sleep with an observable signal (deliver `gather` via a
+# second hook fetch, so the harness knows jambonz has asked for the next verbs
+# instead of guessing from the pause length), then move this back above.
+# Inbound-media coverage is not lost meanwhile: Gather_Speech, Listen_Basic and
+# Transcribe_Basic all exercise inbound RTP to the media server and passed in
+# every run; Dtmf_SingleDigit/MultiDigit still cover outbound DTMF.
+RELEASE_GATE_REPORT_ONLY := \
+	TestVerb_Gather_Digits
+
 # `\|` join -> ^(A|B|...)$ anchored regex for -run
 release_gate_pattern = $(shell echo "$(strip $(RELEASE_GATE_VERBS))" | tr ' ' '|')
+report_only_pattern  = $(shell echo "$(strip $(RELEASE_GATE_REPORT_ONLY))" | tr ' ' '|')
 
 test-release-gate:
 	go test -count=1 -timeout 120s -parallel $(PARALLEL) ./tests/rest/...
 	go test -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) \
 		-run "^($(release_gate_pattern))$$" ./tests/verbs/...
+	@echo
+	@echo "=== REPORT-ONLY (known-flaky; does NOT gate the release) ==="
+	@go test -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) \
+		-run "^($(report_only_pattern))$$" ./tests/verbs/... \
+		&& echo "report-only: PASS" \
+		|| echo "report-only: FAIL — see above. Not blocking; see RELEASE_GATE_REPORT_ONLY in the Makefile."
 
 # Run a single test by typing its name as the make goal:
 #
