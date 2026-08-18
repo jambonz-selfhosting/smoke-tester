@@ -450,6 +450,54 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-08-18 — Speechmatics results/transcript pass-through pinned
+
+Two new tests in `tests/verbs/speechmatics_passthrough_test.go` (fixture
+`testdata/es_reservation.wav`, a 14.8s Spanish restaurant-reservation clip at
+mono/8k/16-bit), covering a report that Spanish transcripts arrived
+re-punctuated and re-cased and that Speechmatics' `results[]` was "lost".
+
+**What the payloads actually show.** jambonz does not touch the text — the
+returned transcript is byte-identical to the vendor's `metadata.transcript`
+strings concatenated, and all 44 `results[]` entries arrive complete with
+`start_time` / `end_time` / `confidence` / `type` (+ `attaches_to` /
+`is_eos` on punctuation). Nothing is lost.
+
+**The real finding is that `speech.vendor.evt` has two shapes.** A turn from
+a single `AddTranscript` yields the raw vendor object (`vendor.evt.results`
+works); a consolidated turn yields an array of jambonz-normalized objects
+and the raw payload moves one level deeper, to
+`vendor.evt[i].vendor.evt.results`. With the `max_delay` jambonz used to send
+the engine finalized roughly per word, so the array shape is what
+applications see essentially always — a 1.3s "the sun is shining" already
+arrives as 4 segments. The tests assert data completeness in EITHER shape
+and deliberately do NOT demand the raw object: flattening it would break
+every application reading the array today.
+
+**The punctuation complaint traced to config, not text handling.** Same
+audio, same engine, only `transcription_config` differing: engine defaults
+give `"...a la lactosa. A nombre de Sergi Prieto."`, while the `max_delay:
+0.7` jambonz forced gives `"...a la lactosa . A nombre de Sergi Prieto ."`
+— punctuation lands in its own segment because the punctuator has almost no
+right context. Fixed in feature-server (stop forcing the default) and
+verified on jambonz.me: the stray artifacts are gone and accents come back
+(`"Si, correcto"` -> `"Sí, correcto"`).
+
+**Turn boundaries, measured.** With `asrTimeout` raised to 10-20s so the
+silence timer could not explain it, `gather` still posted ~1.45s after the
+audio ended, and the timing tracked `end_of_utterance_silence_trigger` —
+so `gather` genuinely ends turns on the vendor's `EndOfUtterance`.
+`transcribe` under the identical config posted at +21.554s, i.e. it ignored
+`EndOfUtterance` entirely and only the timer ended the turn. Fixed in
+feature-server; after deploying, the same probe measured +1.502s.
+
+**Probe variants not kept.** Five assertion-free timing probes
+(`max_delay` override, EOU trigger 0.5/2.0, clamped/unclamped, `asrTimeout:
+0`) were written to isolate the above and then dropped rather than pushed —
+they each cost a live call in the gate and asserted nothing. Their numbers
+are in this entry. Note trigger 2.0 produced no `EndOfUtterance` at all
+across three runs; 0.5-1.5 is the band that behaved.
+
 ### 2026-08-13 — SDP-direction tests promoted into the default gate + offer-mode coverage
 
 Two coverage gaps closed after verifying the Five9 fix live.
