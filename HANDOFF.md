@@ -488,6 +488,16 @@ Same latent bug still exists for `SPEECHMATICS_SPEECH_HINTS` (also `join(',')`)
 and for deepgram keywords — a hint containing a comma would be split. Not hit
 yet, not fixed.
 
+**Also new: `TestVerb_Speechmatics_EndOfUtterance`.** The vendor's EndOfUtterance
+had no coverage at all — no test touched `interim`, `speech_event` or
+`EndOfUtterance`, even though two bugs had already been found and fixed there
+(transcribe had no handler, so events were dropped; and the event was posted
+unnamed, so `_resolve` put neither `speech` nor `speech_event` in the body). The
+test pins both: at least one `speech_event` with `type: EndOfUtterance` arrives,
+no hook arrives carrying neither key, and transcript payloads keep flowing
+alongside. Trigger pinned at 0.4s — the mid-utterance gap is 0.60s on word
+timings, so 0.5 sits 0.1s from the edge and fires only sometimes.
+
 
 ### 2026-08-18 — Speechmatics results/transcript pass-through pinned
 
