@@ -450,6 +450,45 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-08-19 — permitted_marks was losing the comma; smoke test added
+
+`punctuation_overrides.permitted_marks` travelled to the media server as a
+comma-separated channel variable, so a list that CONTAINS a comma lost it:
+`[".", ",", "?", "!"]` became `".,,,?,!"` and split back to `[".", "?", "!"]`.
+
+Not cosmetic. With commas disallowed the engine substitutes full stops and
+marks them `is_eos`, so an application splitting sentences on `is_eos` sees one
+sentence as two. Measured on the same audio, changing only the mark list:
+
+    comma permitted    8 is_eos, 2 commas   "...para hoy, por favor."
+    comma dropped     10 is_eos, 0 commas   "...para hoy. Por favor."
+
+Total punctuation stayed 10 in both; two commas simply became full stops, which
+flipped their `is_eos` false -> true.
+
+Fixed by encoding the list as JSON (feature-server `fix/speechmatics`,
+mediajam `fix/speechmatics-permitted-marks`, which still accepts the old CSV so
+deploy order does not matter). `max_delay` was NOT a factor: `is_eos` stays 10
+at 0.7, 2.0 and 4 — that knob only moved the stray space-before-period
+artifacts, a separate defect fixed earlier.
+
+**New: `TestVerb_Speechmatics_PermittedMarks`.** Uses `[",", "?", "!"]` —
+commas permitted, full stops not — so one call catches both failure modes:
+
+    marks arrive intact     2 commas, 0 full stops   pass
+    comma lost in transit   0 commas, 0 full stops   fails on commas
+    marks never sent        2 commas, 8 full stops   fails on full stops
+
+Verified RED before the fix (`map[!:4 ?:5]`) and GREEN after
+(`map[!:4 ,:2 ?:4]`). The two older tests in the file could not catch this:
+their recognizer carries no `speechmaticsOptions`, so nothing exercised the
+option encoding. Worth remembering when adding vendor-option coverage.
+
+Same latent bug still exists for `SPEECHMATICS_SPEECH_HINTS` (also `join(',')`)
+and for deepgram keywords — a hint containing a comma would be split. Not hit
+yet, not fixed.
+
+
 ### 2026-08-18 — Speechmatics results/transcript pass-through pinned
 
 Two new tests in `tests/verbs/speechmatics_passthrough_test.go` (fixture

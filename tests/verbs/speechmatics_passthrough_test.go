@@ -409,3 +409,144 @@ func keysOf(m map[string]any) []string {
 	}
 	return out
 }
+
+// TestVerb_Speechmatics_PermittedMarks — punctuation_overrides.permitted_marks
+// must reach the engine exactly as the application wrote it.
+//
+// The list is asserted with a config that fails in both directions from one
+// call: commas permitted, full stops NOT. On this fixture that yields 2 commas
+// and 0 full stops, and the two ways the plumbing can break each show up:
+//
+//	marks arrive intact  [",", "?", "!"]  -> 2 commas, 0 full stops   PASS
+//	comma lost in transit ["?", "!"]      -> 0 commas, 0 full stops   fails on commas
+//	marks never sent (engine default)     -> 2 commas, 8 full stops   fails on full stops
+//
+// The middle case is a real regression we shipped: the list used to travel as a
+// comma-separated channel variable, so [".", ",", "?", "!"] became ".,,,?,!" and
+// was split back into [".", "?", "!"]. With commas disallowed the engine
+// substitutes full stops and marks them is_eos, so an application splitting on
+// is_eos sees "…para hoy, por favor." arrive as two sentences. The earlier tests
+// in this file could not catch it: they use a recognizer with no
+// speechmaticsOptions at all, so nothing exercised the encoding.
+//
+// Steps:
+//  1. script-gather-permitted-marks
+//  2. place-call
+//  3. answer-and-silence
+//  4. wait-for-recognizer
+//  5. send-wav
+//  6. post-speech-silence
+//  7. wait-action-gather-callback
+//  8. assert-permitted-marks-honoured
+func TestVerb_Speechmatics_PermittedMarks(t *testing.T) {
+	if !cfg.HasSpeechmatics() || speechmaticsLabel == "" {
+		t.Log("SPEECHMATICS_API_KEY not set — passing without exercising speechmatics STT")
+		return
+	}
+
+	t.Parallel()
+	requireWebhook(t)
+	ctx := WithTimeout(t, 120*time.Second)
+	uas := claimUAS(t, ctx)
+
+	_, sess := claimSession(t)
+
+	s := Step(t, "script-gather-permitted-marks")
+	rec := speechmaticsRecognizer()
+	rec["speechmaticsOptions"] = map[string]any{
+		"transcription_config": map[string]any{
+			"punctuation_overrides": map[string]any{
+				"permitted_marks": []any{",", "?", "!"},
+			},
+		},
+	}
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		V("gather", "input", []any{"speech"}, "timeout", 25,
+			"actionHook", SessionURL(sess, "gather"), "recognizer", rec),
+		V("hangup"),
+	}))
+	SessionAckEmpty(sess, "gather")
+	s.Done()
+
+	s = Step(t, "place-call")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	s.Done()
+
+	s = Step(t, "answer-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-recognizer")
+	time.Sleep(RecognizerArmDelayLong)
+	s.Done()
+
+	s = Step(t, "send-wav")
+	if err := call.SendWAV(resolveFixture(t, spanishWAV)); err != nil {
+		s.Fatalf("SendWAV: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "post-speech-silence")
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-action-gather-callback")
+	waitCtx, wcancel := context.WithTimeout(ctx, 60*time.Second)
+	defer wcancel()
+	cb, err := sess.WaitCallbackFor(waitCtx, "action/gather")
+	if err != nil {
+		s.Fatalf("WaitCallbackFor action/gather: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "assert-permitted-marks-honoured")
+	results, shape, err := speechmaticsResults(cb)
+	if err != nil {
+		s.Fatalf("vendor results[] not reachable: %v", err)
+	}
+	marks := map[string]int{}
+	eosOnComma := 0
+	for _, r := range results {
+		if r["type"] != "punctuation" {
+			continue
+		}
+		alts, _ := r["alternatives"].([]any)
+		if len(alts) == 0 {
+			continue
+		}
+		alt, _ := alts[0].(map[string]any)
+		content, _ := alt["content"].(string)
+		marks[content]++
+		if content == "," && r["is_eos"] == true {
+			eosOnComma++
+		}
+	}
+	s.Logf("shape=%s, punctuation seen: %v", shape, marks)
+	s.Logf("transcript: %q", extractTranscript(cb))
+
+	if marks[","] == 0 {
+		s.Errorf(`permitted_marks included "," but the engine emitted none: %v — `+
+			`the mark list is being mangled between the verb and the vendor`, marks)
+	}
+	if marks["."] > 0 {
+		s.Errorf(`permitted_marks excluded "." but the engine emitted %d — `+
+			`the mark list is not reaching the vendor at all`, marks["."])
+	}
+	// commas are mid-sentence, so they must not carry is_eos; an application
+	// splitting sentences on is_eos depends on this.
+	if eosOnComma > 0 {
+		s.Errorf("%d comma entries carry is_eos=true", eosOnComma)
+	}
+	s.Done()
+
+	s = Step(t, "hangup")
+	_ = call.Hangup()
+	s.Done()
+}
