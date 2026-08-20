@@ -32,6 +32,7 @@ package verbs
 
 import (
 	"fmt"
+	"strings"
 	"testing"
 	"time"
 
@@ -41,12 +42,35 @@ import (
 )
 
 // Distinctive causes per direction so a cross-test leak cannot false-pass.
-// Spacing is deliberately the "Q.850 ;cause=N" variant seen in real captures
-// (carriers emit both that and "Q.850;cause=N").
+//
+// We deliberately SEND the "Q.850 ;cause=N" spacing (the variant real carriers
+// emit alongside the compact one) to pin what jambonz does with it. Verified on
+// the wire: the SBC re-serializes the header when relaying to the feature
+// server, so the compact "Q.850;cause=N" is what actually arrives:
+//
+//	14.226.234.142 -> 10.0.197.31:5060   Reason: Q.850 ;cause=31   (as sent)
+//	10.0.197.31:5060 -> :5070            Reason: Q.850;cause=31    (to fs)
+//
+// RFC 3326 makes that whitespace optional, so this is a legal rewrite, not a
+// bug - but it does mean sip_reason_header is the header as the feature server
+// received it, NOT necessarily the carrier's exact bytes. Assertions therefore
+// compare with normalizeReason rather than byte-for-byte.
 const (
 	outboundReasonHeader = "Q.850 ;cause=31" // normal, unspecified
 	inboundReasonHeader  = "Q.850 ;cause=16" // normal call clearing
 )
+
+// normalizeReason collapses the optional whitespace RFC 3326 permits around the
+// ';' parameter separator, so a comparison is insensitive to a relay rewriting
+// it. Whitespace inside a quoted text="..." value is preserved unless that
+// value itself contains a ';' - good enough here, as none of these do.
+func normalizeReason(s string) string {
+	parts := strings.Split(s, ";")
+	for i, p := range parts {
+		parts[i] = strings.TrimSpace(p)
+	}
+	return strings.Join(parts, ";")
+}
 
 // TestSIPReasonHeader_OutboundFailure — jambonz places an outbound call
 // (POST /Calls) that the far end rejects with 480 + a Q.850 Reason header. The
@@ -233,7 +257,7 @@ func assertReasonHeaderOnTerminalStatus(s *StepCtx, cbs []webhook.Callback, call
 			// Pre-terminal events (trying/ringing) legitimately carry no
 			// Reason header - but if one shows up it must not be OUR value
 			// leaking early from a stale CallInfo field.
-			if hdr == want.wantHeader {
+			if normalizeReason(hdr) == normalizeReason(want.wantHeader) {
 				s.Errorf("sip_reason_header %q appeared on non-terminal status %q", hdr, status)
 			}
 			continue
@@ -244,8 +268,9 @@ func assertReasonHeaderOnTerminalStatus(s *StepCtx, cbs []webhook.Callback, call
 			}
 		}
 		found = true
-		if hdr != want.wantHeader {
-			s.Errorf("sip_reason_header on %q: got %q want %q", status, hdr, want.wantHeader)
+		if normalizeReason(hdr) != normalizeReason(want.wantHeader) {
+			s.Errorf("sip_reason_header on %q: got %q want %q (compared whitespace-normalized)",
+				status, hdr, want.wantHeader)
 		}
 		if want.wantSipStatus != 0 {
 			if got := cb.Int("sip_status"); got != want.wantSipStatus {
@@ -255,7 +280,7 @@ func assertReasonHeaderOnTerminalStatus(s *StepCtx, cbs []webhook.Callback, call
 		// sip_reason must remain the status-line phrase, NOT the Reason
 		// header. A regression that repurposed sip_reason instead of adding a
 		// field would pass the check above and fail here.
-		if got := cb.NestedString("sip_reason"); got == want.wantHeader {
+		if got := cb.NestedString("sip_reason"); normalizeReason(got) == normalizeReason(want.wantHeader) {
 			s.Errorf("sip_reason was overwritten with the Reason header (%q); it must stay the status-line phrase", got)
 		}
 	}

@@ -20,7 +20,7 @@
     },
     "sip_status": { "type": "integer", "description": "SIP response code (e.g. 200, 486)." },
     "sip_reason": { "type": "string", "description": "SIP reason phrase (e.g. 'OK', 'Busy Here')." },
-    "sip_reason_header": { "type": "string", "description": "RFC 3326 Reason header of the SIP message that caused this status change, verbatim (e.g. 'Q.850 ;cause=18'). Absent when the message carried no Reason header. Carriers fronting ISDN/E1 PRI put the authoritative disconnect cause here rather than in the status line. May hold a comma-separated list when the message carried more than one Reason header." },
+    "sip_reason_header": { "type": "string", "description": "RFC 3326 Reason header of the SIP message that caused this status change, as the feature server received it (e.g. 'Q.850;cause=18'). Absent when the message carried no Reason header. Carriers fronting ISDN/E1 PRI put the authoritative disconnect cause here rather than in the status line. Note the SBC re-serializes the header when relaying, normalizing the optional whitespace RFC 3326 allows around ';' - a carrier's 'Q.850 ;cause=18' arrives as 'Q.850;cause=18', so parse tolerantly rather than string-matching. May hold a comma-separated list when the message carried more than one Reason header." },
     "trace_id": { "type": "string", "description": "Distributed tracing identifier for correlating logs across jambonz components." },
     "originating_sip_ip": { "type": "string", "description": "IP address of the originating SIP trunk." },
     "originating_sip_trunk_name": { "type": "string", "description": "Name of the originating SIP trunk as configured in jambonz." },
