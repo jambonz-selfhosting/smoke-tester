@@ -58,6 +58,9 @@ import (
 const (
 	outboundReasonHeader = "Q.850 ;cause=31" // normal, unspecified
 	inboundReasonHeader  = "Q.850 ;cause=16" // normal call clearing
+	/* a CANCEL carries a SIP-protocol cause rather than Q.850; cause=200 with this text
+	   is the classic "another branch answered, stop ringing this one" case */
+	cancelReasonHeader = `SIP ;cause=200 ;text="Call completed elsewhere"`
 )
 
 // normalizeReason collapses the optional whitespace RFC 3326 permits around the
@@ -290,4 +293,92 @@ func assertReasonHeaderOnTerminalStatus(s *StepCtx, cbs []webhook.Callback, call
 		return
 	}
 	s.Logf("status events: %v", seen)
+}
+
+// TestSIPReasonHeader_InboundCancel — a UAC calls into a jambonz Application, jambonz
+// answers with EARLY MEDIA (say + earlyMedia, so 183 + SDP and no 200 OK), and the UAC
+// then CANCELs with a Reason header. The "no-answer" status event must carry it.
+//
+// This is the abandoned-call case, and the one where the header is worth the most:
+// jambonz generates the 487 and its 'Request Terminated' phrase itself, so without the
+// header every abandoned inbound call is indistinguishable. Early media is what makes the
+// test possible at all - it keeps the INVITE transaction open (nothing to CANCEL once the
+// call is answered) while still giving jambonz a running verb.
+//
+// It also exercises a relay path the other two tests do not: a CANCEL is not proxied like
+// an INVITE. drachtio builds a fresh CANCEL for the B leg and copies only a hardcoded
+// allowlist onto it, so this is the end-to-end proof that Reason survives that path rather
+// than a reading of srf's source.
+//
+// Steps:
+//  1. script-say-early-media — call_hook returns [say earlyMedia=true], no answer verb
+//  2. provision-application
+//  3. invite-and-await-early-media — UAC INVITE, stop on 183 + SDP
+//  4. cancel-with-reason-header — CANCEL + Reason: SIP ;cause=200 ;text="..."
+//  5. drain-status-callbacks / assert-sip-reason-header
+func TestSIPReasonHeader_InboundCancel(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	ctx := WithTimeout(t, 60*time.Second)
+	uas := claimUAS(t, ctx)
+	testID, sess := claimSession(t)
+
+	s := Step(t, "script-say-early-media")
+	/* earlyMedia keeps the call unanswered: the feature server sends 183 + SDP and
+	   streams the TTS instead of a 200 OK, so the INVITE stays cancelable. The text is
+	   long enough that the verb is still running when we cancel. */
+	sess.ScriptCallHook(webhook.Script{
+		V("say",
+			"text", "This call is deliberately left unanswered while the smoke test cancels it, "+
+				"so please keep talking for a good few seconds without stopping.",
+			"earlyMedia", true),
+	})
+	s.Done()
+
+	s = Step(t, "provision-application")
+	appSID := provisionWebhookApp(t, ctx, "sipreason-cancel-app")
+	s.Logf("provisioned Application sid=%s", appSID)
+	s.Done()
+
+	s = Step(t, "invite-and-await-early-media")
+	dest := fmt.Sprintf("sip:app-%s@%s", appSID, suite.SIPRealm)
+	pending, err := uas.Stack.InviteEarlyMedia(ctx, dest, jsip.InviteOptions{
+		Transport: "tcp",
+		FromUser:  uas.Username,
+		Username:  uas.Username,
+		Password:  uas.Password,
+		Headers: jsip.H{
+			webhook.CorrelationHeader: testID,
+		},
+	})
+	if err != nil {
+		s.Fatalf("InviteEarlyMedia: %v", err)
+	}
+	t.Cleanup(func() { _ = pending.Close() })
+	if res := pending.EarlyResponse(); res != nil {
+		s.Logf("early media on %d %s", res.StatusCode, res.Reason)
+	}
+	s.Done()
+
+	s = Step(t, "cancel-with-reason-header")
+	if err := pending.CancelWithHeaders(ctx, sip.NewHeader("Reason", cancelReasonHeader)); err != nil {
+		s.Fatalf("CancelWithHeaders: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "drain-status-callbacks")
+	cbs := DrainCallbacks(sess, 5*time.Second)
+	s.Logf("drained %d callbacks", len(cbs))
+	s.Done()
+
+	s = Step(t, "assert-sip-reason-header")
+	assertReasonHeaderOnTerminalStatus(s, cbs, "", reasonExpectation{
+		wantHeader:   cancelReasonHeader,
+		wantStatuses: []string{"no-answer"},
+		/* 487 is jambonz's own, which is exactly why the header is needed */
+		wantSipStatus: 487,
+		wantDirection: "inbound",
+	})
+	s.Done()
 }

@@ -78,10 +78,14 @@ type InviteOptions struct {
 //	call.StartRecording("/tmp/out.wav")
 //	call.SendSilence()
 //	<-call.Done()
-func (s *Stack) Invite(ctx context.Context, dest string, opts InviteOptions) (*Call, error) {
+//
+// prepareInvite normalizes InviteOptions against the stack defaults and builds the
+// sipgo header list. Shared by Invite and InviteEarlyMedia so the two cannot drift
+// on defaults or validation.
+func (s *Stack) prepareInvite(dest string, opts *InviteOptions) (sip.Uri, []sip.Header, error) {
 	var destURI sip.Uri
 	if err := sip.ParseUri(dest, &destURI); err != nil {
-		return nil, fmt.Errorf("parse dest uri: %w", err)
+		return destURI, nil, fmt.Errorf("parse dest uri: %w", err)
 	}
 	if opts.Transport == "" {
 		opts.Transport = s.cfg.Transport
@@ -95,17 +99,22 @@ func (s *Stack) Invite(ctx context.Context, dest string, opts InviteOptions) (*C
 	if opts.Password == "" {
 		opts.Password = s.cfg.Pass
 	}
-
-	// Build sipgo headers from opts.Headers.
+	switch opts.SDPMode {
+	case "", sdp.ModeSendrecv, sdp.ModeSendonly, sdp.ModeRecvonly, sdp.ModeInactive:
+	default:
+		return destURI, nil, fmt.Errorf("invite: invalid SDPMode %q (want sendrecv/sendonly/recvonly/inactive)", opts.SDPMode)
+	}
 	var hdrs []sip.Header
 	for k, v := range opts.Headers {
 		hdrs = append(hdrs, sip.NewHeader(k, v))
 	}
+	return destURI, hdrs, nil
+}
 
-	switch opts.SDPMode {
-	case "", sdp.ModeSendrecv, sdp.ModeSendonly, sdp.ModeRecvonly, sdp.ModeInactive:
-	default:
-		return nil, fmt.Errorf("invite: invalid SDPMode %q (want sendrecv/sendonly/recvonly/inactive)", opts.SDPMode)
+func (s *Stack) Invite(ctx context.Context, dest string, opts InviteOptions) (*Call, error) {
+	destURI, hdrs, err := s.prepareInvite(dest, &opts)
+	if err != nil {
+		return nil, err
 	}
 
 	// This is diago.Diago.Invite's own NewDialog → Invite → Ack sequence,
@@ -115,7 +124,7 @@ func (s *Stack) Invite(ctx context.Context, dest string, opts InviteOptions) (*C
 	// the offer body from the session — so setting Mode here is the only
 	// extra step versus calling Diago.Invite directly.
 	dialog, err := s.dg.NewDialog(destURI, diago.NewDialogOptions{Transport: opts.Transport})
-	if err == nil {
+	if err == nil { //nolint:nestif // inlined diago sequence, see comment above
 		if opts.SDPMode != "" {
 			dialog.MediaSession().Mode = opts.SDPMode
 		}
