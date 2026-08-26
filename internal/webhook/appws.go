@@ -159,6 +159,11 @@ func (s *Server) handleAppWS(w http.ResponseWriter, r *http.Request) {
 			// hook URL path tells us which verb's action script to return.
 			verb := verbFromHookURL(msg.Hook)
 			out := sess.outcomeForActionHook(verb)
+			if out.NoAck {
+				// Deliberate silence so the ack timer expires. Still captured above.
+				s.logger.Debug("webhook: appWS withholding ack", "id", testID, "verb", verb)
+				continue
+			}
 			s.ackVerbs(conn, testID, msg.Msgid, out)
 		default:
 			// call:status / verb:status / jambonz:error etc. These don't

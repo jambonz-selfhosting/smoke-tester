@@ -165,7 +165,7 @@ func splitPath(p string) []string {
 // hook invocation. Scripts get turned into this by the registry when a
 // call_hook/action_hook is handled.
 type HookOutcome struct {
-	Status int   // HTTP status code; default 200
+	Status int    // HTTP status code; default 200
 	Verbs  Script // verb array written back as response body (if non-nil)
 	Body   []byte // raw body override (wins over Verbs if set)
 
@@ -178,6 +178,10 @@ type HookOutcome struct {
 	// concurrently with the test goroutine, so it must NOT touch *testing.T,
 	// StepCtx, or any test assertion. It closes over locals only.
 	BodyFunc func(cb Callback) []byte
+
+	// NoAck never replies to the hook, so feature-server's 5s ack timer expires
+	// and the hook fails. WS only — the HTTP handler must always respond.
+	NoAck bool
 }
 
 // ContextWithError is used internally when a handler encounters an

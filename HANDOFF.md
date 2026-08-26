@@ -450,6 +450,62 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-08-26 — a WebSocket app parked the caller after `dial`; fixed + 2 tests
+
+When a verb list empties, feature-server ends the call for an HTTP application
+but parks a WebSocket one in `CallSession._awaitCommandsOrHangup()` waiting for
+verbs to be pushed over the socket. That is right when the app was asked for
+verbs and is thinking; it is wrong after a `dial` the app was never asked about:
+
+- `dial` with **no `actionHook`** — nothing was sent, nothing is coming back.
+- `dial` whose **actionHook failed** — over WS the only failure mode is the app
+  never acking, which `WsRequestor` abandons after
+  `JAMBONES_WS_API_MSG_RESPONSE_TIMEOUT` (5s).
+
+Either way the B leg is gone and the caller sits in dead air until `timeLimit`
+or a media timeout. Measured on jambonz.me before the fix: no BYE at all within
+a 10s/15s budget of the B-leg hangup.
+
+Fixed in feature-server (private, `lib/tasks/dial.js` +
+`lib/session/call-session.js`): `TaskDial._endSessionUnlessHandedOff` calls the
+new `CallSession.expectNoFurtherVerbs`, which suppresses the await for that one
+task iteration so the loop falls out and tears the call down normally. Skipped
+when the app already took the call elsewhere — an LCC redirect that replaced the
+dial task (`KillReason.Replaced`) or a completed REFER (`KillReason.ReferComplete`)
+— since those have follow-on verbs or another session in play. **Not in OSS**:
+`jambonz/jambonz-feature-server@origin/main` (db18b55) has the identical
+un-fixed code, so there was nothing to clone.
+
+New tests, `tests/verbs/dial_no_action_hook_test.go` (coverage matrix row 3.5a):
+`TestVerb_Dial_WS_NoActionHook_EndsCall` and
+`TestVerb_Dial_WS_ActionHookNoAck_EndsCall`. Both place against `wsApp`, script a
+lone `dial` with **no trailing `hangup`** (a `hangup` would make them pass either
+way), let the callee hang up the B leg, and assert the caller's BYE arrives within
+a budget measured from the B-leg BYE. `timeLimit` is 90s so a regression can't be
+rescued by the max-duration timer. Verified red → green across a deploy: 0.5s (no
+hook) and 5.5s (5s ack timeout + teardown).
+
+Two things worth remembering:
+
+- **A hook can only be failed over WS by withholding the ack.** New harness knob
+  `Session.ScriptActionHookNoAck(verb)` + `HookOutcome.NoAck`; the appws read loop
+  captures the frame and simply doesn't reply. HTTP ignores it (the handler must
+  always write a response).
+- **The actionHook must be a RELATIVE path to reach the socket at all.**
+  `ws-requestor.js` (~line 97) short-circuits an absolute `http(s)` hook to a plain
+  HTTP webhook. The first draft used `SessionURL(sess, "dial")` and the hook went
+  out over ngrok, so the withheld ack never happened and the test failed even with
+  the fix deployed. There is now an `assert-ws-got-dial-hook` step that fails loudly
+  if the hook doesn't arrive on the socket, so this can't silently regress to
+  vacuous.
+
+Pre-existing and unrelated: `TestVerb_Transfer_WarmThreeWay` fails on
+`assert-bridge-audio-transcript` (transcript is "briefing the agent now", missing
+"shining" from the target's WAV). Reproduced identically with the fix reverted on
+the box, so it is not from this work — the target's reference audio isn't reaching
+the caller's recording in three-way mode.
+
+
 ### 2026-08-19 — permitted_marks was losing the comma; smoke test added
 
 `punctuation_overrides.permitted_marks` travelled to the media server as a
