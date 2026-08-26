@@ -323,17 +323,32 @@ func (c *Call) Answer() error {
 
 // Reject sends a final failure response (4xx/5xx/6xx). Inbound only.
 func (c *Call) Reject(code int, reason string) error {
+	return c.reject("Reject", code, reason)
+}
+
+// RejectWithHeaders is Reject with extra headers on the failure response.
+//
+// Needed to reproduce carriers fronting ISDN/E1 PRI trunks, which put the
+// authoritative disconnect cause in an RFC 3326 Reason header rather than in
+// the status line - e.g. "480 Temporarily Unavailable" + "Reason: Q.850
+// ;cause=31". Those carriers are the reason jambonz surfaces
+// sip_reason_header on call status events.
+func (c *Call) RejectWithHeaders(code int, reason string, extra ...sip.Header) error {
+	return c.reject("RejectWithHeaders", code, reason, extra...)
+}
+
+func (c *Call) reject(name string, code int, reason string, extra ...sip.Header) error {
 	if c.direction != Inbound {
-		return fmt.Errorf("Reject: inbound only")
+		return fmt.Errorf("%s: inbound only", name)
 	}
 	if code < 400 || code > 699 {
-		return fmt.Errorf("Reject: code %d is not a failure response", code)
+		return fmt.Errorf("%s: code %d is not a failure response", name, code)
 	}
 	if s := c.State(); s == StateAnswered || s == StateEnded {
-		return invalidState("Reject", s, StateInit, StateTrying, StateRinging)
+		return invalidState(name, s, StateInit, StateTrying, StateRinging)
 	}
-	if err := c.in.Respond(code, reason, nil); err != nil {
-		return fmt.Errorf("Reject: %w", err)
+	if err := c.in.Respond(code, reason, nil, extra...); err != nil {
+		return fmt.Errorf("%s: %w", name, err)
 	}
 	c.setState(StateEnded, fmt.Sprintf("rejected %d %s", code, reason))
 	return nil
@@ -547,6 +562,35 @@ func (c *Call) Hangup() error {
 		return nil
 	}
 	c.setState(StateEnded, "local-hangup")
+	return nil
+}
+
+// HangupWithHeaders sends a BYE carrying extra headers, then marks the call
+// ended. Answered calls only - before answer the teardown is a CANCEL, which
+// this does not cover.
+//
+// diago's Hangup cannot carry arbitrary headers, so the BYE goes out through
+// doInDialog instead (same workaround as SendReinvite). That bypasses diago's
+// own dialog bookkeeping, so we set StateEnded ourselves - which also makes a
+// later Hangup() from t.Cleanup a no-op rather than a second BYE that draws a
+// 481.
+//
+// Used to put an RFC 3326 Reason header on the caller's BYE, the inbound-leg
+// counterpart of RejectWithHeaders.
+func (c *Call) HangupWithHeaders(ctx context.Context, extra ...sip.Header) error {
+	if s := c.State(); s != StateAnswered {
+		return invalidState("HangupWithHeaders", s, StateAnswered)
+	}
+	c.stopMedia()
+	res, err := c.doInDialog(ctx, sip.BYE, "", nil, extra...)
+	if err != nil {
+		c.setState(StateEnded, "hangup-err: "+err.Error())
+		return fmt.Errorf("HangupWithHeaders: %w", err)
+	}
+	c.setState(StateEnded, "local-hangup")
+	if res != nil && res.StatusCode >= 300 {
+		return fmt.Errorf("HangupWithHeaders: BYE rejected %d %s", res.StatusCode, res.Reason)
+	}
 	return nil
 }
 
