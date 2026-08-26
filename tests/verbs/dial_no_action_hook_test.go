@@ -63,15 +63,42 @@ func TestVerb_Dial_WS_ActionHookNoAck_EndsCall(t *testing.T) {
 		tag:            "dial-ws-actionhook-noack",
 		scriptStep:     "script-dial-actionhook-noack",
 		withActionHook: true,
+		noAck:          true,
 		expectVerbHook: true,
 		byeBudget:      5*time.Second + dialEndBYEBudget, // 5s ack timer, then teardown
+	})
+}
+
+// TestVerb_Dial_WS_ActionHookEmpty_EndsCall — an `actionHook` the app acks with
+// `[]`. The hook succeeded but yielded no verbs, which is no better a reason to
+// hold the caller than a hook that failed, so the call must end.
+//
+// This deliberately overrides the ws "ack now, send verbs later" pattern for
+// `dial`: an app that means to push verbs afterwards must return them here.
+//
+// Steps:
+//  1. script-dial-actionhook-empty — [answer, pause, dial actionHook=/action/dial] acked with []
+//  2. spawn-callee-goroutine — async: answer, hold briefly, hang up the B leg
+//  3. place-caller-and-answer — place against wsApp, answer, latch RTP
+//  4. wait-callee-done — wait for the callee goroutine to finish
+//  5. assert-ws-got-dial-hook — the actionHook really arrived on the socket
+//  6. assert-caller-byed — jambonz BYEs the caller within dialEndBYEBudget of the B-leg BYE
+func TestVerb_Dial_WS_ActionHookEmpty_EndsCall(t *testing.T) {
+	t.Parallel()
+	runDialWSEndsCall(t, dialEndsCallCase{
+		tag:            "dial-ws-actionhook-empty",
+		scriptStep:     "script-dial-actionhook-empty",
+		withActionHook: true,
+		expectVerbHook: true,
+		byeBudget:      dialEndBYEBudget, // acked at once, no ack timer to wait out
 	})
 }
 
 type dialEndsCallCase struct {
 	tag            string
 	scriptStep     string
-	withActionHook bool // wire a hook whose ack the app then withholds
+	withActionHook bool // wire a relative actionHook on the dial verb
+	noAck          bool // withhold the ack so the hook fails, rather than acking []
 	expectVerbHook bool // assert the hook really travelled over the socket
 	byeBudget      time.Duration
 }
@@ -98,7 +125,11 @@ func runDialWSEndsCall(t *testing.T, c dialEndsCallCase) {
 		   http(s) hook to a plain HTTP webhook, which never reaches the socket
 		   and so can never have its ack withheld. */
 		dial = append(dial, "actionHook", "/action/dial")
-		sess.ScriptActionHookNoAck("dial")
+		if c.noAck {
+			sess.ScriptActionHookNoAck("dial")
+		} else {
+			SessionAckEmpty(sess, "dial")
+		}
 	}
 	// No `hangup`: it would end the call itself and the tests would pass either way.
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{V("dial", dial...)}))
