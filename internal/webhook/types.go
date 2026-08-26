@@ -179,12 +179,8 @@ type HookOutcome struct {
 	// StepCtx, or any test assertion. It closes over locals only.
 	BodyFunc func(cb Callback) []byte
 
-	// NoAck makes the WS application deliberately never reply to the hook.
-	// feature-server's WsRequestor gives the app JAMBONES_WS_API_MSG_RESPONSE_TIMEOUT
-	// (5s by default) to ack a verb:hook and rejects the pending request when
-	// that expires — which is how a test reproduces "the actionHook failed".
-	// WebSocket transport only: the HTTP handler must always write a response,
-	// so it ignores this field.
+	// NoAck never replies to the hook, so feature-server's 5s ack timer expires
+	// and the hook fails. WS only — the HTTP handler must always respond.
 	NoAck bool
 }
 

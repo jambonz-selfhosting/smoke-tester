@@ -174,11 +174,9 @@ func (s *Session) ScriptActionHook(verbName string, verbs Script) *Session {
 	return s
 }
 
-// ScriptActionHookNoAck makes the WS app swallow the action hook for verbName
-// without replying, so feature-server's ack timer expires and the hook fails.
-// That is the only way to fail a hook over WebSocket transport (there is no
-// status code to return), and it is what "the actionHook failed" means for a
-// WS application. HTTP hooks ignore it — see HookOutcome.NoAck.
+// ScriptActionHookNoAck swallows the action hook for verbName without replying.
+// Withholding the ack is the only way to fail a hook over WS — there is no
+// status code to return. HTTP hooks ignore it; see HookOutcome.NoAck.
 func (s *Session) ScriptActionHookNoAck(verbName string) *Session {
 	s.mu.Lock()
 	defer s.mu.Unlock()

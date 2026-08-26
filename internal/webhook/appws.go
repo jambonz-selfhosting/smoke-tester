@@ -160,8 +160,7 @@ func (s *Server) handleAppWS(w http.ResponseWriter, r *http.Request) {
 			verb := verbFromHookURL(msg.Hook)
 			out := sess.outcomeForActionHook(verb)
 			if out.NoAck {
-				// Deliberate silence: the test wants feature-server's ack
-				// timer to expire so the hook fails. Still captured above.
+				// Deliberate silence so the ack timer expires. Still captured above.
 				s.logger.Debug("webhook: appWS withholding ack", "id", testID, "verb", verb)
 				continue
 			}

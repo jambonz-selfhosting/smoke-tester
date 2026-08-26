@@ -1,26 +1,10 @@
-// Tests for what happens *after* a `dial` verb finishes on a WebSocket
-// application.
+// What happens after a `dial` finishes on a WebSocket application.
 //
-// An http application that runs out of verbs ends the call: the task list is
-// empty, the session tears down, jambonz BYEs the caller. A websocket
-// application is different — feature-server parks the session in
-// CallSession._awaitCommandsOrHangup() waiting for the app to push more verbs
-// over the socket. That is the right behaviour when the app *was* asked for
-// verbs and is thinking about it, but not when it was never asked at all:
-//
-//   - `dial` with no `actionHook` — nothing was ever sent to the app, so
-//     nothing is coming back.
-//   - `dial` whose actionHook request failed — over WS the only failure mode
-//     is the app never acking, which feature-server gives up on after
-//     JAMBONES_WS_API_MSG_RESPONSE_TIMEOUT (5s).
-//
-// In both cases the B leg is gone and the caller sits in dead air until some
-// unrelated timer (timeLimit, media timeout) eventually fires. These tests
-// pin the fix: the caller gets a BYE promptly instead.
-//
-// The discriminator is timing, so the calls are placed with a deliberately
-// long timeLimit — long enough that a regression cannot be rescued by the
-// max-duration timer and quietly pass.
+// A websocket app that runs out of verbs is parked in
+// CallSession._awaitCommandsOrHangup() instead of ending the call. That is
+// wrong when the app was never asked for verbs — no `actionHook`, or one that
+// failed — and leaves the caller in dead air until timeLimit. These tests pin
+// the caller's BYE arriving promptly instead.
 //
 // Phase-2 tests; skipped without NGROK_AUTHTOKEN. Require both UASes
 // registered (JAMBONZ_SIP_USER + JAMBONZ_SIP_CALLEE_USER).
@@ -37,21 +21,14 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-// dialEndBYEBudget is how long after the B leg hangs up we allow jambonz to
-// BYE the caller when the application has no follow-on verbs. Teardown is a
-// couple of round trips, so this is generous; the failure it guards against
-// is an indefinite park, which overshoots by a minute or more.
+// Generous: teardown is a couple of round trips, the bug overshoots by minutes.
 const dialEndBYEBudget = 10 * time.Second
 
-// dialCallTimeLimit is the POST /Calls timeLimit for these tests. It must
-// comfortably exceed dialEndBYEBudget (plus the WS ack timeout in the
-// no-ack case) so that a parked call is caught by the assertion rather than
-// being torn down by the max-duration timer, which would mask the bug.
+// Must exceed the budget, or the max-duration timer would mask a regression.
 const dialCallTimeLimit = 90
 
-// TestVerb_Dial_WS_NoActionHook_EndsCall — `dial` with no `actionHook` on a
-// WebSocket application. The app was never asked for follow-on verbs, so
-// once the callee hangs up the call must end rather than park.
+// TestVerb_Dial_WS_NoActionHook_EndsCall — the app was never asked for
+// follow-on verbs, so once the callee hangs up the call must end, not park.
 //
 // Steps:
 //  1. script-dial-no-actionhook — [answer, pause, dial target=callee] over the WS app
@@ -62,22 +39,16 @@ const dialCallTimeLimit = 90
 func TestVerb_Dial_WS_NoActionHook_EndsCall(t *testing.T) {
 	t.Parallel()
 	runDialWSEndsCall(t, dialEndsCallCase{
-		tag:        "dial-ws-no-actionhook",
-		scriptStep: "script-dial-no-actionhook",
-		// No actionHook on the verb at all.
+		tag:            "dial-ws-no-actionhook",
+		scriptStep:     "script-dial-no-actionhook",
 		withActionHook: false,
 		byeBudget:      dialEndBYEBudget,
 	})
 }
 
-// TestVerb_Dial_WS_ActionHookNoAck_EndsCall — `dial` with an `actionHook`
-// that the WebSocket application never acks. feature-server's WsRequestor
-// rejects the pending verb:hook after JAMBONES_WS_API_MSG_RESPONSE_TIMEOUT
-// (5s by default); a failed actionHook is no better a reason to keep the
-// caller on the line than no actionHook at all, so the call must end.
-//
-// Withholding the ack is the only way to fail a hook over WS transport —
-// there is no status code to return — see Session.ScriptActionHookNoAck.
+// TestVerb_Dial_WS_ActionHookNoAck_EndsCall — an `actionHook` the app never
+// acks. WsRequestor gives up after 5s; a failed hook is no better a reason to
+// keep the caller on the line than no hook at all.
 //
 // Steps:
 //  1. script-dial-actionhook-noack — [answer, pause, dial actionHook=/action/dial] with the ack withheld
@@ -93,30 +64,21 @@ func TestVerb_Dial_WS_ActionHookNoAck_EndsCall(t *testing.T) {
 		scriptStep:     "script-dial-actionhook-noack",
 		withActionHook: true,
 		expectVerbHook: true,
-		// feature-server waits out its 5s ack timer before the hook fails,
-		// and only then ends the call.
-		byeBudget: 5*time.Second + dialEndBYEBudget,
+		byeBudget:      5*time.Second + dialEndBYEBudget, // 5s ack timer, then teardown
 	})
 }
 
-// dialEndsCallCase is the per-test knobs for runDialWSEndsCall.
 type dialEndsCallCase struct {
-	tag        string
-	scriptStep string
-	// withActionHook wires a relative actionHook on the dial verb whose ack
-	// the WS app then withholds.
-	withActionHook bool
-	// expectVerbHook asserts the hook actually travelled over the app socket
-	// before the BYE assertion runs.
-	expectVerbHook bool
+	tag            string
+	scriptStep     string
+	withActionHook bool // wire a hook whose ack the app then withholds
+	expectVerbHook bool // assert the hook really travelled over the socket
 	byeBudget      time.Duration
 }
 
-// runDialWSEndsCall drives a WS-application call whose only verb is a `dial`
-// — deliberately with no trailing `hangup`, so the only thing that can end
-// the call is feature-server deciding there are no follow-on verbs coming.
-// The callee hangs up the B leg; the assertion is that the caller's BYE
-// follows within c.byeBudget.
+// runDialWSEndsCall drives a WS call whose only verb is a `dial`, with no
+// trailing `hangup` so nothing but the fix can end it. Callee hangs up the
+// B leg; the caller's BYE must follow within c.byeBudget.
 func runDialWSEndsCall(t *testing.T, c dialEndsCallCase) {
 	t.Helper()
 	requireWebhook(t)
@@ -129,32 +91,22 @@ func runDialWSEndsCall(t *testing.T, c dialEndsCallCase) {
 	dial := []any{
 		"target", []any{map[string]any{"type": "user", "name": target}},
 		"timeout", 20,
-		// anchorMedia keeps both legs' RTP inside the cluster data plane —
-		// same reason as TestVerb_Dial_User_Bridge.
-		"anchorMedia", true,
+		"anchorMedia", true, // keep RTP in the cluster data plane, as in Dial_User_Bridge
 	}
 	if c.withActionHook {
-		// RELATIVE, not SessionURL(). feature-server's WsRequestor short-circuits
-		// an absolute http(s) hook to a plain HTTP webhook
-		// (lib/utils/ws-requestor.js: "if we have an absolute url, and it is http
-		// then do a standard webhook"), which would never reach the app socket and
-		// so could never have its ack withheld. A relative path is sent as a
-		// verb:hook frame — the thing under test. Correlation still works: the WS
-		// connection is already bound to this session.
+		/* RELATIVE, not SessionURL(): WsRequestor short-circuits an absolute
+		   http(s) hook to a plain HTTP webhook, which never reaches the socket
+		   and so can never have its ack withheld. */
 		dial = append(dial, "actionHook", "/action/dial")
 		sess.ScriptActionHookNoAck("dial")
 	}
-	// NOTE: no `hangup` after the dial. That is the whole point — if the
-	// script ended the call itself these tests would pass either way.
+	// No `hangup`: it would end the call itself and the tests would pass either way.
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{V("dial", dial...)}))
 	s.Done()
 
 	s = Step(t, "spawn-callee-goroutine")
 	calleeDone := make(chan struct{})
-	// calleeByeAt is written by the goroutine and read by the main test
-	// goroutine after calleeDone closes; atomic keeps the race detector
-	// quiet if a future change reads it earlier.
-	var calleeByeAt atomic.Int64
+	var calleeByeAt atomic.Int64 // written by the goroutine, read after calleeDone
 	calleeCtx, calleeCancel := context.WithCancel(ctx)
 	go func() {
 		defer close(calleeDone)
@@ -169,9 +121,8 @@ func runDialWSEndsCall(t *testing.T, c dialEndsCallCase) {
 				GoroutineFailf(t, "callee:silence", "SendSilence: %v", err)
 				return
 			}
-			// Hold the bridge up long enough to be unambiguously
-			// established before tearing it down, so a BYE that races the
-			// answer can't be mistaken for the teardown under test.
+			// Let the bridge establish, so a BYE racing the answer isn't
+			// mistaken for the teardown under test.
 			time.Sleep(2 * time.Second)
 			t.Logf("[callee:hangup] start")
 			calleeByeAt.Store(time.Now().UnixNano())
@@ -185,8 +136,7 @@ func runDialWSEndsCall(t *testing.T, c dialEndsCallCase) {
 			GoroutineFailf(t, "callee", "never received INVITE: %v", calleeCtx.Err())
 		}
 	}()
-	// Join the goroutine even if a later Step fatals — registered after
-	// spawn so it runs (LIFO) before WithTimeout's ctx-cancel cleanup.
+	// Join even if a later Step fatals; LIFO puts this before the ctx-cancel cleanup.
 	t.Cleanup(func() {
 		calleeCancel()
 		<-calleeDone
@@ -230,8 +180,7 @@ func runDialWSEndsCall(t *testing.T, c dialEndsCallCase) {
 	}
 
 	s = Step(t, "assert-caller-byed")
-	// Budget is measured from the B-leg BYE, not from now, so time already
-	// spent joining the goroutine counts against it.
+	// Measured from the B-leg BYE, so time spent joining the goroutine counts.
 	deadline := byeAt.Add(c.byeBudget)
 	byeCtx, cancel := context.WithDeadline(ctx, deadline)
 	defer cancel()
