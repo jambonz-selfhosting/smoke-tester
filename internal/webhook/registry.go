@@ -174,6 +174,18 @@ func (s *Session) ScriptActionHook(verbName string, verbs Script) *Session {
 	return s
 }
 
+// ScriptActionHookNoAck makes the WS app swallow the action hook for verbName
+// without replying, so feature-server's ack timer expires and the hook fails.
+// That is the only way to fail a hook over WebSocket transport (there is no
+// status code to return), and it is what "the actionHook failed" means for a
+// WS application. HTTP hooks ignore it — see HookOutcome.NoAck.
+func (s *Session) ScriptActionHookNoAck(verbName string) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.actionHooks[verbName] = HookOutcome{NoAck: true}
+	return s
+}
+
 // ScriptActionHookBody sets a raw JSON body the server returns for the named
 // action hook, overriding the default verb-array response. Used by hooks
 // that expect a JSON object rather than a verb array — most notably the
