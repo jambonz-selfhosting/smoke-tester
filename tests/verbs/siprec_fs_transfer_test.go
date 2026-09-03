@@ -12,6 +12,9 @@
 //   - the transferred leg's teardown did not stop the recording, so the
 //     recorder never got a BYE and had to wait out its own media timeout
 //
+// Both SBCs are covered: the inbound variant moves a call anchored by
+// sbc-inbound, the REST-leg variant one anchored by sbc-outbound.
+//
 // Needs JAMBONZ_FEATURE_SERVERS naming two feature servers on different hosts,
 // the SBC running with JAMBONES_SERVER_CONTROL enabled (for the
 // X-Jambonz-Feature-Server header), and the harness running somewhere the SBC
@@ -22,6 +25,7 @@ import (
 	"context"
 	"fmt"
 	"net"
+	"os"
 	"path/filepath"
 	"strings"
 	"testing"
@@ -29,6 +33,7 @@ import (
 
 	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/siprec"
+	"github.com/jambonz-selfhosting/smoke-tester/internal/stt"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
@@ -46,10 +51,10 @@ const postTransferWatch = 12 * time.Second
 //  1. start-siprec-recorder — SRS on an ephemeral port, captures each stream
 //  2. script-caller — [answer, config record→SRS, enqueue Q waitHook]
 //  3. provision-applications — one per leg
-//  4. place-caller-pinned-fs-a — INVITE with X-Jambonz-Feature-Server: fsA
-//  5. await-call-hook — pick the jambonz call_sid off the hook payload
+//  4. place-recorded-leg — pinned INVITE, or POST /Calls for the REST variant
+//  5. identify-recorded-leg — its call_sid, which server took it, where to move it
 //  6. await-siprec-invite — the SBC opens the recording session
-//  7. await-queued — waitHook fetch #1, i.e. the caller is parked on fsA
+//  7. await-queued — the waitHook fetch, i.e. the caller is parked
 //  8. place-agent-pinned-fs-b — INVITE pinned to fsB, [answer, dequeue callSid]
 //  9. await-transfer — a status callback carrying fsB's address = the REFER landed
 //
@@ -58,16 +63,38 @@ const postTransferWatch = 12 * time.Second
 // 12. assert-recorded-conversation — Deepgram on the fork: sun + shining
 // 13. hangup-agent-leg — jambonz ends the moved leg (the no-BYE case)
 // 14. assert-siprec-bye — the SBC stopped the recording
+// recordedLeg is how the call that gets recorded and queued was created, which
+// decides WHICH SBC has to survive the move: an inbound call is anchored by
+// sbc-inbound, a REST call by sbc-outbound, and each has its own copy of
+// _onFeatureServerTransfer.
+type recordedLeg int
+
+const (
+	legInbound recordedLeg = iota // a registered device dials in
+	legRest                       // POST /Calls, i.e. the sbc-outbound path
+)
+
 func TestVerb_Siprec_SurvivesFeatureServerTransfer(t *testing.T) {
+	siprecTransfer(t, legInbound)
+}
+
+// The same scenario for a call jambonz placed itself. Worth its own run because
+// the recorded leg then faces sbc-outbound: a different transfer handler, a
+// different SrsClient, and the path where "startRecording logged but no SIPREC
+// INVITE" was reported.
+func TestVerb_Siprec_SurvivesFeatureServerTransfer_RestLeg(t *testing.T) {
+	siprecTransfer(t, legRest)
+}
+
+func siprecTransfer(t *testing.T, leg recordedLeg) {
 	t.Parallel()
 	requireWebhook(t)
 	if !cfg.HasFeatureServers() {
 		t.Skip("needs JAMBONZ_FEATURE_SERVERS with two feature servers")
 	}
-	fsA, fsB := cfg.FeatureServers[0], cfg.FeatureServers[1]
-	if hostOf(fsA) == hostOf(fsB) {
-		t.Skipf("feature servers %s and %s are the same host; a call is only "+
-			"moved with a REFER between hosts", fsA, fsB)
+	if otherHostThan(cfg.FeatureServers[0]) == "" {
+		t.Skipf("every configured feature server is on host %s; a call is only "+
+			"moved with a REFER between hosts", hostOf(cfg.FeatureServers[0]))
 	}
 	ctx := WithTimeout(t, 180*time.Second)
 	callerUAS, agentUAS := claimUAS2(t, ctx)
@@ -91,8 +118,7 @@ func TestVerb_Siprec_SurvivesFeatureServerTransfer(t *testing.T) {
 	callerID, callerSess := claimSession(t)
 	agentID, agentSess := claimSession(t)
 	SessionAckEmpty(callerSess, "wait")
-	callerSess.ScriptCallHook(webhook.Script{
-		V("answer"),
+	recordAndEnqueue := webhook.Script{
 		V("config", "record", map[string]any{
 			"action":          "startCallRecording",
 			"type":            "siprec",
@@ -100,7 +126,11 @@ func TestVerb_Siprec_SurvivesFeatureServerTransfer(t *testing.T) {
 			"recordingID":     fmt.Sprintf("it-%d", time.Now().UnixNano()),
 		}),
 		V("enqueue", "name", queue, "waitHook", SessionURL(callerSess, "wait")),
-	})
+	}
+	if leg == legInbound {
+		recordAndEnqueue = append(webhook.Script{V("answer")}, recordAndEnqueue...)
+	}
+	callerSess.ScriptCallHook(recordAndEnqueue)
 	s.Done()
 
 	s = Step(t, "provision-applications")
@@ -108,10 +138,23 @@ func TestVerb_Siprec_SurvivesFeatureServerTransfer(t *testing.T) {
 	agentApp := provisionWebhookApp(t, ctx, "siprec-agent")
 	s.Done()
 
-	s = Step(t, "place-caller-pinned-fs-a")
-	callerCall, err := invitePinnedToFS(ctx, callerUAS, callerApp, callerID, fsA)
-	if err != nil {
-		s.Fatalf("caller Invite (pinned to %s): %v", fsA, err)
+	s = Step(t, "place-recorded-leg")
+	var callerCall *jsip.Call
+	var callSid, fsA string
+	switch leg {
+	case legInbound:
+		fsA = cfg.FeatureServers[0]
+		callerCall, err = invitePinnedToFS(ctx, callerUAS, callerApp, callerID, fsA)
+		if err != nil {
+			s.Fatalf("caller Invite (pinned to %s): %v", fsA, err)
+		}
+	case legRest:
+		// jambonz picks the feature server for a REST call - there is no header to
+		// pin it - so place it first and read back where it landed.
+		callSid, callerCall = placeWebhookCallToWithSID(ctx, t, callerUAS, callerSess, withTimeLimit(120))
+		if err := callerCall.Answer(); err != nil {
+			s.Fatalf("caller Answer: %v", err)
+		}
 	}
 	t.Cleanup(func() { _ = callerCall.Hangup() })
 	// media has to flow while the caller is parked, or "the fork went silent"
@@ -121,18 +164,30 @@ func TestVerb_Siprec_SurvivesFeatureServerTransfer(t *testing.T) {
 	}
 	s.Done()
 
-	s = Step(t, "await-call-hook")
-	// the jambonz call_sid comes off the hook payload; the UAC only ever sees
-	// the headers of the INVITE it sent
-	cb, err := callerSess.WaitCallbackFor(ctx, "call_hook")
-	if err != nil {
-		s.Fatalf("caller call_hook never arrived: %v", err)
+	s = Step(t, "identify-recorded-leg")
+	if leg == legInbound {
+		// the jambonz call_sid comes off the hook payload; the UAC only ever sees
+		// the headers of the INVITE it sent
+		cb, err := callerSess.WaitCallbackFor(ctx, "call_hook")
+		if err != nil {
+			s.Fatalf("caller call_hook never arrived: %v", err)
+		}
+		if callSid = cb.String("call_sid"); callSid == "" {
+			s.Fatalf("no call_sid in the caller's call_hook payload: %s", cb.Body)
+		}
+	} else {
+		var seen []webhook.Callback
+		fsA, _, seen = awaitFeatureServer(ctx, callerSess, callSid, func(string) bool { return true })
+		if fsA == "" {
+			s.Fatalf("no status callback told us which feature server took the call; saw: %s",
+				summarize(seen))
+		}
 	}
-	callSid := cb.String("call_sid")
-	if callSid == "" {
-		s.Fatalf("no call_sid in the caller's call_hook payload: %s", cb.Body)
+	fsB := otherHostThan(fsA)
+	if fsB == "" {
+		s.Fatalf("call landed on %s and no other feature server host is configured", fsA)
 	}
-	s.Logf("caller call_sid=%s", callSid)
+	s.Logf("recorded leg call_sid=%s on %s, moving it to %s", callSid, fsA, fsB)
 	s.Done()
 
 	s = Step(t, "await-siprec-invite")
@@ -167,19 +222,8 @@ func TestVerb_Siprec_SurvivesFeatureServerTransfer(t *testing.T) {
 	// A moved call is answered again on the receiving feature server, which emits
 	// a fresh status carrying its own address - the waitHook is NOT re-fetched,
 	// because the transferred enqueue task bridges immediately instead of waiting.
-	waitCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
-	var transferred time.Time
-	seen := WaitCallbacksUntil(waitCtx, callerSess, func(cbs []webhook.Callback) bool {
-		for _, c := range cbs {
-			if c.Hook == "call_status_hook" && c.NestedString("call_sid") == callSid &&
-				strings.HasPrefix(c.NestedString("fs_sip_address"), hostOf(fsB)) {
-				transferred = c.Received
-				return true
-			}
-		}
-		return false
-	})
-	cancel()
+	_, transferred, seen := awaitFeatureServer(ctx, callerSess, callSid,
+		func(fs string) bool { return hostOf(fs) == hostOf(fsB) })
 	if transferred.IsZero() {
 		s.Fatalf("the queued call was never moved to %s; callbacks seen: %s", fsB, summarize(seen))
 	}
@@ -227,7 +271,7 @@ func TestVerb_Siprec_SurvivesFeatureServerTransfer(t *testing.T) {
 	s = Step(t, "assert-recorded-conversation")
 	// packets alone would pass on a fork wired to the wrong media, so check the
 	// words spoken after the move actually landed in the recording
-	AssertMulawTranscriptContains(s, ctx, rec.StreamPath("1"), "sun", "shining")
+	assertSpeechOnSomeStream(s, ctx, rec, "sun", "shining")
 	s.Done()
 
 	s = Step(t, "hangup-agent-leg")
@@ -279,6 +323,83 @@ func advertiseIP() (net.IP, error) {
 	}
 	defer c.Close()
 	return c.LocalAddr().(*net.UDPAddr).IP, nil
+}
+
+// assertSpeechOnSomeStream requires the words to show up in at least one forked
+// stream. Which stream carries them depends on the direction of the recorded leg
+// - the caller's audio is stream 1 for an inbound call and stream 2 for a call
+// jambonz placed - and the test is about the fork still working, not about which
+// label the SBC hung on it.
+func assertSpeechOnSomeStream(s *StepCtx, ctx context.Context, rec *siprec.Recorder, wants ...string) {
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		return
+	}
+	var transcripts []string
+	for _, label := range []string{"1", "2"} {
+		size := int64(0)
+		if fi, err := os.Stat(rec.StreamPath(label)); err == nil {
+			size = fi.Size()
+		}
+		transcript, err := stt.TranscribeMulawWAV(ctx, rec.StreamPath(label))
+		if err != nil {
+			s.Logf("stream %s (%d bytes): transcribe failed: %v", label, size, err)
+			continue
+		}
+		s.Logf("stream %s (%d bytes) transcript: %q", label, size, transcript)
+		transcripts = append(transcripts, transcript)
+		matched := true
+		for _, want := range wants {
+			if !strings.Contains(transcript, stt.Normalize(want)) {
+				matched = false
+			}
+		}
+		if matched {
+			return
+		}
+	}
+	s.Errorf("no forked stream carried the speech from after the move (wanted %v, got %q)",
+		wants, transcripts)
+}
+
+// awaitFeatureServer waits for a status callback for callSid whose feature-server
+// address satisfies want, and reports that address and when it arrived. A moved
+// call is answered again on the receiving server and emits a fresh status
+// carrying its address, which is how the test sees the REFER land - the enqueue
+// waitHook is NOT re-fetched, because a transferred enqueue task bridges
+// immediately instead of waiting.
+func awaitFeatureServer(ctx context.Context, sess *webhook.Session, callSid string,
+	want func(fs string) bool) (string, time.Time, []webhook.Callback) {
+	waitCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+
+	var fs string
+	var at time.Time
+	seen := WaitCallbacksUntil(waitCtx, sess, func(cbs []webhook.Callback) bool {
+		for _, c := range cbs {
+			if c.Hook != "call_status_hook" || c.NestedString("call_sid") != callSid {
+				continue
+			}
+			addr := c.NestedString("fs_sip_address")
+			if addr != "" && want(addr) {
+				fs, at = addr, c.Received
+				return true
+			}
+		}
+		return false
+	})
+	return fs, at, seen
+}
+
+// otherHostThan picks a configured feature server on a different host, since a
+// call is only moved with a REFER between hosts.
+func otherHostThan(fs string) string {
+	for _, candidate := range cfg.FeatureServers {
+		if hostOf(candidate) != hostOf(fs) {
+			return candidate
+		}
+	}
+	return ""
 }
 
 // summarize renders callbacks compactly, so a failure shows what did arrive.
