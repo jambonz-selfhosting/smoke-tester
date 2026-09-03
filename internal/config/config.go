@@ -41,6 +41,28 @@ type Settings struct {
 	// without needing real DNS records.
 	SBCPublicIP net.IP
 
+	// Optional — feature servers the cross-feature-server tests pin calls to,
+	// as "ip" or "ip:port" (comma separated, e.g. the JAMBONES_FEATURE_SERVERS
+	// the SBC knows). Two or more entries, on different hosts, are needed for a
+	// call to actually be moved between them; tests that need it skip otherwise.
+	// The SBC must be running with JAMBONES_SERVER_CONTROL enabled for the
+	// X-Jambonz-Feature-Server header to be honoured.
+	FeatureServers []string
+
+	// Optional — address the SBC should reach the test's SIPREC recorder on.
+	// Defaults to the local address that routes to the SBC, which is right
+	// whenever the harness runs inside the cluster's network (it has to, for
+	// the SBC to be able to send it an INVITE and RTP).
+	SiprecAdvertiseIP net.IP
+
+	// Optional — fixed ports for the SIPREC recorder, for when it runs
+	// somewhere that needs firewall holes punched for it (one UDP port for
+	// signalling, then two consecutive even ports for the forked streams).
+	// Zero means "pick free ports", which is right when the recorder runs on
+	// the SBC itself and nothing has to cross a security group.
+	SiprecSIPPort     int
+	SiprecRTPPortBase int
+
 	// Optional — SIP realm zone suffix appended to the per-suite account
 	// name to form the account's sip_realm. Default "smoke.test" — must
 	// have at least one dot so the upstream `(.*)\.(.*\..*)$` regex on
@@ -171,6 +193,28 @@ type Settings struct {
 // new self-provisioning model both keys are mandatory at TestMain, so
 // these helpers are kept only for the rare callers that still want to
 // guard for diagnostic logs.
+// HasFeatureServers reports whether enough feature servers were named to move a
+// call between two of them.
+func (s *Settings) HasFeatureServers() bool { return len(s.FeatureServers) >= 2 }
+
+func envInt(name string) int {
+	n, err := strconv.Atoi(strings.TrimSpace(os.Getenv(name)))
+	if err != nil {
+		return 0
+	}
+	return n
+}
+
+func splitList(v string) []string {
+	var out []string
+	for _, p := range strings.Split(v, ",") {
+		if p = strings.TrimSpace(p); p != "" {
+			out = append(out, p)
+		}
+	}
+	return out
+}
+
 func (s *Settings) HasDeepgram() bool { return s.DeepgramAPIKey != "" }
 
 // HasDeepseek reports whether the Deepseek-backed agent verb test can run.
@@ -287,10 +331,21 @@ func parse() (*Settings, error) {
 		DialogflowAgent:         os.Getenv("DIALOGFLOW_AGENT"),
 		DialogflowRegion:        firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
 		DialogflowLang:          firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
+		FeatureServers:          splitList(os.Getenv("JAMBONZ_FEATURE_SERVERS")),
+		SiprecSIPPort:           envInt("SIPREC_SIP_PORT"),
+		SiprecRTPPortBase:       envInt("SIPREC_RTP_PORT_BASE"),
 		NgrokAuthToken:          os.Getenv("NGROK_AUTHTOKEN"),
 		NgrokDomain:             os.Getenv("NGROK_DOMAIN"),
 		RunID:                   os.Getenv("RUN_ID"),
 		LogLevel:                strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
+	}
+
+	if v := strings.TrimSpace(os.Getenv("SIPREC_ADVERTISE_IP")); v != "" {
+		ip := net.ParseIP(v)
+		if ip == nil {
+			return nil, fmt.Errorf("SIPREC_ADVERTISE_IP: %q is not an IP address", v)
+		}
+		s.SiprecAdvertiseIP = ip
 	}
 
 	// required
