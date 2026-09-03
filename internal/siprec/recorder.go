@@ -13,6 +13,7 @@ import (
 	"os"
 	"path/filepath"
 	"regexp"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -169,33 +170,37 @@ func (r *Recorder) Window(from, to time.Time) []Window {
 	return out
 }
 
-// LongestGap is the longest stretch inside [from, to) with no packet on the
-// busiest stream - the number that tells a "went silent at the transfer" bug
-// from a healthy recording.
+// LongestGap is the longest stretch inside [from, to) with no packet on ANY
+// stream - the number that tells a "went silent at the transfer" bug from a
+// healthy recording. Measured over the streams merged together, because one
+// side of a call can legitimately be quiet while the recording is fine.
 func (r *Recorder) LongestGap(from, to time.Time) time.Duration {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	var worst time.Duration
+
+	var busy []time.Time
 	for _, s := range r.streams {
-		last := from
-		var gap time.Duration
 		for _, b := range s.buckets {
-			if !b.t.Add(bucket).After(from) || !b.t.Before(to) || b.n == 0 {
-				continue
+			if b.n > 0 && b.t.Add(bucket).After(from) && b.t.Before(to) {
+				busy = append(busy, b.t)
 			}
-			if d := b.t.Sub(last); d > gap {
-				gap = d
-			}
-			last = b.t.Add(bucket)
-		}
-		if d := to.Sub(last); d > gap {
-			gap = d
-		}
-		if gap > worst {
-			worst = gap
 		}
 	}
-	return worst
+	sort.Slice(busy, func(i, j int) bool { return busy[i].Before(busy[j]) })
+
+	last, gap := from, time.Duration(0)
+	for _, t := range busy {
+		if d := t.Sub(last); d > gap {
+			gap = d
+		}
+		if end := t.Add(bucket); end.After(last) {
+			last = end
+		}
+	}
+	if d := to.Sub(last); d > gap {
+		gap = d
+	}
+	return gap
 }
 
 func (r *Recorder) TotalPackets(from, to time.Time) int {

@@ -120,22 +120,45 @@ func TestRecorder_AnswersAndCapturesBothStreams(t *testing.T) {
 	}
 }
 
+func bucketsAt(label string, base time.Time, offsets ...time.Duration) *stream {
+	s := &stream{label: label}
+	for _, o := range offsets {
+		s.buckets = append(s.buckets, struct {
+			t time.Time
+			n int
+		}{base.Add(o), 10})
+	}
+	return s
+}
+
 // A gap in the middle of a window is what "the recording went silent" looks
 // like, so LongestGap has to find it rather than average it away.
 func TestRecorder_LongestGapFindsSilence(t *testing.T) {
 	r := New(net.ParseIP("127.0.0.1"), 25094, 41600, t.TempDir())
 	base := time.Now().Truncate(bucket)
-	s := &stream{label: "1"}
-	for _, offset := range []time.Duration{0, 250 * time.Millisecond, 3 * time.Second, 3250 * time.Millisecond} {
-		s.buckets = append(s.buckets, struct {
-			t time.Time
-			n int
-		}{base.Add(offset), 10})
-	}
-	r.streams = []*stream{s}
+	r.streams = []*stream{bucketsAt("1", base, 0, 250*time.Millisecond, 3*time.Second, 3250*time.Millisecond)}
 
 	got := r.LongestGap(base, base.Add(4*time.Second))
 	if got < 2*time.Second || got > 3*time.Second {
 		t.Errorf("longest gap: got %v want ~2.5s", got)
+	}
+}
+
+// One side of a call can be quiet for the whole window - an agent on hold, or a
+// one-directional fork - while the recording is perfectly healthy. Measuring
+// each stream separately reported the entire window as silence and failed the
+// transfer test for no reason.
+func TestRecorder_LongestGapIgnoresAQuietStream(t *testing.T) {
+	r := New(net.ParseIP("127.0.0.1"), 25095, 41700, t.TempDir())
+	base := time.Now().Truncate(bucket)
+	var offsets []time.Duration
+	for d := time.Duration(0); d < 4*time.Second; d += 250 * time.Millisecond {
+		offsets = append(offsets, d)
+	}
+	r.streams = []*stream{bucketsAt("1", base, offsets...), bucketsAt("2", base)}
+	r.streams[1].buckets = nil // stream 2 never received a packet
+
+	if got := r.LongestGap(base, base.Add(4*time.Second)); got > 500*time.Millisecond {
+		t.Errorf("longest gap with one busy stream: got %v want ~0", got)
 	}
 }
