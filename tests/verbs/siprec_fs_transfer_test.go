@@ -28,6 +28,7 @@ import (
 	"os"
 	"path/filepath"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 
@@ -63,6 +64,9 @@ const postTransferWatch = 12 * time.Second
 // 12. assert-recorded-conversation — Deepgram on the fork: sun + shining
 // 13. hangup-agent-leg — jambonz ends the moved leg (the no-BYE case)
 // 14. assert-siprec-bye — the SBC stopped the recording
+// siprecRecorderPorts serialises the variants that bind the recorder's ports.
+var siprecRecorderPorts sync.Mutex
+
 // recordedLeg is how the call that gets recorded and queued was created, which
 // decides WHICH SBC has to survive the move: an inbound call is anchored by
 // sbc-inbound, a REST call by sbc-outbound, and each has its own copy of
@@ -96,6 +100,12 @@ func siprecTransfer(t *testing.T, leg recordedLeg) {
 		t.Skipf("every configured feature server is on host %s; a call is only "+
 			"moved with a REFER between hosts", hostOf(cfg.FeatureServers[0]))
 	}
+	// The two variants share one recorder address, because a firewalled cluster
+	// only has holes punched for the configured SIPREC ports - so they take turns
+	// rather than fighting over the bind. Still parallel with the rest of the suite.
+	siprecRecorderPorts.Lock()
+	defer siprecRecorderPorts.Unlock()
+
 	ctx := WithTimeout(t, 180*time.Second)
 	callerUAS, agentUAS := claimUAS2(t, ctx)
 
@@ -109,7 +119,10 @@ func siprecTransfer(t *testing.T, leg recordedLeg) {
 	if err := rec.Start(); err != nil {
 		s.Fatalf("start recorder: %v", err)
 	}
-	t.Cleanup(rec.Stop)
+	// deferred, not t.Cleanup: cleanups run after the function returns, i.e. after
+	// the mutex above is released, which would let the other variant try to bind
+	// these ports while this recorder still holds them
+	defer rec.Stop()
 	s.Logf("siprec recorder at %s", rec.URL())
 	s.Done()
 
