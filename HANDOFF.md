@@ -450,6 +450,56 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-09-04 — TTS latency leaderboard harness; elevenlabs streaming is 403ing
+
+Built `tests/verbs/tts_leaderboard_test.go` (build tag `leaderboard`, NOT part
+of the suite) to regenerate the numbers behind the
+[TTS latency leaderboard](https://jambonz.org/blog/text-to-speech-latency-the-jambonz-leaderboard)
+against jambonz.me. Auto-discovers every SP credential with `use_for_tts`,
+sweeps {say, say.stream} x {short, long} x 5 prompts, writes md/csv/json to
+`recordings/tts-leaderboard/` (gitignored — run artifacts). First full run: 38
+cells, 190 utterances, 15 min at `-parallel 5`. Written up in
+[docs/tts-latency-report-2026-09-04.md](docs/tts-latency-report-2026-09-04.md),
+with the 190 raw samples vendored alongside it under `docs/data/` so the
+numbers stay auditable after the recordings dir is cleaned.
+
+Two findings worth acting on:
+
+- **elevenlabs streaming TTS is broken on jambonz.me.** The WS handshake gets
+  HTTP 403 (`expected handshake response status code 101 but got 403`,
+  mediajam.log). The same SP credential synthesizes fine over HTTP
+  (ttfb ~500-690ms), so the key is valid but has no streaming-WS permission on
+  that elevenlabs account. Every `say` with `stream:true` on elevenlabs plays
+  silence for the whole call. Separately, feature-server's
+  `TtsStreamingBuffer:_onConnectFailure` log line hardcodes "deepgram" as the
+  vendor regardless of which vendor actually failed — that cost time to
+  diagnose and is worth a one-line fix upstream.
+- **rimelabs regressed hard vs the blog**: 242ms -> 1235ms short, 386ms ->
+  4701ms long (first-byte). Voice is `adeline`, auto-discovered because the
+  blog's "Abby" is no longer in the catalogue, so some of it may be voice
+  choice rather than vendor latency. Unverified.
+
+Measurement notes for whoever reruns this: streaming `say` produces NO
+server-side TTFB (feature-server hands text to the stream, mediajam plays what
+comes back, no playback-start event to read), so those rows are end-to-end
+only and the report ranks on end-to-end throughout. Non-streaming end-to-end
+sits at a ~2.1s floor for every vendor because the whole clip is synthesized
+before playback starts — that is time-to-last-byte, not overhead.
+
+`aws` was skipped (`tts_tested_ok=0`); `custom:telin` is skipped unless named
+in `TTS_LB_VENDORS`.
+
+Also landed, and this one DOES affect the suite: `internal/sip/uas.go` gained
+`Config.BindHost`, defaulting from `JAMBONZ_IT_SIP_BIND_HOST`. On a
+split-tunnel VPN the route to the SBC goes over the tunnel while sipgo sources
+from the default interface, and EVERY verb test dies with
+`can't assign requested address`. Set it to the tunnel address
+(e.g. `JAMBONZ_IT_SIP_BIND_HOST=10.6.12.2`) to run from behind the VPN;
+unset it behaves exactly as before. Media is unaffected — symmetric RTP
+(ADR-0014) latches on our source address regardless of what the SDP says.
+
+Nothing here is committed.
+
 ### 2026-08-19 — permitted_marks was losing the comma; smoke test added
 
 `punctuation_overrides.permitted_marks` travelled to the media server as a
