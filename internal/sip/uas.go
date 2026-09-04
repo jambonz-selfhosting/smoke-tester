@@ -48,6 +48,19 @@ type Config struct {
 	// offer on the received INVITE.
 	TLSBindHost string
 	TLSBindPort int
+
+	// BindHost is the local address the ephemeral tcp/udp transports bind
+	// to. Empty means 0.0.0.0, which is right on a machine whose default
+	// route reaches the cluster. On a split-tunnel VPN it is not: sipgo
+	// derives the client-side source address from the default interface,
+	// and dialling the SBC over the tunnel from that address fails with
+	// "can't assign requested address". Set this to the tunnel address
+	// in that case. Media still latches via symmetric RTP (ADR-0014), so
+	// the SDP address does not have to match.
+	//
+	// Left empty, JAMBONZ_IT_SIP_BIND_HOST supplies it — an operator-level
+	// escape hatch for a developer machine, not a per-test knob.
+	BindHost string
 }
 
 // InboundHandler is invoked synchronously for every incoming INVITE. The
@@ -108,9 +121,10 @@ func Start(ctx context.Context, cfg Config, handler InboundHandler) (*Stack, err
 		return nil, fmt.Errorf("sipgo NewUA: %w", err)
 	}
 
+	bindHost := nonEmpty(nonEmpty(cfg.BindHost, os.Getenv("JAMBONZ_IT_SIP_BIND_HOST")), "0.0.0.0")
 	opts := []diago.DiagoOption{
-		diago.WithTransport(diago.Transport{Transport: "tcp", BindHost: "0.0.0.0", BindPort: 0}),
-		diago.WithTransport(diago.Transport{Transport: "udp", BindHost: "0.0.0.0", BindPort: 0}),
+		diago.WithTransport(diago.Transport{Transport: "tcp", BindHost: bindHost, BindPort: 0}),
+		diago.WithTransport(diago.Transport{Transport: "udp", BindHost: bindHost, BindPort: 0}),
 	}
 	if cfg.TLSBindPort != 0 {
 		tlsConf, err := selfSignedTLSConfig(cfg.TLSBindHost)
