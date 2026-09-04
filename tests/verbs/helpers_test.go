@@ -99,6 +99,7 @@ func claimUAS(t *testing.T, ctx context.Context) *UAS {
 		Transport: "tcp",
 		LogLevel:  cfg.LogLevel,
 		Resolver:  sipResolver.Resolver(),
+		BindHost:  cfg.SIPBindHost,
 		// Owner ties every call on this per-test stack to t, so per-leg
 		// recording archives (RECORD_LEGS, ADR-0016) land under
 		// recordings/<test>/<leg>.wav with zero per-test wiring.
