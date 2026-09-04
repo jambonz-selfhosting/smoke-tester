@@ -36,15 +36,12 @@ import (
 )
 
 // speechmaticsAgentOptions builds the recognizer.speechmaticsOptions the
-// agent-STT tests send: the turn-taking profile always, and the host only
-// when one is configured, so an unset SPEECHMATICS_AGENT_HOST leaves the
-// media server on its own default rather than pinning the tests to a
-// hostname that moves at GA.
+// agent-STT tests send.
 func speechmaticsAgentOptions(extra map[string]any) map[string]any {
+	// the host rides on the credential (SPEECHMATICS_AGENT_HOST), the same way
+	// the classic vendor carries speechmatics_stt_uri; only the profile is
+	// per-verb here
 	opts := map[string]any{"profile": cfg.SpeechmaticsAgentProfile}
-	if cfg.SpeechmaticsAgentHost != "" {
-		opts["host"] = cfg.SpeechmaticsAgentHost
-	}
 	for k, v := range extra {
 		opts[k] = v
 	}

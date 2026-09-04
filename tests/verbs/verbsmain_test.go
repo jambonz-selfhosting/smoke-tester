@@ -455,19 +455,22 @@ func provisionSpeechmaticsCredential() error {
 
 // provisionSpeechmaticsAgentCredential creates a speechmaticsagent
 // (Speechmatics Agent STT) speech credential under the suite account,
-// labelled `it-speechmaticsagent-<runID>`. STT-only. Unlike the classic
-// speechmatics credential this one carries no speechmatics_stt_uri — the
-// agent endpoint is chosen per-verb via recognizer.speechmaticsOptions.
+// labelled `it-speechmaticsagent-<runID>`. STT-only. speechmatics_stt_uri is
+// optional for this vendor — unset means the global endpoint — and a verb can
+// still override it per call via recognizer.speechmaticsOptions.host.
 // Called only when SPEECHMATICS_AGENT_API_KEY is set.
 func provisionSpeechmaticsAgentCredential() error {
 	speechmaticsAgentLabel = "it-speechmaticsagent-" + provision.RunID()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
-		Vendor:    "speechmaticsagent",
-		Label:     speechmaticsAgentLabel,
-		APIKey:    cfg.SpeechmaticsAgentAPIKey,
-		UseForSTT: true,
+		Vendor: "speechmaticsagent",
+		Label:  speechmaticsAgentLabel,
+		APIKey: cfg.SpeechmaticsAgentAPIKey,
+		// optional here, unlike the classic vendor: unset means the global
+		// endpoint, which routes to the nearest region
+		SpeechmaticsSTTURI: cfg.SpeechmaticsAgentHost,
+		UseForSTT:          true,
 	})
 	if err != nil {
 		return err
