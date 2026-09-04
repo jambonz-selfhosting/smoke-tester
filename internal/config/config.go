@@ -114,6 +114,13 @@ type Settings struct {
 	// "eu2.rt.speechmatics.com" when SPEECHMATICS_STT_URI is unset.
 	SpeechmaticsSTTURI string
 
+	// Optional — pin the SIP stack's tcp/udp transports to one local
+	// interface. Needed when a VPN owns the route to the SBC: sipgo dials
+	// from the host's primary IP, which the kernel then refuses as a source
+	// address for a route that leaves over the tunnel (EADDRNOTAVAIL). Set
+	// it to the tunnel's address. Empty means 0.0.0.0 (the old behaviour).
+	SIPBindHost string
+
 	// Optional — Speechmatics Agent STT ("speechmaticsagent") API key. A
 	// separate credential from SpeechmaticsAPIKey: a different vendor, a
 	// different endpoint (/v2/agent/<profile>), and the key may be entitled
@@ -303,6 +310,7 @@ func parse() (*Settings, error) {
 		GptLiveDelegationModel:   firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
 		SpeechmaticsAPIKey:       os.Getenv("SPEECHMATICS_API_KEY"),
 		SpeechmaticsSTTURI:       firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
+		SIPBindHost:              os.Getenv("SIP_BIND_HOST"),
 		SpeechmaticsAgentAPIKey:  os.Getenv("SPEECHMATICS_AGENT_API_KEY"),
 		SpeechmaticsAgentProfile: firstNonEmpty(os.Getenv("SPEECHMATICS_AGENT_PROFILE"), "smart"),
 		SpeechmaticsAgentHost:    os.Getenv("SPEECHMATICS_AGENT_HOST"),

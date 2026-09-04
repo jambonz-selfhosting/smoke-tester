@@ -48,6 +48,12 @@ type Config struct {
 	// offer on the received INVITE.
 	TLSBindHost string
 	TLSBindPort int
+
+	// BindHost pins the tcp/udp transports (and so the source address the
+	// stack dials the SBC from) to one interface. Empty means 0.0.0.0, which
+	// makes sipgo dial from the host's primary IP — wrong when a VPN owns the
+	// route to the SBC, where that dial fails with EADDRNOTAVAIL.
+	BindHost string
 }
 
 // InboundHandler is invoked synchronously for every incoming INVITE. The
@@ -108,9 +114,10 @@ func Start(ctx context.Context, cfg Config, handler InboundHandler) (*Stack, err
 		return nil, fmt.Errorf("sipgo NewUA: %w", err)
 	}
 
+	bindHost := nonEmpty(cfg.BindHost, "0.0.0.0")
 	opts := []diago.DiagoOption{
-		diago.WithTransport(diago.Transport{Transport: "tcp", BindHost: "0.0.0.0", BindPort: 0}),
-		diago.WithTransport(diago.Transport{Transport: "udp", BindHost: "0.0.0.0", BindPort: 0}),
+		diago.WithTransport(diago.Transport{Transport: "tcp", BindHost: bindHost, BindPort: 0}),
+		diago.WithTransport(diago.Transport{Transport: "udp", BindHost: bindHost, BindPort: 0}),
 	}
 	if cfg.TLSBindPort != 0 {
 		tlsConf, err := selfSignedTLSConfig(cfg.TLSBindHost)
