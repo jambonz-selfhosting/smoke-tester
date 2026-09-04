@@ -114,6 +114,24 @@ type Settings struct {
 	// "eu2.rt.speechmatics.com" when SPEECHMATICS_STT_URI is unset.
 	SpeechmaticsSTTURI string
 
+	// Optional — Speechmatics Agent STT ("speechmaticsagent") API key. A
+	// separate credential from SpeechmaticsAPIKey: a different vendor, a
+	// different endpoint (/v2/agent/<profile>), and the key may be entitled
+	// to one and not the other. When set, TestMain provisions a
+	// speechmaticsagent SpeechCredential and the agent-STT gather/
+	// transcribe tests exercise it — see HasSpeechmaticsAgent.
+	SpeechmaticsAgentAPIKey string
+
+	// Optional — the Agent STT turn-taking profile the tests request
+	// (recognizer.speechmaticsOptions.profile). Defaults to "smart".
+	SpeechmaticsAgentProfile string
+
+	// Optional — Agent STT host override (recognizer.speechmaticsOptions.host).
+	// Empty leaves the media server on its own default, which is where the
+	// Agent API currently lives; set it to move the tests onto the production
+	// endpoints without a rebuild.
+	SpeechmaticsAgentHost string
+
 	// Optional — Google Dialogflow. When DialogflowServiceKey is set (the
 	// full service-account JSON, read from DIALOGFLOW_KEYFILE), the
 	// dialogflow verb test provisions nothing via /SpeechCredentials —
@@ -195,6 +213,11 @@ func (s *Settings) HasGptLive() bool { return s.GptLiveAPIKey != "" }
 // exercising speechmatics.
 func (s *Settings) HasSpeechmatics() bool { return s.SpeechmaticsAPIKey != "" }
 
+// HasSpeechmaticsAgent reports whether the Speechmatics Agent STT
+// gather/transcribe tests can run. Optional: when the key is unset those
+// tests pass without exercising the agent API.
+func (s *Settings) HasSpeechmaticsAgent() bool { return s.SpeechmaticsAgentAPIKey != "" }
+
 // HasDialogflow reports whether the Google Dialogflow verb test can run. It
 // needs the service-account JSON plus the CX agent coordinates (project +
 // agent + region). Optional: when any is unset the test skips (passes) with
@@ -264,33 +287,36 @@ func MustLoad() *Settings {
 
 func parse() (*Settings, error) {
 	s := &Settings{
-		APIBaseURL:              strings.TrimRight(os.Getenv("JAMBONZ_API_URL"), "/"),
-		SPAPIKey:                os.Getenv("JAMBONZ_SP_API_KEY"),
-		SPSID:                   os.Getenv("JAMBONZ_SP_SID"),
-		SIPRealmZone:            firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
-		DeepgramAPIKey:          os.Getenv("DEEPGRAM_API_KEY"),
-		DeepseekAPIKey:          os.Getenv("DEEPSEEK_API_KEY"),
-		OpenAIAPIKey:            os.Getenv("OPENAI_API_KEY"),
-		MurfAPIKey:              os.Getenv("MURF_API_KEY"),
-		XaiAPIKey:               os.Getenv("XAI_API_KEY"),
-		GptLiveAPIKey:           os.Getenv("GPTLIVE_API_KEY"),
-		GptLiveModel:            firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
-		GptLiveHost:             os.Getenv("GPTLIVE_HOST"),
-		GptLivePath:             os.Getenv("GPTLIVE_PATH"),
-		GptLiveDelegationModel:  firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
-		SpeechmaticsAPIKey:      os.Getenv("SPEECHMATICS_API_KEY"),
-		SpeechmaticsSTTURI:      firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
-		DialogflowProject:       os.Getenv("DIALOGFLOW_PROJECT"),
-		DialogflowCESApp:        os.Getenv("DIALOGFLOW_CES_APP"),
-		DialogflowCESDeployment: os.Getenv("DIALOGFLOW_CES_DEPLOYMENT"),
-		DialogflowCESLocation:   firstNonEmpty(os.Getenv("DIALOGFLOW_CES_LOCATION"), "us"),
-		DialogflowAgent:         os.Getenv("DIALOGFLOW_AGENT"),
-		DialogflowRegion:        firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
-		DialogflowLang:          firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
-		NgrokAuthToken:          os.Getenv("NGROK_AUTHTOKEN"),
-		NgrokDomain:             os.Getenv("NGROK_DOMAIN"),
-		RunID:                   os.Getenv("RUN_ID"),
-		LogLevel:                strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
+		APIBaseURL:               strings.TrimRight(os.Getenv("JAMBONZ_API_URL"), "/"),
+		SPAPIKey:                 os.Getenv("JAMBONZ_SP_API_KEY"),
+		SPSID:                    os.Getenv("JAMBONZ_SP_SID"),
+		SIPRealmZone:             firstNonEmpty(os.Getenv("JAMBONZ_SIP_REALM_ZONE"), "smoke.test"),
+		DeepgramAPIKey:           os.Getenv("DEEPGRAM_API_KEY"),
+		DeepseekAPIKey:           os.Getenv("DEEPSEEK_API_KEY"),
+		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
+		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
+		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
+		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
+		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
+		GptLiveHost:              os.Getenv("GPTLIVE_HOST"),
+		GptLivePath:              os.Getenv("GPTLIVE_PATH"),
+		GptLiveDelegationModel:   firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
+		SpeechmaticsAPIKey:       os.Getenv("SPEECHMATICS_API_KEY"),
+		SpeechmaticsSTTURI:       firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
+		SpeechmaticsAgentAPIKey:  os.Getenv("SPEECHMATICS_AGENT_API_KEY"),
+		SpeechmaticsAgentProfile: firstNonEmpty(os.Getenv("SPEECHMATICS_AGENT_PROFILE"), "smart"),
+		SpeechmaticsAgentHost:    os.Getenv("SPEECHMATICS_AGENT_HOST"),
+		DialogflowProject:        os.Getenv("DIALOGFLOW_PROJECT"),
+		DialogflowCESApp:         os.Getenv("DIALOGFLOW_CES_APP"),
+		DialogflowCESDeployment:  os.Getenv("DIALOGFLOW_CES_DEPLOYMENT"),
+		DialogflowCESLocation:    firstNonEmpty(os.Getenv("DIALOGFLOW_CES_LOCATION"), "us"),
+		DialogflowAgent:          os.Getenv("DIALOGFLOW_AGENT"),
+		DialogflowRegion:         firstNonEmpty(os.Getenv("DIALOGFLOW_REGION"), "us-central1"),
+		DialogflowLang:           firstNonEmpty(os.Getenv("DIALOGFLOW_LANG"), "en-US"),
+		NgrokAuthToken:           os.Getenv("NGROK_AUTHTOKEN"),
+		NgrokDomain:              os.Getenv("NGROK_DOMAIN"),
+		RunID:                    os.Getenv("RUN_ID"),
+		LogLevel:                 strings.ToLower(firstNonEmpty(os.Getenv("LOG_LEVEL"), "info")),
 	}
 
 	// required

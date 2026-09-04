@@ -14,6 +14,10 @@
       "enum": ["adaptive", "agile", "smart", "external"],
       "description": "Speechmatics profile."
     },
+    "path": {
+      "type": "string",
+      "description": "Websocket path override. Defaults to /v2/agent/<profile> for the agent (speechmaticsagent) vendor."
+    },
     "transcription_config": {
       "type": "object",
       "description": "Speechmatics transcription configuration.",

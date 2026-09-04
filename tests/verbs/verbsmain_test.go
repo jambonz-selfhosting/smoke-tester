@@ -95,6 +95,13 @@ var (
 	speechmaticsLabel string
 	speechmaticsSID   string
 
+	// speechmaticsagent (Speechmatics Agent STT) speech credential
+	// (STT-only) provisioned at TestMain IF SPEECHMATICS_AGENT_API_KEY is
+	// set (optional vendor). When unset, speechmaticsAgentLabel stays ""
+	// and the agent-STT gather/transcribe tests pass without exercising it.
+	speechmaticsAgentLabel string
+	speechmaticsAgentSID   string
+
 	// openai speech credential (STT-only) provisioned at TestMain IF
 	// OPENAI_API_KEY is set (optional vendor). When unset, openaiLabel stays
 	// "" and the openai gather/transcribe tests pass without exercising
@@ -230,6 +237,19 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: SPEECHMATICS_API_KEY not set — speechmatics STT tests will pass without exercising speechmatics")
 	}
 
+	// 3d-bis. speechmaticsagent (Agent STT) speech credential — optional.
+	// A separate key from SPEECHMATICS_API_KEY: different vendor, different
+	// endpoint, possibly different entitlement.
+	if cfg.HasSpeechmaticsAgent() {
+		if err := provisionSpeechmaticsAgentCredential(); err != nil {
+			log.Fatalf("tests/verbs: speechmaticsagent credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: speechmaticsagent credential label=%s sid=%s",
+			speechmaticsAgentLabel, speechmaticsAgentSID)
+	} else {
+		log.Printf("tests/verbs: SPEECHMATICS_AGENT_API_KEY not set — agent STT tests will pass without exercising it")
+	}
+
 	// 3e. openai STT speech credential — optional. Only provisioned when
 	// OPENAI_API_KEY is set; otherwise the openai gather/transcribe tests
 	// pass without exercising openai STT.
@@ -267,6 +287,7 @@ func TestMain(m *testing.M) {
 	teardownMurfCredential()
 	teardownXaiCredential()
 	teardownSpeechmaticsCredential()
+	teardownSpeechmaticsAgentCredential()
 	teardownOpenaiCredential()
 	if sipResolver != nil {
 		_ = sipResolver.Close()
@@ -430,6 +451,40 @@ func provisionSpeechmaticsCredential() error {
 	}
 	speechmaticsSID = sid
 	return nil
+}
+
+// provisionSpeechmaticsAgentCredential creates a speechmaticsagent
+// (Speechmatics Agent STT) speech credential under the suite account,
+// labelled `it-speechmaticsagent-<runID>`. STT-only. Unlike the classic
+// speechmatics credential this one carries no speechmatics_stt_uri — the
+// agent endpoint is chosen per-verb via recognizer.speechmaticsOptions.
+// Called only when SPEECHMATICS_AGENT_API_KEY is set.
+func provisionSpeechmaticsAgentCredential() error {
+	speechmaticsAgentLabel = "it-speechmaticsagent-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "speechmaticsagent",
+		Label:     speechmaticsAgentLabel,
+		APIKey:    cfg.SpeechmaticsAgentAPIKey,
+		UseForSTT: true,
+	})
+	if err != nil {
+		return err
+	}
+	speechmaticsAgentSID = sid
+	return nil
+}
+
+func teardownSpeechmaticsAgentCredential() {
+	if speechmaticsAgentSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, speechmaticsAgentSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete speechmaticsagent credential %s: %v", speechmaticsAgentSID, err)
+	}
 }
 
 func teardownSpeechmaticsCredential() {
