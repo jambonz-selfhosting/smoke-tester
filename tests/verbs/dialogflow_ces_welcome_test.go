@@ -48,6 +48,7 @@
 package verbs
 
 import (
+	"context"
 	"encoding/json"
 	"fmt"
 	"os"
@@ -69,6 +70,28 @@ func cesWelcomeEventName() string {
 		return v
 	}
 	return "WELCOME"
+}
+
+// awaitEvent waits for an eventHook callback whose "event" field is want, and
+// returns everything it consumed on the way — the caller has to keep those,
+// since the later assertions read the same queue.
+//
+// This replaces a fixed sleep. The verb already publishes start-play/stop-play,
+// so "the turn finished speaking" is an observable fact rather than something
+// to over-estimate; a budget remains as the ceiling, not the normal path.
+func awaitEvent(ctx context.Context, sess *webhook.Session, hook, want string) ([]webhook.Callback, bool) {
+	var seen []webhook.Callback
+	for {
+		cb, skipped, err := WaitCallbackForCollecting(ctx, sess, hook)
+		seen = append(seen, skipped...)
+		if err != nil {
+			return seen, false
+		}
+		seen = append(seen, cb)
+		if cb.String("event") == want {
+			return seen, true
+		}
+	}
 }
 
 // TestVerb_Dialogflow_CES_WelcomeEvent — welcomeEvent must not mute the caller.
@@ -186,7 +209,14 @@ func TestVerb_Dialogflow_CES_WelcomeEvent(t *testing.T) {
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence (greeting window): %v", err)
 	}
-	time.Sleep(14 * time.Second)
+	greetCtx, cancelGreet := context.WithTimeout(ctx, 30*time.Second)
+	consumed, gotStop := awaitEvent(greetCtx, sess, "action/ces-welcome-event", "stop-play")
+	cancelGreet()
+	collected := consumed
+	if !gotStop {
+		s.Logf("no stop-play within the budget — the event may have no handler in this app; " +
+			"continuing, since the caller-audio assertion does not depend on the greeting")
+	}
 	call.StopRecording()
 	txt, sttErr := "", error(nil)
 	if stt.HasKey() {
@@ -221,13 +251,24 @@ func TestVerb_Dialogflow_CES_WelcomeEvent(t *testing.T) {
 	if err := call.SendSilence(); err != nil {
 		s.Fatalf("SendSilence (reply window): %v", err)
 	}
-	time.Sleep(22 * time.Second)
+	// CES endpointing + the agent's LLM + the toolHook round trip + the
+	// continued turn + playback all sit inside this budget.
+	replyCtx, cancelReply := context.WithTimeout(ctx, 45*time.Second)
+	consumed, gotStop = awaitEvent(replyCtx, sess, "action/ces-welcome-event", "stop-play")
+	cancelReply()
+	collected = append(collected, consumed...)
+	if !gotStop {
+		s.Logf("no stop-play for the reply within the budget; the assertions below say why")
+	}
 	call.StopRecording()
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
 
-	cbs := DrainCallbacks(sess, 5*time.Second)
+	// Everything the two waits consumed, plus whatever is still queued: the
+	// waits read the same queue, so dropping their haul would lose the
+	// toolHook POST whenever it arrived before a stop-play.
+	cbs := append(collected, DrainCallbacks(sess, 5*time.Second)...)
 
 	// THE REGRESSION ASSERTION. A tool call naming the city we spoke can only
 	// exist if CES received our audio. With the latch in place mediajam drops
