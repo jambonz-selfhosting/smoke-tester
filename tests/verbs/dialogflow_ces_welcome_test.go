@@ -49,6 +49,7 @@ package verbs
 
 import (
 	"encoding/json"
+	"fmt"
 	"os"
 	"path/filepath"
 	"strings"
@@ -113,6 +114,14 @@ func TestVerb_Dialogflow_CES_WelcomeEvent(t *testing.T) {
 	s = Step(t, "script-ces-verb-with-welcome-event")
 	welcomeEvent := cesWelcomeEventName()
 	s.Logf("welcomeEvent = %q (override with DIALOGFLOW_CES_WELCOME_EVENT)", welcomeEvent)
+
+	// A known session id, so the conversation this call creates can be reopened
+	// afterwards to prove the id travelled the whole chain — verb ->
+	// @jambonz/mrf -> media server -> the vendor's session path. Nothing on the
+	// box logs that path, so this is the only way to observe it.
+	sessionID := fmt.Sprintf("smoke-ces-%d", time.Now().Unix())
+	s.Logf("sessionId = %q — reopen it with:", sessionID)
+	s.Logf("  CES_PROBE_SESSION_ID=%s go test ./internal/dialogflow/ -run TestCESLiveProbeSession -v", sessionID)
 	args := []any{
 		"credentials", cfg.DialogflowServiceKey,
 		"project", cfg.DialogflowProject,
@@ -120,6 +129,7 @@ func TestVerb_Dialogflow_CES_WelcomeEvent(t *testing.T) {
 		"region", cfg.DialogflowCESLocation,
 		"model", "ces",
 		"lang", cfg.DialogflowLang,
+		"sessionId", sessionID,
 		// The whole point of this test: prime the session with an event.
 		"welcomeEvent", welcomeEvent,
 		"actionHook", webhookSrv.PublicURL() + "/action/dialogflow-ces-welcome",
