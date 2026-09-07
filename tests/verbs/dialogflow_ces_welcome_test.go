@@ -205,31 +205,45 @@ func TestVerb_Dialogflow_CES_WelcomeEvent(t *testing.T) {
 	// Diagnosis only. A greeting here says the event has a handler and the
 	// outbound half works; its absence says the event name is wrong for this
 	// app, which is worth knowing but is not what this test is about.
-	s = Step(t, "greeting-window-diagnostic")
+	// Two separate questions, and only the second one gates the test.
+	//
+	//   did the event produce a turn at all?  -> start-play, short budget.
+	//     Its absence means the app declares no handler for that event name,
+	//     which is their configuration rather than jambonz behaviour, so it is
+	//     logged and we move on at once instead of sitting out a budget.
+	//   is the agent still speaking?          -> stop-play, longer budget.
+	//     This one matters: talking over the agent registers as barge-in and
+	//     would muddy the assertion this test exists for.
+	s = Step(t, "wait-out-the-opening-turn")
 	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence (greeting window): %v", err)
+		s.Fatalf("SendSilence (opening turn): %v", err)
 	}
-	greetCtx, cancelGreet := context.WithTimeout(ctx, 30*time.Second)
-	consumed, gotStop := awaitEvent(greetCtx, sess, "action/ces-welcome-event", "stop-play")
-	cancelGreet()
-	collected := consumed
-	if !gotStop {
-		s.Logf("no stop-play within the budget — the event may have no handler in this app; " +
-			"continuing, since the caller-audio assertion does not depend on the greeting")
+	startCtx, cancelStart := context.WithTimeout(ctx, 15*time.Second)
+	collected, spoke := awaitEvent(startCtx, sess, "action/ces-welcome-event", "start-play")
+	cancelStart()
+	if spoke {
+		stopCtx, cancelStop := context.WithTimeout(ctx, 30*time.Second)
+		consumed, finished := awaitEvent(stopCtx, sess, "action/ces-welcome-event", "stop-play")
+		cancelStop()
+		collected = append(collected, consumed...)
+		if !finished {
+			s.Logf("the opening turn started but never reported stop-play; the prompt below " +
+				"may land as barge-in")
+		}
+	} else {
+		s.Logf("NO OPENING TURN: welcomeEvent %q produced no playback. Most likely CES app %s "+
+			"declares no handler for that event name — point DIALOGFLOW_CES_WELCOME_EVENT at "+
+			"one it does. Not fatal: the gate this test checks closes from the event's presence "+
+			"alone, so the caller-audio assertion below still holds.",
+			welcomeEvent, cfg.DialogflowCESApp)
 	}
 	call.StopRecording()
-	txt, sttErr := "", error(nil)
 	if stt.HasKey() {
-		txt, sttErr = stt.Transcribe(ctx, greetingRec)
-	}
-	if sttErr != nil {
-		s.Logf("greeting transcript unavailable (%v) — continuing; the greeting is not asserted", sttErr)
-	} else if strings.TrimSpace(txt) == "" {
-		s.Logf("NO GREETING: welcomeEvent %q produced no audio. Likely no handler for that "+
-			"event name in CES app %s. The caller-audio assertion below still holds, since "+
-			"audioMode is switched off from the event's presence alone.", welcomeEvent, cfg.DialogflowCESApp)
-	} else {
-		s.Logf("greeting: %q", txt)
+		if txt, err := stt.Transcribe(ctx, greetingRec); err != nil {
+			s.Logf("opening-turn transcript unavailable (%v); it is not asserted either way", err)
+		} else if strings.TrimSpace(txt) != "" {
+			s.Logf("opening turn: %q", txt)
+		}
 	}
 	s.Done()
 
@@ -254,10 +268,10 @@ func TestVerb_Dialogflow_CES_WelcomeEvent(t *testing.T) {
 	// CES endpointing + the agent's LLM + the toolHook round trip + the
 	// continued turn + playback all sit inside this budget.
 	replyCtx, cancelReply := context.WithTimeout(ctx, 45*time.Second)
-	consumed, gotStop = awaitEvent(replyCtx, sess, "action/ces-welcome-event", "stop-play")
+	consumed, gotReply := awaitEvent(replyCtx, sess, "action/ces-welcome-event", "stop-play")
 	cancelReply()
 	collected = append(collected, consumed...)
-	if !gotStop {
+	if !gotReply {
 		s.Logf("no stop-play for the reply within the budget; the assertions below say why")
 	}
 	call.StopRecording()
