@@ -79,6 +79,14 @@ type Settings struct {
 	// exercising xai STT — see HasXai.
 	XaiAPIKey string
 
+	// Optional — Google AI Studio API key for the Gemini Live transcription
+	// models. The Gemini API refuses service accounts ("Access to Gemini API
+	// is restricted with service accounts"), so this is a SEPARATE variable
+	// from DIALOGFLOW_KEYFILE rather than a reuse of the google service
+	// account. When unset the gemini STT tests pass without exercising them
+	// — see HasGeminiStt.
+	GeminiAPIKey string
+
 	// Optional — OpenAI GPT Live (limited-access alpha) API key. This is an
 	// OpenAI key enrolled in the GPT Live Early Access Program; a plain
 	// OPENAI_API_KEY is rejected at connect, so this is a SEPARATE variable
@@ -186,6 +194,15 @@ func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 
+// HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
+// can run. Optional: when the key is unset those tests pass without
+// exercising gemini.
+// A google speech credential still requires a service-account JSON even when
+// only the gemini models will be used, so both are needed here.
+func (s *Settings) HasGeminiStt() bool {
+	return s.GeminiAPIKey != "" && s.DialogflowServiceKey != ""
+}
+
 // HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
 // Optional: when the key is unset those tests pass without exercising gptlive.
 func (s *Settings) HasGptLive() bool { return s.GptLiveAPIKey != "" }
@@ -273,6 +290,7 @@ func parse() (*Settings, error) {
 		OpenAIAPIKey:            os.Getenv("OPENAI_API_KEY"),
 		MurfAPIKey:              os.Getenv("MURF_API_KEY"),
 		XaiAPIKey:               os.Getenv("XAI_API_KEY"),
+		GeminiAPIKey:            os.Getenv("GEMINI_API_KEY"),
 		GptLiveAPIKey:           os.Getenv("GPTLIVE_API_KEY"),
 		GptLiveModel:            firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
 		GptLiveHost:             os.Getenv("GPTLIVE_HOST"),

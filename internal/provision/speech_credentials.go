@@ -34,6 +34,10 @@ type SpeechCredentialCreate struct {
 	// for others; it is the default model the credential recognizes with,
 	// overridable per-verb via the vendor's recognizer options.
 	ModelID string `json:"model_id,omitempty"`
+	// STTModelID is the default STT model. For google it also selects the
+	// API: a gemini-* model routes recognition to the Gemini Live API
+	// instead of Cloud Speech-to-Text.
+	STTModelID string `json:"stt_model_id,omitempty"`
 }
 
 // CreateAccountSpeechCredential POSTs a credential under an account. Returns
