@@ -87,6 +87,12 @@ type Settings struct {
 	// — see HasGeminiStt.
 	GeminiAPIKey string
 
+	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the GA
+	// vertex interface, which authenticates as a service account rather than
+	// an api key. Needs roles/aiplatform.user, which the dialogflow key does
+	// not carry, so it is a separate variable.
+	GeminiServiceKey string
+
 	// Optional — OpenAI GPT Live (limited-access alpha) API key. This is an
 	// OpenAI key enrolled in the GPT Live Early Access Program; a plain
 	// OPENAI_API_KEY is rejected at connect, so this is a SEPARATE variable
@@ -197,10 +203,21 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
 // can run. Optional: when the key is unset those tests pass without
 // exercising gemini.
-// A google speech credential still requires a service-account JSON even when
-// only the gemini models will be used, so both are needed here.
-func (s *Settings) HasGeminiStt() bool {
-	return s.GeminiAPIKey != "" && s.DialogflowServiceKey != ""
+// A google speech credential always requires a service-account JSON; an api key
+// on top of it selects the studio interface instead of vertex.
+func (s *Settings) HasGeminiStt() bool { return s.GeminiSttServiceKey() != "" }
+
+// GeminiSttServiceKey is the service account the gemini credential is built
+// from: the dedicated one when set, else the dialogflow key (which suffices
+// only for the studio interface, where the api key does the authenticating).
+func (s *Settings) GeminiSttServiceKey() string {
+	if s.GeminiServiceKey != "" {
+		return s.GeminiServiceKey
+	}
+	if s.GeminiAPIKey != "" {
+		return s.DialogflowServiceKey
+	}
+	return ""
 }
 
 // HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
@@ -357,6 +374,17 @@ func parse() (*Settings, error) {
 	// and passed inline to the dialogflow verb. Unset => the dialogflow test
 	// skips cleanly. A set-but-unreadable file is a hard error so a
 	// misconfigured path doesn't silently disable the test.
+	if kf := os.Getenv("GEMINI_KEYFILE"); kf != "" {
+		b, err := os.ReadFile(kf)
+		if err != nil {
+			return nil, fmt.Errorf("GEMINI_KEYFILE=%q: %w", kf, err)
+		}
+		if !json.Valid(b) {
+			return nil, fmt.Errorf("GEMINI_KEYFILE=%q is not valid JSON", kf)
+		}
+		s.GeminiServiceKey = string(b)
+	}
+
 	if kf := os.Getenv("DIALOGFLOW_KEYFILE"); kf != "" {
 		raw, err := os.ReadFile(kf)
 		if err != nil {

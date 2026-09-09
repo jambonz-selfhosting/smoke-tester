@@ -59,6 +59,31 @@ func (c *Client) CreateAccountSpeechCredential(ctx context.Context, accountSID s
 	return ok.SID, nil
 }
 
+// TestAccountSpeechCredential runs the api-server's credential check and
+// returns the per-service results. The feature server ignores a google
+// credential whose stt_tested_ok is false, so provisioning one is not enough
+// — it has to pass this first.
+func (c *Client) TestAccountSpeechCredential(ctx context.Context, accountSID, sid string) (string, error) {
+	path := fmt.Sprintf("/Accounts/%s/SpeechCredentials/%s/test", accountSID, sid)
+	raw, err := c.Request(ctx, http.MethodGet, path, nil, "", http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		STT struct {
+			Status string `json:"status"`
+			Reason string `json:"reason"`
+		} `json:"stt"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", fmt.Errorf("decode credential test: %w", err)
+	}
+	if res.STT.Status != "ok" {
+		return res.STT.Status, fmt.Errorf("stt credential test failed: %s", res.STT.Reason)
+	}
+	return res.STT.Status, nil
+}
+
 // DeleteAccountSpeechCredential removes a credential. Cleanup is idempotent:
 // 404 means already gone, and so does 401 — an account-scope token dies with
 // its account, and a credential cannot outlive the account it hangs off, so a

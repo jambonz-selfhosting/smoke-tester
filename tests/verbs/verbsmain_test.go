@@ -95,8 +95,10 @@ var (
 	geminiLabel string
 	geminiSID   string
 	// The live transcription model; the recorded-audio sibling
-	// (gemini-3.5-transcribe) is a file API with no place in a call.
-	geminiSttModel = "gemini-3.5-transcribe-live"
+	// (gemini-3.5-transcribe) is a file API with no place in a call. The two
+	// interfaces publish it under different names — vertex adds -preview.
+	geminiSttModel       = "gemini-3.5-transcribe-live"
+	geminiSttModelVertex = "gemini-3.5-transcribe-live-preview"
 
 	// speechmatics speech credential (STT-only) provisioned at TestMain IF
 	// SPEECHMATICS_API_KEY is set (optional vendor). When unset,
@@ -409,15 +411,24 @@ func provisionGeminiCredential() error {
 	geminiLabel = "it-gemini-" + provision.RunID()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
+	model := geminiSttModelVertex
+	if cfg.GeminiAPIKey != "" {
+		model = geminiSttModel // studio publishes it without the suffix
+	}
 	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
 		Vendor:     "google",
 		Label:      geminiLabel,
-		ServiceKey: cfg.DialogflowServiceKey,
+		ServiceKey: cfg.GeminiSttServiceKey(),
 		APIKey:     cfg.GeminiAPIKey,
-		STTModelID: geminiSttModel,
+		STTModelID: model,
 		UseForSTT:  true,
 	})
 	if err != nil {
+		return err
+	}
+	// The feature server skips a google credential that has not passed its
+	// test, so a provisioned-but-untested one would look like an STT bug.
+	if _, err := client.TestAccountSpeechCredential(ctx, suite.AccountSID, sid); err != nil {
 		return err
 	}
 	geminiSID = sid

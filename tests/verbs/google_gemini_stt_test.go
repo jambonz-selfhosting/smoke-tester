@@ -29,6 +29,15 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
+// geminiModelForInterface names the model the way the provisioned credential's
+// interface publishes it (vertex adds -preview, studio does not).
+func geminiModelForInterface() string {
+	if cfg.GeminiAPIKey != "" {
+		return geminiSttModel
+	}
+	return geminiSttModelVertex
+}
+
 // TestVerb_Gather_Speech_Gemini — the credential's stt_model_id alone routes
 // the call to Gemini Live: the recognizer names no model at all, exactly as a
 // user who set a default in the portal would write it.
@@ -164,7 +173,7 @@ func TestVerb_Transcribe_Gemini(t *testing.T) {
 				"vendor":   "google",
 				"label":    geminiLabel,
 				"language": "en-US",
-				"model":    geminiSttModel,
+				"model":    geminiModelForInterface(),
 				"googleOptions": map[string]any{
 					"mode":             "SMART",
 					"customVocabulary": []any{"jambonz", "drachtio"},
