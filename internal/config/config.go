@@ -79,18 +79,10 @@ type Settings struct {
 	// exercising xai STT — see HasXai.
 	XaiAPIKey string
 
-	// Optional — Google AI Studio API key for the Gemini Live transcription
-	// models. The Gemini API refuses service accounts ("Access to Gemini API
-	// is restricted with service accounts"), so this is a SEPARATE variable
-	// from DIALOGFLOW_KEYFILE rather than a reuse of the google service
-	// account. When unset the gemini STT tests pass without exercising them
-	// — see HasGeminiStt.
-	GeminiAPIKey string
-
-	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the GA
-	// vertex interface, which authenticates as a service account rather than
-	// an api key. Needs roles/aiplatform.user, which the dialogflow key does
-	// not carry, so it is a separate variable.
+	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the gemini
+	// live transcription models, which authenticate as a service account on
+	// Vertex AI. Needs roles/aiplatform.user, which the dialogflow key does not
+	// carry, so it is a separate variable.
 	GeminiServiceKey string
 
 	// Optional — OpenAI GPT Live (limited-access alpha) API key. This is an
@@ -203,22 +195,10 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
 // can run. Optional: when the key is unset those tests pass without
 // exercising gemini.
-// A google speech credential always requires a service-account JSON; an api key
-// on top of it selects the studio interface instead of vertex.
-func (s *Settings) HasGeminiStt() bool { return s.GeminiSttServiceKey() != "" }
-
-// GeminiSttServiceKey is the service account the gemini credential is built
-// from: the dedicated one when set, else the dialogflow key (which suffices
-// only for the studio interface, where the api key does the authenticating).
-func (s *Settings) GeminiSttServiceKey() string {
-	if s.GeminiServiceKey != "" {
-		return s.GeminiServiceKey
-	}
-	if s.GeminiAPIKey != "" {
-		return s.DialogflowServiceKey
-	}
-	return ""
-}
+// HasGeminiStt reports whether the gemini gather/transcribe tests can run.
+// Optional: when GEMINI_KEYFILE is unset those tests pass without exercising
+// gemini. The dialogflow key is NOT a fallback — it lacks aiplatform access.
+func (s *Settings) HasGeminiStt() bool { return s.GeminiServiceKey != "" }
 
 // HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
 // Optional: when the key is unset those tests pass without exercising gptlive.
@@ -307,7 +287,6 @@ func parse() (*Settings, error) {
 		OpenAIAPIKey:            os.Getenv("OPENAI_API_KEY"),
 		MurfAPIKey:              os.Getenv("MURF_API_KEY"),
 		XaiAPIKey:               os.Getenv("XAI_API_KEY"),
-		GeminiAPIKey:            os.Getenv("GEMINI_API_KEY"),
 		GptLiveAPIKey:           os.Getenv("GPTLIVE_API_KEY"),
 		GptLiveModel:            firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
 		GptLiveHost:             os.Getenv("GPTLIVE_HOST"),

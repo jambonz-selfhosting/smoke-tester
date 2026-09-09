@@ -29,21 +29,12 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-// geminiModelForInterface names the model the way the provisioned credential's
-// interface publishes it (vertex adds -preview, studio does not).
-func geminiModelForInterface() string {
-	if cfg.GeminiAPIKey != "" {
-		return geminiSttModel
-	}
-	return geminiSttModelVertex
-}
-
 // TestVerb_Gather_Speech_Gemini — the credential's stt_model_id alone routes
 // the call to Gemini Live: the recognizer names no model at all, exactly as a
 // user who set a default in the portal would write it.
 func TestVerb_Gather_Speech_Gemini(t *testing.T) {
 	if !cfg.HasGeminiStt() || geminiLabel == "" {
-		t.Log("GEMINI_API_KEY not set — passing without exercising gemini STT")
+		t.Log("GEMINI_KEYFILE not set — passing without exercising gemini STT")
 		return
 	}
 
@@ -153,7 +144,7 @@ func TestVerb_Gather_Speech_Gemini(t *testing.T) {
 // are deliberately absent — Gemini Live does not support them.
 func TestVerb_Transcribe_Gemini(t *testing.T) {
 	if !cfg.HasGeminiStt() || geminiLabel == "" {
-		t.Log("GEMINI_API_KEY not set — passing without exercising gemini STT")
+		t.Log("GEMINI_KEYFILE not set — passing without exercising gemini STT")
 		return
 	}
 
@@ -173,7 +164,7 @@ func TestVerb_Transcribe_Gemini(t *testing.T) {
 				"vendor":   "google",
 				"label":    geminiLabel,
 				"language": "en-US",
-				"model":    geminiModelForInterface(),
+				"model":    geminiSttModel,
 				"googleOptions": map[string]any{
 					"mode":             "SMART",
 					"customVocabulary": []any{"jambonz", "drachtio"},

@@ -94,11 +94,9 @@ var (
 	// pass without exercising gemini.
 	geminiLabel string
 	geminiSID   string
-	// The live transcription model; the recorded-audio sibling
-	// (gemini-3.5-transcribe) is a file API with no place in a call. The two
-	// interfaces publish it under different names — vertex adds -preview.
-	geminiSttModel       = "gemini-3.5-transcribe-live"
-	geminiSttModelVertex = "gemini-3.5-transcribe-live-preview"
+	// The live transcription model as Vertex AI publishes it; the
+	// recorded-audio sibling is a file API with no place in a call.
+	geminiSttModel = "gemini-3.5-transcribe-live-preview"
 
 	// speechmatics speech credential (STT-only) provisioned at TestMain IF
 	// SPEECHMATICS_API_KEY is set (optional vendor). When unset,
@@ -263,7 +261,7 @@ func TestMain(m *testing.M) {
 		}
 		log.Printf("tests/verbs: gemini credential label=%s sid=%s", geminiLabel, geminiSID)
 	} else {
-		log.Printf("tests/verbs: GEMINI_API_KEY not set — gemini STT tests will pass without exercising gemini")
+		log.Printf("tests/verbs: GEMINI_KEYFILE not set — gemini STT tests will pass without exercising gemini")
 	}
 
 	// 4. Webhook server + ngrok tunnel + Application bound to the suite.
@@ -411,16 +409,11 @@ func provisionGeminiCredential() error {
 	geminiLabel = "it-gemini-" + provision.RunID()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	model := geminiSttModelVertex
-	if cfg.GeminiAPIKey != "" {
-		model = geminiSttModel // studio publishes it without the suffix
-	}
 	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
 		Vendor:     "google",
 		Label:      geminiLabel,
-		ServiceKey: cfg.GeminiSttServiceKey(),
-		APIKey:     cfg.GeminiAPIKey,
-		STTModelID: model,
+		ServiceKey: cfg.GeminiServiceKey,
+		STTModelID: geminiSttModel,
 		UseForSTT:  true,
 	})
 	if err != nil {
