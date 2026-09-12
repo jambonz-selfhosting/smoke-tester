@@ -724,6 +724,32 @@ func (c *Call) ReceivedByStatus(status int) []Message {
 // was opened with. For UAC outbound calls, the response code from jambonz
 // (typically 200). For UAS inbound calls, the code we sent in Answer
 // (also typically 200). Returns 0 if the call was never answered.
+// AnswerWithoutTelephoneEvent answers an inbound call offering PCMU only, so
+// the far end sees a leg that cannot carry RFC 2833 and must fall back to
+// inband tones. Real endpoints of that kind are common (older gateways, some
+// WebRTC bridges) and they are the half of the DTMF matrix a telephone-event
+// capable UAS cannot exercise.
+func (c *Call) AnswerWithoutTelephoneEvent() error {
+	if s := c.State(); s == StateAnswered || s == StateEnded {
+		return invalidState("AnswerWithoutTelephoneEvent", s, StateInit, StateTrying, StateRinging)
+	}
+	if c.direction != Inbound {
+		return fmt.Errorf("AnswerWithoutTelephoneEvent: only valid on an inbound call")
+	}
+	if err := c.in.AnswerOptions(diago.AnswerOptions{
+		Codecs: []media.Codec{media.CodecAudioUlaw},
+	}); err != nil {
+		return fmt.Errorf("AnswerWithoutTelephoneEvent: %w", err)
+	}
+	c.setState(StateAnswered, "")
+	m := diago.MediaProps{}
+	_, _ = c.in.AudioReader(diago.WithAudioReaderMediaProps(&m))
+	c.mediaMu.Lock()
+	c.codec = m.Codec.Name
+	c.mediaMu.Unlock()
+	return nil
+}
+
 func (c *Call) AnsweredStatus() int {
 	c.mu.Lock()
 	defer c.mu.Unlock()
