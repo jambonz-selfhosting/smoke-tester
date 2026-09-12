@@ -1033,6 +1033,19 @@ func (c *Call) SendDTMFWithDuration(digits string, perTone time.Duration) error 
 	if perTone < 40*time.Millisecond {
 		return fmt.Errorf("SendDTMF: perTone %v too short (min 40ms)", perTone)
 	}
+	// Stop the silence loop first, exactly as SendWAV does. Both write to the
+	// same diago RTPPacketWriter, whose WriteSamples only takes an RLock while
+	// mutating the shared packet and nextTimestamp — so a concurrent silence
+	// frame lands between a digit's packets and advances the timestamp the
+	// whole event is supposed to share. On the wire that turns 16 digits into
+	// 96 single-packet events, which is nothing like what a real phone sends.
+	c.mediaMu.Lock()
+	if c.silenceCancel != nil {
+		c.silenceCancel()
+		c.silenceCancel = nil
+	}
+	c.mediaMu.Unlock()
+
 	var dm *diago.DialogMedia
 	if c.direction == Inbound {
 		dm = &c.in.DialogMedia
