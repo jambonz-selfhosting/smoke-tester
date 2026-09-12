@@ -1070,7 +1070,11 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	if err != nil {
 		s.Fatalf("NonSilentMS: %v", err)
 	}
-	if spokenMS < 500 {
+	// Runs measure ~1300ms of speech here. 800ms is clear of that margin while
+	// staying far above anything stray frames could accumulate to across a
+	// window this long — the point is that the reply was actually spoken, not
+	// that a few samples crossed the threshold.
+	if spokenMS < 800 {
 		s.Errorf("reply window carries only %dms of audio; TTS did not reach the caller", spokenMS)
 	} else {
 		s.Logf("reply window: %dms of non-silent audio", spokenMS)

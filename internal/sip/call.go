@@ -724,6 +724,29 @@ func (c *Call) ReceivedByStatus(status int) []Message {
 // was opened with. For UAC outbound calls, the response code from jambonz
 // (typically 200). For UAS inbound calls, the code we sent in Answer
 // (also typically 200). Returns 0 if the call was never answered.
+func (c *Call) AnsweredStatus() int {
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	if c.direction == Outbound {
+		// Walk recv backwards: the last 2xx for INVITE is the answer.
+		for i := len(c.recv) - 1; i >= 0; i-- {
+			m := c.recv[i]
+			if m.StatusCode >= 200 && m.StatusCode < 300 && m.Method == "INVITE" {
+				return m.StatusCode
+			}
+		}
+		return 0
+	}
+	// Inbound: walk sent backwards.
+	for i := len(c.sent) - 1; i >= 0; i-- {
+		m := c.sent[i]
+		if m.StatusCode >= 200 && m.StatusCode < 300 && m.Method == "INVITE" {
+			return m.StatusCode
+		}
+	}
+	return 0
+}
+
 // AnswerWithoutTelephoneEvent answers an inbound call offering PCMU only, so
 // the far end sees a leg that cannot carry RFC 2833 and must fall back to
 // inband tones. Real endpoints of that kind are common (older gateways, some
@@ -748,29 +771,6 @@ func (c *Call) AnswerWithoutTelephoneEvent() error {
 	c.codec = m.Codec.Name
 	c.mediaMu.Unlock()
 	return nil
-}
-
-func (c *Call) AnsweredStatus() int {
-	c.mu.Lock()
-	defer c.mu.Unlock()
-	if c.direction == Outbound {
-		// Walk recv backwards: the last 2xx for INVITE is the answer.
-		for i := len(c.recv) - 1; i >= 0; i-- {
-			m := c.recv[i]
-			if m.StatusCode >= 200 && m.StatusCode < 300 && m.Method == "INVITE" {
-				return m.StatusCode
-			}
-		}
-		return 0
-	}
-	// Inbound: walk sent backwards.
-	for i := len(c.sent) - 1; i >= 0; i-- {
-		m := c.sent[i]
-		if m.StatusCode >= 200 && m.StatusCode < 300 && m.Method == "INVITE" {
-			return m.StatusCode
-		}
-	}
-	return 0
 }
 
 // AwaitReceivedRequest polls the recorded-received-messages slice every
@@ -1059,19 +1059,6 @@ func (c *Call) SendDTMFWithDuration(digits string, perTone time.Duration) error 
 	if perTone < 40*time.Millisecond {
 		return fmt.Errorf("SendDTMF: perTone %v too short (min 40ms)", perTone)
 	}
-	// Stop the silence loop first, exactly as SendWAV does. Both write to the
-	// same diago RTPPacketWriter, whose WriteSamples only takes an RLock while
-	// mutating the shared packet and nextTimestamp — so a concurrent silence
-	// frame lands between a digit's packets and advances the timestamp the
-	// whole event is supposed to share. On the wire that turns 16 digits into
-	// 96 single-packet events, which is nothing like what a real phone sends.
-	c.mediaMu.Lock()
-	if c.silenceCancel != nil {
-		c.silenceCancel()
-		c.silenceCancel = nil
-	}
-	c.mediaMu.Unlock()
-
 	var dm *diago.DialogMedia
 	if c.direction == Inbound {
 		dm = &c.in.DialogMedia
@@ -1082,6 +1069,24 @@ func (c *Call) SendDTMFWithDuration(digits string, perTone time.Duration) error 
 	if pw == nil {
 		return fmt.Errorf("SendDTMF: no RTP packet writer")
 	}
+
+	// Stop the silence loop, exactly as SendWAV does, and only once the call is
+	// known to be sendable. Both write to the same diago RTPPacketWriter, whose
+	// WriteSamples takes only an RLock while mutating the shared packet and
+	// nextTimestamp — a concurrent silence frame lands between a digit's
+	// packets and advances the timestamp the whole event is supposed to share.
+	// On the wire that turned 16 digits into 96 single-packet events, nothing
+	// like what a real phone sends.
+	//
+	// The loop does not come back: like SendWAV, this leaves the leg quiet
+	// afterwards. Call SendSilence again if the test needs outbound RTP to keep
+	// flowing (NAT bindings are already latched by the digits themselves).
+	c.mediaMu.Lock()
+	if c.silenceCancel != nil {
+		c.silenceCancel()
+		c.silenceCancel = nil
+	}
+	c.mediaMu.Unlock()
 
 	const (
 		sampleRate   = 8000

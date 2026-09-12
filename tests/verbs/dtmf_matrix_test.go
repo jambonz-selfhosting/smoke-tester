@@ -72,6 +72,10 @@ func (m callerMode) String() string {
 
 type dtmfMatrixCase struct {
 	caller callerMode
+	// digits overrides dtmfMatrixDigits; the strict assertion applies to
+	// whatever is set here, so a caller cannot accidentally get an
+	// assertion-free run by passing its own string.
+	digits string
 	// calleeTelEvent decides whether the callee answers with telephone-event.
 	// False models a leg that can only carry tones in the audio.
 	calleeTelEvent bool
@@ -98,6 +102,7 @@ func runDTMFMatrix(t *testing.T, tc dtmfMatrixCase) {
 // what the callee received in the carriage its own SDP negotiated.
 func runDTMFMatrixWith(t *testing.T, tc dtmfMatrixCase, digits string) string {
 	tag := tc.name()
+	strict := tc.digits == "" // a case carrying its own digits asserts in its own test
 	ctx := WithTimeout(t, 120*time.Second)
 	callerUAS, calleeUAS := claimUAS2(t, ctx)
 	_, sess := claimSession(t)
@@ -248,7 +253,7 @@ func runDTMFMatrixWith(t *testing.T, tc dtmfMatrixCase, digits string) string {
 	if !tc.calleeTelEvent {
 		got, want = inband, "inband tones"
 	}
-	if digits == dtmfMatrixDigits && got != digits {
+	if strict && got != digits {
 		s.Errorf("%s: callee received %q as %s, want %q", tag, got, want, digits)
 	}
 	// Whatever shows up in the other carriage must at least be a subsequence of
@@ -290,10 +295,15 @@ func TestVerb_DTMFMatrix_RepeatedDigits(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
 	const digits = "1123"
-	got := runDTMFMatrixWith(t, dtmfMatrixCase{caller: send2833, calleeTelEvent: false}, digits)
-	if got != digits {
+	got := runDTMFMatrixWith(t, dtmfMatrixCase{caller: send2833, calleeTelEvent: false, digits: digits}, digits)
+	switch got {
+	case digits:
+		t.Logf("repeated digits now survive: %q", got)
+	case "123": // the two 1s fused into one tone — the known signature
 		t.Skipf("known rtpengine limitation: callee heard %q for %q "+
 			"(repeated digits fuse without an inter-digit pause)", got, digits)
+	default:
+		t.Fatalf("callee heard %q for %q — neither correct nor the known fusion signature %q",
+			got, digits, "123")
 	}
-	t.Logf("repeated digits now survive: %q", got)
 }
