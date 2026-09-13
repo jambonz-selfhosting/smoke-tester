@@ -885,7 +885,7 @@ func TestVerb_Agent_ActionHookOnEnd(t *testing.T) {
 // 10. assert-tool-payload — name + arguments + tool_call_id present
 // 11. wait-for-llm-reply — silence while agent speaks the secret word
 // 12. hangup-and-wait-ended
-// 13. assert-secret-word-spoken — recording contains the secret word
+// 13. assert-secret-word-spoken — agent response names the secret word; reply audio is non-silent
 func TestVerb_Agent_ToolHook(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -985,6 +985,15 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 		s.Fatalf("waiting for action/agent-tool: %v", err)
 	}
 	s.Logf("action/agent-tool body: %s", string(toolCB.Body))
+	// Restart recording here so the reply audio gets its own file. The
+	// cumulative Call.RMS/PCMBytesIn counters span the whole call and would
+	// pass on any answered leg; a file bracketing just the reply is what
+	// actually shows TTS reached the caller.
+	call.StopRecording()
+	replyPath := t.TempDir() + "/agent-tool-reply-window.pcm"
+	if err := call.StartRecording(replyPath); err != nil {
+		s.Fatalf("StartRecording (reply window): %v", err)
+	}
 	s.Done()
 
 	s = Step(t, "assert-tool-payload")
@@ -1043,10 +1052,59 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	HangupAndWaitEnded(t, ctx, call)
 
 	s = Step(t, "assert-secret-word-spoken")
-	// Tolerance 1/1: the secret word must come through. If LLM verbosely
-	// adds commentary, fine — but it has to include "kingfisher".
-	AssertTranscriptHasMost(s, ctx, recPath, 1, secretWord)
+	// Assert on the agent's own response text, not on STT of the reply audio.
+	// Deepgram reliably mangles "kingfisher" out of Deepgram TTS over PCMU
+	// ("skinfisher", "disking fisher", "skin fissure"), so a transcript check
+	// here failed on a working tool round trip — the same trap the gptlive
+	// test documents for "aardvark". The response field proves what matters:
+	// the tool result was fed back and the agent spoke it.
+	if !agentEventResponseContains(append(earlyCBs, seen...), secretWord) {
+		s.Errorf("no agent event whose response contains %q; responses=%v",
+			secretWord, agentEventResponses(append(earlyCBs, seen...)))
+	}
+	// Separately, the reply audio has to actually reach the caller. Kept
+	// phonetics-free on purpose: this is a media check, not a speech check.
+	// Measured over the reply window only — the whole-call counters would
+	// pass on silence.
+	spokenMS, err := NonSilentMS(replyPath, 500)
+	if err != nil {
+		s.Fatalf("NonSilentMS: %v", err)
+	}
+	// Runs measure ~1300ms of speech here. 800ms is clear of that margin while
+	// staying far above anything stray frames could accumulate to across a
+	// window this long — the point is that the reply was actually spoken, not
+	// that a few samples crossed the threshold.
+	if spokenMS < 800 {
+		s.Errorf("reply window carries only %dms of audio; TTS did not reach the caller", spokenMS)
+	} else {
+		s.Logf("reply window: %dms of non-silent audio", spokenMS)
+	}
 	s.Done()
+}
+
+// agentEventResponses collects the response text of every agent event that
+// carries one (llm_response and turn_end).
+func agentEventResponses(cbs []webhook.Callback) []string {
+	var out []string
+	for _, kind := range []string{"llm_response", "turn_end"} {
+		for _, cb := range findAgentEvents(cbs, kind) {
+			if r := cb.String("response"); r != "" {
+				out = append(out, r)
+			}
+		}
+	}
+	return out
+}
+
+// agentEventResponseContains reports whether any agent response mentions word,
+// case-insensitively.
+func agentEventResponseContains(cbs []webhook.Callback, word string) bool {
+	for _, r := range agentEventResponses(cbs) {
+		if strings.Contains(strings.ToLower(r), strings.ToLower(word)) {
+			return true
+		}
+	}
+	return false
 }
 
 // TestVerb_Agent_ToolHook_Arguments — proves the agent verb's LLM doesn't

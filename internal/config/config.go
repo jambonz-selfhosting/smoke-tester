@@ -274,7 +274,7 @@ func parse() (*Settings, error) {
 		MurfAPIKey:              os.Getenv("MURF_API_KEY"),
 		XaiAPIKey:               os.Getenv("XAI_API_KEY"),
 		GptLiveAPIKey:           os.Getenv("GPTLIVE_API_KEY"),
-		GptLiveModel:            firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
+		GptLiveModel:            firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
 		GptLiveHost:             os.Getenv("GPTLIVE_HOST"),
 		GptLivePath:             os.Getenv("GPTLIVE_PATH"),
 		GptLiveDelegationModel:  firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
