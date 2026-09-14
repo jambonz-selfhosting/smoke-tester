@@ -88,6 +88,16 @@ var (
 	xaiVoice    = "eve"
 	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
 
+	// google speech credential whose default STT model is a gemini live
+	// model, provisioned at TestMain IF GEMINI_API_KEY is set (optional).
+	// When unset, geminiLabel stays "" and the gemini gather/transcribe tests
+	// pass without exercising gemini.
+	geminiLabel string
+	geminiSID   string
+	// The live transcription model as Vertex AI publishes it; the
+	// recorded-audio sibling is a file API with no place in a call.
+	geminiSttModel = "gemini-3.5-transcribe-live-preview"
+
 	// speechmatics speech credential (STT-only) provisioned at TestMain IF
 	// SPEECHMATICS_API_KEY is set (optional vendor). When unset,
 	// speechmaticsLabel stays "" and the speechmatics gather/transcribe tests
@@ -242,6 +252,18 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: OPENAI_API_KEY not set — openai STT tests will pass without exercising openai")
 	}
 
+	// 3f. google/gemini STT speech credential — optional. Only provisioned
+	// when GEMINI_API_KEY (plus a service-account key) is set; otherwise the
+	// gemini gather/transcribe tests pass without exercising gemini STT.
+	if cfg.HasGeminiStt() {
+		if err := provisionGeminiCredential(); err != nil {
+			log.Fatalf("tests/verbs: gemini credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: gemini credential label=%s sid=%s", geminiLabel, geminiSID)
+	} else {
+		log.Printf("tests/verbs: GEMINI_KEYFILE not set — gemini STT tests will pass without exercising gemini")
+	}
+
 	// 4. Webhook server + ngrok tunnel + Application bound to the suite.
 	if err := setupWebhook(v); err != nil {
 		log.Fatalf("tests/verbs: webhook setup failed: %v", err)
@@ -376,6 +398,34 @@ func teardownMurfCredential() {
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, murfSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete Murf credential %s: %v", murfSID, err)
 	}
+}
+
+// provisionGeminiCredential creates a google speech credential whose default
+// STT model is a gemini live model, labelled `it-gemini-<runID>`. The
+// service-account JSON satisfies the api-server's google credential contract;
+// the api_key is what actually authenticates to the Gemini API, which refuses
+// service accounts. STT only — the gemini TTS models are a separate feature.
+func provisionGeminiCredential() error {
+	geminiLabel = "it-gemini-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "google",
+		Label:      geminiLabel,
+		ServiceKey: cfg.GeminiServiceKey,
+		STTModelID: geminiSttModel,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	// The feature server skips a google credential that has not passed its
+	// test, so a provisioned-but-untested one would look like an STT bug.
+	if _, err := client.TestAccountSpeechCredential(ctx, suite.AccountSID, sid); err != nil {
+		return err
+	}
+	geminiSID = sid
+	return nil
 }
 
 // provisionXaiCredential creates an xai speech credential under the suite

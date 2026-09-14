@@ -79,6 +79,12 @@ type Settings struct {
 	// exercising xai STT — see HasXai.
 	XaiAPIKey string
 
+	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the gemini
+	// live transcription models, which authenticate as a service account on
+	// Vertex AI. Needs roles/aiplatform.user, which the dialogflow key does not
+	// carry, so it is a separate variable.
+	GeminiServiceKey string
+
 	// Optional — OpenAI GPT Live (limited-access alpha) API key. This is an
 	// OpenAI key enrolled in the GPT Live Early Access Program; a plain
 	// OPENAI_API_KEY is rejected at connect, so this is a SEPARATE variable
@@ -185,6 +191,14 @@ func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
+
+// HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
+// can run. Optional: when the key is unset those tests pass without
+// exercising gemini.
+// HasGeminiStt reports whether the gemini gather/transcribe tests can run.
+// Optional: when GEMINI_KEYFILE is unset those tests pass without exercising
+// gemini. The dialogflow key is NOT a fallback — it lacks aiplatform access.
+func (s *Settings) HasGeminiStt() bool { return s.GeminiServiceKey != "" }
 
 // HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
 // Optional: when the key is unset those tests pass without exercising gptlive.
@@ -339,6 +353,17 @@ func parse() (*Settings, error) {
 	// and passed inline to the dialogflow verb. Unset => the dialogflow test
 	// skips cleanly. A set-but-unreadable file is a hard error so a
 	// misconfigured path doesn't silently disable the test.
+	if kf := os.Getenv("GEMINI_KEYFILE"); kf != "" {
+		b, err := os.ReadFile(kf)
+		if err != nil {
+			return nil, fmt.Errorf("GEMINI_KEYFILE=%q: %w", kf, err)
+		}
+		if !json.Valid(b) {
+			return nil, fmt.Errorf("GEMINI_KEYFILE=%q is not valid JSON", kf)
+		}
+		s.GeminiServiceKey = string(b)
+	}
+
 	if kf := os.Getenv("DIALOGFLOW_KEYFILE"); kf != "" {
 		raw, err := os.ReadFile(kf)
 		if err != nil {
