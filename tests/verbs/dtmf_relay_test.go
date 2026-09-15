@@ -9,7 +9,12 @@
 //
 //	default        — let jambonz choose
 //	anchorMedia    — feature server stays in the media path (customer's case)
-//	exitMediaPath  — feature server drops out after the bridge
+//
+// exitMediaPath is deliberately not covered. Both legs are this process, so
+// once media is released they address each other directly and the run only
+// proves what the harness's own network does: private addresses meet over the
+// LAN, public ones need NAT hairpinning. Neither outcome says anything about
+// jambonz. Cover it from a host with a public address instead.
 //
 // Topology matches the capture: our caller UAS -> SBC -> feature server ->
 // SBC -> our callee UAS. Digits are the customer's own 16-digit string.
@@ -56,10 +61,6 @@ func requirePublicRTPAddress(t *testing.T) {
 
 func TestVerb_Dial_DTMFRelay_AnchorMedia(t *testing.T) {
 	expectDTMFRelay(t, "dtmf-relay-anchored", []any{"anchorMedia", true})
-}
-
-func TestVerb_Dial_DTMFRelay_ExitMediaPath(t *testing.T) {
-	expectDTMFRelay(t, "dtmf-relay-released", []any{"exitMediaPath", true})
 }
 
 // expectDTMFRelay bridges two UASes via `dial`, sends RFC 2833 from the
