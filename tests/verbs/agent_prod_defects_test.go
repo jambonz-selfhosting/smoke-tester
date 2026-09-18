@@ -1119,14 +1119,23 @@ func TestVerb_Agent_Defect2_FalseInterruptionDoesNotDropTokens(t *testing.T) {
 //	                          internal/tts/bare_terminator_live_test.go).
 //	the one-shot TTS path     the same text through the `say` verb over a
 //	                          live call is clean (Defect2c).
-//	the streaming TTS path    the same text through `say` with stream:true —
-//	                          same synthesizer, same RTP path, no agent verb
-//	                          — is clean (Defect2d).
+//	the streaming TTS path    the same text through `say` with stream:true is
+//	                          clean (Defect2d) — but note it sends ONE 630
+//	                          char chunk through the flush path, so it does
+//	                          not control for chunking, only for the vendor.
 //
-// What is left is something specific to the agent verb's endpoint, which runs
-// STT on the same media session as the TTS playout. That needs audio captured
-// at the mediajam endpoint to go further, and is not something to "fix" on a
-// guess. The token drop and jambonz's chunker are both exonerated.
+// What it DOES track is chunk seams. Coalescing the agent's per-sentence
+// chunks into three larger ones moved the artifact: "six dot seven" vanished
+// and the only remaining "dot" landed at the new seam, between a chunk ending
+// "…Sixteen." and one starting " Seventeen.". Replaying those exact three
+// chunks offline through mediajam's engine against the same voice is clean.
+//
+// So: identical text, identical chunk sequence, identical vendor and engine —
+// clean off a live call, artifact on one. That leaves the endpoint's playout
+// of separate vendor bursts (the agent verb also runs STT on the same media
+// session), which needs audio captured at the mediajam endpoint to pin down.
+// Guessing at a fix here would be guessing. The token drop and jambonz'"'"'s
+// chunker are both exonerated.
 //
 // Steps:
 //  1. preflight-skips
