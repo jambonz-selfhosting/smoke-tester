@@ -1705,6 +1705,104 @@ func TestVerb_Agent_Defect3_ToolCallTurnEventsNotDuplicated(t *testing.T) {
 	HangupAndWaitEnded(t, ctx, call)
 }
 
+// TestVerb_Agent_Defect7_LlmTimeoutEndsVerbWithReason — an LLM request that
+// never answers must not hold the turn open, and the application must be able
+// to tell that it failed.
+//
+// The reporter's proxy accepted the connection and never sent response
+// headers; the agent waited 30 seconds with the caller hearing nothing,
+// because nothing in the LLM path bounds a request. They added a 12s 504 on
+// their side, which raised the question this test pins: what does the app
+// actually see? Before the fix, an LLM failure completed the verb with
+// completion_reason "normal" — indistinguishable from a clean end — and
+// nothing was sent to the eventHook at all.
+//
+// Driven by pointing the verb at a black-hole LLM endpoint (a routable
+// address that accepts nothing) with connectOptions.timeout set low, so the timeout
+// is the only way the turn can end.
+//
+// Steps:
+//  1. preflight-skips
+//  2. script-agent-verb — unreachable LLM base url, connectOptions.timeout 5s
+//  3. place-call
+//  4. answer-and-silence
+//  5. wait-for-action-hook
+//  6. assert-completion-reason
+func TestVerb_Agent_Defect7_LlmTimeoutEndsVerbWithReason(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	s := Step(t, "preflight-skips")
+	if !agentSkipPreflight(t, s) {
+		return
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 120*time.Second)
+	uas := claimUAS(t, ctx)
+	_, sess := claimSession(t)
+
+	s = Step(t, "script-agent-verb")
+	// 203.0.113.0/24 is TEST-NET-3: routable-looking, guaranteed to answer
+	// nothing, so the request hangs until the timeout fires.
+	scriptAgentTweaked(sess, agentVerbOpts{
+		SystemPrompt: "You are a brief voice assistant.",
+		Greeting:     true,
+	}, func(verb map[string]any) {
+		llm, _ := verb["llm"].(map[string]any)
+		// The proxy address goes on auth, not connectOptions: the library reads
+		// baseURL off the auth spec, and connectOptions.baseURL — which the
+		// schema accepts — is forwarded nowhere and silently ignored.
+		llm["auth"] = map[string]any{
+			"apiKey":  cfg.DeepseekAPIKey,
+			"baseURL": "http://203.0.113.10:9/v1",
+		}
+		// connectOptions.timeout is the existing knob — it reaches the vendor
+		// SDK and bounds the request. It was undocumented, which is how an
+		// operator concluded there was no timeout at all.
+		llm["connectOptions"] = map[string]any{
+			"timeout":    5000,
+			"maxRetries": 0,
+		}
+	})
+	s.Done()
+
+	s = Step(t, "place-call")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	s.Done()
+
+	s = Step(t, "answer-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-action-hook")
+	// 5s timeout, one retry without tools, then the verb ends. 45s is several
+	// times over; before the fix the request was unbounded.
+	waitCtx, cancel := context.WithTimeout(ctx, 45*time.Second)
+	defer cancel()
+	cb, err := sess.WaitCallbackFor(waitCtx, "action/agent-complete")
+	if err != nil {
+		s.Fatalf("the agent verb never completed after an LLM that never answers — "+
+			"the request is unbounded: %v", err)
+	}
+	s.Logf("action/agent-complete: %s", truncate(string(cb.Body), 300))
+	s.Done()
+
+	s = Step(t, "assert-completion-reason")
+	if got := cb.String("completion_reason"); got != "llm_failure" {
+		s.Errorf("completion_reason = %q, want \"llm_failure\" — the application cannot "+
+			"tell an LLM outage from a clean end", got)
+	}
+	s.Done()
+
+	HangupAndWaitEnded(t, ctx, call)
+}
+
 // --- defect 4a --------------------------------------------------------------
 
 // TestVerb_Agent_Defect4a_NoResponseTimeoutWithGreetingFalse — with
