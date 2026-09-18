@@ -470,7 +470,8 @@ feature-server branch of that name).
 - **Tool-call turns**, three faults, only one predicted: no flush on the tool
   path (`preToolText='Checking that now.'`, accumulator never reset — one run
   produced the reported concatenation verbatim, `"Checking that now.The"`); the
-  pre-tool text dropped from history (`content='' preToolTextRetained=false`);
+  pre-tool text dropped from history (wire message
+  `{"role":"assistant","content":null,"tool_calls":[…]}`);
   and **a `user_interruption` confirmed although `bargeIn` is disabled**
   (`via=bargeInConfirmed bargeInEnabled=false` — the endOfTurn-while-speaking
   path never checks whether barge-in is enabled). The third splits the turn,
@@ -482,9 +483,10 @@ feature-server branch of that name).
 
 **Two conclusions that contradict the internal code-review analysis:**
 
-1. The bare-terminator ("punto") symptom is NOT the barge-in token drop. The
-   probe shows every chunk jambonz sends is a well-formed sentence (`" Six."`),
-   never terminator-only. Four controls localise it: offline REST TTS, offline
+1. The bare-terminator ("punto") symptom is NOT the barge-in token drop. With
+   BOTH send paths instrumented (the sentence-boundary one and the unguarded
+   flush one), a full count is 80 boundary chunks, zero flush chunks, zero
+   terminator-only. Four controls localise it: offline REST TTS, offline
    per-chunk TTS, and a live call through the non-streaming `say` verb
    (`Defect2c`) are all clean; only the agent verb's streaming path produces
    it. It is downstream of jambonz's chunker.
@@ -506,6 +508,14 @@ which is a setup miss, not the defect.
 
 Not covered: `bargeIn.sticky` (a no-op with no black-box signal) and Anthropic
 prompt-cache hits (not surfaced on any hook).
+
+Found by code review while writing the probes, not covered by a test and NOT
+the reporter's issue (it needs `earlyGeneration`): `_commitPreflightResponse`
+is set at `state-machine.js:667` and cleared only at `:1048`, while
+`_confirmInterruption` resets `_currentResponseText` but not the flag. A
+barge-in on a preflight-hit turn therefore leaves it `true`, and the next
+ordinary turn appends its assistant message twice — once in `prompt()` and
+again via `addAssistantMessage`.
 
 ### 2026-09-16 — custom SIP headers in `session:new` pinned by a smoke test
 
