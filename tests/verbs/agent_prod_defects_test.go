@@ -1750,17 +1750,16 @@ func TestVerb_Agent_Defect7_LlmTimeoutEndsVerbWithReason(t *testing.T) {
 		Greeting:     true,
 	}, func(verb map[string]any) {
 		llm, _ := verb["llm"].(map[string]any)
-		// The proxy address goes on auth, not connectOptions: the library reads
-		// baseURL off the auth spec, and connectOptions.baseURL — which the
-		// schema accepts — is forwarded nowhere and silently ignored.
-		llm["auth"] = map[string]any{
-			"apiKey":  cfg.DeepseekAPIKey,
-			"baseURL": "http://203.0.113.10:9/v1",
-		}
-		// connectOptions.timeout is the existing knob — it reaches the vendor
-		// SDK and bounds the request. It was undocumented, which is how an
-		// operator concluded there was no timeout at all.
+		// baseURL goes through connectOptions on purpose: the schema accepts it
+		// there, and it used to be forwarded nowhere, so the call went to the
+		// vendor default with no error at all. If this test ever passes in
+		// under a second with a real answer, that regressed.
+		//
+		// timeout is the knob that bounds the request. It already existed and
+		// reaches the vendor SDK; it was simply undocumented, which is how an
+		// operator concluded there was none.
 		llm["connectOptions"] = map[string]any{
+			"baseURL":    "http://203.0.113.10:9/v1",
 			"timeout":    5000,
 			"maxRetries": 0,
 		}
