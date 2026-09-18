@@ -1043,9 +1043,12 @@ func TestVerb_Agent_ToolHook(t *testing.T) {
 	HangupAndWaitEnded(t, ctx, call)
 
 	s = Step(t, "assert-secret-word-spoken")
-	// Tolerance 1/1: the secret word must come through. If LLM verbosely
-	// adds commentary, fine — but it has to include "kingfisher".
-	AssertTranscriptHasMost(s, ctx, recPath, 1, secretWord)
+	// Deepgram renders the synthesized word inconsistently over a telephony
+	// codec — "skin fisher", "skin fissure", "wartuskin fisher" have all been
+	// observed for the same audio. Match the distinctive second half; the
+	// point is that the tool result reached the caller, not how nova-3 spells
+	// it.
+	AssertTranscriptHasMost(s, ctx, recPath, 1, "fisher")
 	s.Done()
 }
 
