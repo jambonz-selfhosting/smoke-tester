@@ -450,6 +450,79 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-09-18 — agent-verb production defects reproduced, with feature-server probes
+
+New file `tests/verbs/agent_prod_defects_test.go` — ten tests reproducing the
+defects a self-hosted 10.2.1 operator reported against the `agent` verb.
+Nothing was fixed. Each test asserts the intended behaviour, so an affected
+build fails with the evidence in the message.
+
+Run against the test cluster with temporary `[DEFECT-PROBE]` logging applied to
+the feature-server there (`debug/agent-prod-defect-logging`, working tree only,
+`git checkout -- lib` on the box to revert; the same commit is on the local
+feature-server branch of that name).
+
+**Reproduced, confirmed from both sides:**
+
+- **History not trimmed after barge-in.** Probe: `ttsVendor=deepgram
+  alignmentEnabled=false spokenTextIsNull=true willTrim=false`. Caller heard to
+  "six"; `turn_end.response` and history both ran to "thirty".
+- **Tool-call turns**, three faults, only one predicted: no flush on the tool
+  path (`preToolText='Checking that now.'`, accumulator never reset — one run
+  produced the reported concatenation verbatim, `"Checking that now.The"`); the
+  pre-tool text dropped from history (`content='' preToolTextRetained=false`);
+  and **a `user_interruption` confirmed although `bargeIn` is disabled**
+  (`via=bargeInConfirmed bargeInEnabled=false` — the endOfTurn-while-speaking
+  path never checks whether barge-in is enabled). The third splits the turn,
+  which is why the post-tool text lands in a turn whose `turn_end` never fires.
+- **WS oversize ack.** Probe: `RangeError "Max payload size exceeded"`,
+  `WS_ERR_UNSUPPORTED_MESSAGE_LENGTH`, `maxPayload=24576`, `connections=1`,
+  `swallowed=true`, `inFlight=1`. **The socket closed 1006, not the 1009**
+  everyone assumed — a fix keyed on 1009 would not fire.
+
+**Two conclusions that contradict the internal code-review analysis:**
+
+1. The bare-terminator ("punto") symptom is NOT the barge-in token drop. The
+   probe shows every chunk jambonz sends is a well-formed sentence (`" Six."`),
+   never terminator-only. Four controls localise it: offline REST TTS, offline
+   per-chunk TTS, and a live call through the non-streaming `say` verb
+   (`Defect2c`) are all clean; only the agent verb's streaming path produces
+   it. It is downstream of jambonz's chunker.
+2. The token-drop window could not be hit at all. First-token to flush measured
+   250-580ms for deepseek AND gpt-4o-mini, so the response is fully generated
+   before a caller can react. Five attempts (fixed sleeps, raised maxTokens, a
+   copy-task prompt, and finally triggering the blip off the agent's own audio)
+   recorded zero discarded tokens. The code path is real; the exposure is about
+   half a second per turn unless the LLM streams slowly.
+
+**Did not reproduce:** mid-stream barge-in losing the assistant turn;
+`noResponseTimeout` with `greeting:false` (11.1.2 fix present); a bare `hangup`
+redirect (ends the call in <7s, so the operator's dead air is elsewhere);
+`agent:update` inject_context + generate_reply.
+
+Caveat kept in the file: `Defect1` flakes ~1 run in 2 when the interrupt
+utterance produces no transcript — it fails at `assert-interruption-confirmed`,
+which is a setup miss, not the defect.
+
+Not covered: `bargeIn.sticky` (a no-op with no black-box signal) and Anthropic
+prompt-cache hits (not surfaced on any hook).
+
+### 2026-09-16 — custom SIP headers in `session:new` pinned by a smoke test
+
+Question answered: yes, custom SIP headers on the inbound INVITE reach the
+`session:new` payload. feature-server `lib/middleware.js` (`invokeWebCallback`)
+puts the whole INVITE under a top-level `sip` key when the call_hook method is
+POST or WS — headers live at `sip.headers`. Both requestors exclude `sip` from
+the snake_case transform, so names arrive as the SIP parser produced them
+(custom `X-` headers keep their case; standard ones are lowercased).
+
+A GET call_hook gets no `sip` object at all — that is the one way to lose them.
+
+New test `tests/verbs/sip_custom_headers_test.go`
+(`TestSessionNew_CustomSipHeaders`): UAC INVITEs `sip:app-<sid>@<realm>` with
+three custom `X-` headers, asserts each round-trips into `sip.headers`, and logs
+the decoded map. Passed first run against the live cluster.
+
 ### 2026-08-19 — permitted_marks was losing the comma; smoke test added
 
 `punctuation_overrides.permitted_marks` travelled to the media server as a
