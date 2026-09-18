@@ -34,6 +34,10 @@ type SpeechCredentialCreate struct {
 	// for others; it is the default model the credential recognizes with,
 	// overridable per-verb via the vendor's recognizer options.
 	ModelID string `json:"model_id,omitempty"`
+	// STTModelID is the default STT model. For google it also selects the
+	// API: a gemini-* model routes recognition to the Gemini Live API
+	// instead of Cloud Speech-to-Text.
+	STTModelID string `json:"stt_model_id,omitempty"`
 }
 
 // CreateAccountSpeechCredential POSTs a credential under an account. Returns
@@ -53,6 +57,31 @@ func (c *Client) CreateAccountSpeechCredential(ctx context.Context, accountSID s
 		return "", fmt.Errorf("decode SuccessfulAdd: %w", err)
 	}
 	return ok.SID, nil
+}
+
+// TestAccountSpeechCredential runs the api-server's credential check and
+// returns the per-service results. The feature server ignores a google
+// credential whose stt_tested_ok is false, so provisioning one is not enough
+// — it has to pass this first.
+func (c *Client) TestAccountSpeechCredential(ctx context.Context, accountSID, sid string) (string, error) {
+	path := fmt.Sprintf("/Accounts/%s/SpeechCredentials/%s/test", accountSID, sid)
+	raw, err := c.Request(ctx, http.MethodGet, path, nil, "", http.StatusOK)
+	if err != nil {
+		return "", err
+	}
+	var res struct {
+		STT struct {
+			Status string `json:"status"`
+			Reason string `json:"reason"`
+		} `json:"stt"`
+	}
+	if err := json.Unmarshal(raw, &res); err != nil {
+		return "", fmt.Errorf("decode credential test: %w", err)
+	}
+	if res.STT.Status != "ok" {
+		return res.STT.Status, fmt.Errorf("stt credential test failed: %s", res.STT.Reason)
+	}
+	return res.STT.Status, nil
 }
 
 // DeleteAccountSpeechCredential removes a credential. Cleanup is idempotent:
