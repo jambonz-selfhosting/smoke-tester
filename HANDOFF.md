@@ -450,6 +450,59 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-09-18 — agent-verb defects fixed; one still open
+
+Follow-on from the reproduction entry below. Fixes on `feature-server`
+(`fix/agent-prod-defects`) and `@jambonz/llm` (`fix/tool-call-assistant-text`),
+verified against the live test cluster. Smoke suite is now 9 pass, 1 skip,
+1 fail.
+
+**Fixed**
+
+- Interrupted responses are trimmed to what was played even when the TTS vendor
+  sends no word alignment, estimated from elapsed playout and rounded up to the
+  sentence in progress. Measured: caller heard to "seven", `turn_end.response`
+  ends at "nine"; before, it ran to "thirty" however early the barge-in landed.
+- `trimLastAssistantMessage` no longer overwrites the previous turn when the
+  current stream committed nothing, and appends instead — which also stops
+  history ending on two consecutive user messages.
+- Tool-call turns: the pre-tool text is closed as its own `llm_response`, and
+  `@jambonz/llm` now carries it onto the wire in each vendor's native shape
+  (OpenAI `content`, Anthropic/Bedrock a text block, Gemini a text part).
+- `_onEndOfTurn` honours `bargeIn.enable:false`. It was confirming an
+  interruption unconditionally, so the agent cut itself off with barge-in
+  disabled; on tool turns the resulting split left the post-tool text in a turn
+  whose `turn_end` never fired.
+- Tokens arriving while a barge-in is only tentative keep flowing to TTS.
+- An oversize application frame is reported instead of swallowed: real cause
+  logged, alert naming `JAMBONES_WS_MAX_PAYLOAD`, in-flight messages failed
+  immediately, no reconnect. Default limit raised 24 KB → 64 KB.
+- Also `_commitPreflightResponse` is cleared on interruption, and the dead
+  `bargeIn.sticky` parse is gone.
+
+**Still open — the bare terminator ("punto"), `Defect2b`**
+
+Not fixed, and deliberately not guessed at. Ruled out, in order:
+
+1. feature-server chunking — both send paths instrumented; 80 well-formed
+   chunks, zero terminator-only.
+2. the vendor and mediajam's engine — replaying that exact chunk sequence
+   against live Deepgram is clean back-to-back, paced in real time, and spaced
+   40 ms apart (`mediajam internal/tts/bare_terminator_live_test.go`, on branch
+   `test/deepgram-stream-bare-terminator`).
+3. the one-shot TTS path — `say` over a live call is clean (`Defect2c`).
+4. the streaming TTS path — `say` with `stream:true`, same synthesizer and RTP
+   path, no agent verb, is clean (`Defect2d`).
+
+What is left is specific to the agent verb's endpoint, which runs STT on the
+same media session as the TTS playout. Going further needs audio captured at
+the mediajam endpoint.
+
+**Skip, not a failure:** `Defect1` skips when the interrupt utterance produces
+no transcript on either attempt, or the agent finished speaking first — roughly
+one run in three. The premise is not established on those runs, so there is
+nothing to judge.
+
 ### 2026-09-18 — agent-verb production defects reproduced, with feature-server probes
 
 New file `tests/verbs/agent_prod_defects_test.go` — ten tests reproducing the

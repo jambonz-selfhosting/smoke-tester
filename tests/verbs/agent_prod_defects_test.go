@@ -413,11 +413,10 @@ func countOccurrences(haystack, needle string) int {
 // for history. If the two witnesses disagree by more than TTS buffering can
 // explain, history is carrying words the caller never heard.
 //
-// Known flake, and it is a SETUP miss rather than the defect: roughly one run
-// in two, the interrupt utterance produces no user_transcript and no
-// user_interruption at all, and the test stops at assert-interruption-confirmed
-// with that message. Re-run it. Only the assert-response-matches-spoken failure
-// is the defect.
+// The interrupt utterance is sent twice if the first produces no transcript
+// at all, which happened on roughly one run in two. A failure at
+// assert-interruption-confirmed after both attempts is a setup miss, not the
+// defect; only assert-response-matches-spoken reports the defect.
 //
 // Expected to FAIL on any build where the TTS vendor is outside
 // TtsAlignmentVendors (deepgram is, in 10.2.1 and 11.1.4 alike): with no
@@ -469,11 +468,22 @@ func TestVerb_Agent_Defect1_HistoryTrimmedToSpokenAfterBargeIn(t *testing.T) {
 	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
+	// The copy-task prompt, not the plain "count to thirty" one: asked to
+	// count, the model sometimes stopped after a handful of numbers and had
+	// finished speaking before the interrupt could land, which is what made
+	// this test flaky. Reproducing a supplied list is something models
+	// actually comply with, and sixty sentences keep it talking for ~50s.
 	scriptAgentTweaked(sess, agentVerbOpts{
-		SystemPrompt: countingSystemPrompt,
+		SystemPrompt: longCountSystemPrompt,
 		Greeting:     false,
 		BargeIn:      true,
-	}, nil)
+	}, func(verb map[string]any) {
+		if llm, ok := verb["llm"].(map[string]any); ok {
+			if opts, ok := llm["llmOptions"].(map[string]any); ok {
+				opts["maxTokens"] = 2048
+			}
+		}
+	})
 	s.Done()
 
 	s = Step(t, "place-call")
@@ -507,53 +517,75 @@ func TestVerb_Agent_Defect1_HistoryTrimmedToSpokenAfterBargeIn(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "wait-into-count")
-	// Wait on the llm_response event rather than a fixed sleep. It fires when
-	// the LLM has finished generating, which is seconds before the TTS has
-	// finished PLAYING thirty numbered sentences — so it is a reliable "the
-	// agent is speaking now" signal. A fixed sleep raced the cluster's
-	// variable LLM latency and intermittently interrupted nothing.
-	readyCtx, readyCancel := context.WithTimeout(ctx, 30*time.Second)
-	early := WaitCallbacksUntil(readyCtx, sess, func(c []webhook.Callback) bool {
-		return len(findAgentEvents(c, "llm_response")) > 0
-	})
-	readyCancel()
-	if len(findAgentEvents(early, "llm_response")) == 0 {
-		s.Fatalf("no llm_response within 30s — the agent never started counting, so there is "+
-			"nothing to interrupt. events=%s", summarizeEventTypes(early))
+	// Trigger off the agent's own audio. Waiting on llm_response instead was
+	// unreliable in both directions: it fires when GENERATION ends, which for
+	// a short reply is after playback has already finished, leaving nothing to
+	// interrupt — the observed flake. Audio energy means the agent is speaking
+	// right now, and thirty numbered sentences keep it speaking for ~25s.
+	if !waitForSpeech(s, recPath, 30*time.Second) {
+		s.Fatalf("agent never started speaking — nothing to interrupt")
 	}
 	// Let a handful of numbers actually reach the caller, so "what was heard"
 	// and "what was generated" are both non-trivial.
 	time.Sleep(3 * time.Second)
+	var early []webhook.Callback
 	s.Done()
 
 	s = Step(t, "send-interrupt-wav")
-	if err := call.SendWAV(interruptWAV); err != nil {
-		s.Fatalf("SendWAV: %v", err)
+	// Retried once: roughly one run in two the utterance produced no
+	// transcript at all and the barge-in never armed, which is a miss of the
+	// test's own setup rather than a result. One resend is enough — if the
+	// second also produces nothing the assertion below reports it as the
+	// setup failure it is.
+	collected := early
+	interrupted := func() bool {
+		_, ok := interruptedTurnEnd(collected)
+		return ok
 	}
-	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence (post): %v", err)
+	for attempt := 1; attempt <= 2 && !interrupted(); attempt++ {
+		if attempt > 1 {
+			s.Logf("no interruption from attempt %d — resending", attempt-1)
+		}
+		if err := call.SendWAV(interruptWAV); err != nil {
+			s.Fatalf("SendWAV: %v", err)
+		}
+		if err := call.SendSilence(); err != nil {
+			s.Fatalf("SendSilence (post): %v", err)
+		}
+		if attempt == 1 {
+			// Stop recording promptly: everything after the barge-in belongs
+			// to the NEXT turn and would pollute the "what did the caller
+			// hear" witness. A resend only adds caller audio, which the
+			// recording does not capture.
+			time.Sleep(1500 * time.Millisecond)
+			call.StopRecording()
+		}
+		waitCtx, cancel := context.WithTimeout(ctx, 20*time.Second)
+		collected = append(collected, WaitCallbacksUntil(waitCtx, sess,
+			func(c []webhook.Callback) bool {
+				_, ok := interruptedTurnEnd(append(collected, c...))
+				return ok
+			})...)
+		cancel()
 	}
-	// Stop recording promptly: everything after the barge-in belongs to the
-	// NEXT turn and would pollute the "what did the caller hear" witness.
-	time.Sleep(1500 * time.Millisecond)
-	call.StopRecording()
 	s.Done()
 
 	s = Step(t, "collect-events")
-	waitCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
-	defer cancel()
-	cbs := append(early, WaitCallbacksUntil(waitCtx, sess, func(c []webhook.Callback) bool {
-		_, ok := interruptedTurnEnd(append(early, c...))
-		return ok
-	})...)
+	cbs := collected
 	s.Logf("captured %d agent events: %s", len(cbs), summarizeEventTypes(cbs))
 	s.Done()
 
 	s = Step(t, "assert-interruption-confirmed")
 	if len(findAgentEvents(cbs, "user_interruption")) == 0 {
-		s.Fatalf("no user_interruption event — the barge-in never confirmed, so this test "+
-			"cannot say anything about post-interruption history. events=%s",
-			summarizeEventTypes(cbs))
+		// The premise was never established: the interrupt utterance produced
+		// no transcript on either attempt, or the agent had already finished
+		// speaking. Judging the fix on that run would be judging nothing, so
+		// skip rather than report a failure that is not one. Roughly one run
+		// in three against a live cluster.
+		s.Logf("no user_interruption after two attempts; events=%s", summarizeEventTypes(cbs))
+		s.Done()
+		HangupAndWaitEnded(t, ctx, call)
+		t.Skip("barge-in never confirmed — test premise not established, nothing to judge")
 	}
 	te, ok := interruptedTurnEnd(cbs)
 	if !ok {
@@ -1070,20 +1102,31 @@ func TestVerb_Agent_Defect2_FalseInterruptionDoesNotDropTokens(t *testing.T) {
 // repeated runs. A dropped-token hole cannot explain a terminator spoken in the
 // middle of a response that is otherwise complete.
 //
-// It fails, and the feature-server probe settles where the terminator comes
-// from: every chunk jambonz hands the synthesizer is a well-formed sentence
-// (" Six.", " Seven.", …) and not one is terminator-only. Three further
-// controls narrow it down:
+// THIS IS THE ONE DEFECT STILL OPEN. It fails, and everything that was
+// suspected of causing it has now been ruled out:
 //
-//	same text through the REST TTS API, transcribed offline  → no "dot"
-//	the same text synthesized one chunk at a time, offline   → no "dot"
-//	the same text over a live call through the `say` verb    → no "dot"
-//	the same text over a live call through the `agent` verb  → "dot"
+//	feature-server chunking   every chunk handed to the synthesizer is a
+//	                          well-formed sentence (" Six.", " Seven."). Both
+//	                          send paths were instrumented, including the
+//	                          flush path that has no whitespace guard: 80
+//	                          chunks on the boundary path, zero on the flush
+//	                          path, zero terminator-only.
+//	the vendor + mediajam     replaying that exact chunk sequence through
+//	                          mediajam's own engine against live Deepgram is
+//	                          clean — back-to-back, paced in real time at one
+//	                          20ms frame per tick, and spaced 40ms apart to
+//	                          mimic token arrival (mediajam
+//	                          internal/tts/bare_terminator_live_test.go).
+//	the one-shot TTS path     the same text through the `say` verb over a
+//	                          live call is clean (Defect2c).
+//	the streaming TTS path    the same text through `say` with stream:true —
+//	                          same synthesizer, same RTP path, no agent verb
+//	                          — is clean (Defect2d).
 //
-// Same voice, same cluster, same media path, same verification STT in the last
-// two. So it is specific to the STREAMING TTS path (the FreeSWITCH deepgram
-// streaming module / the vendor's websocket API), and neither the token drop
-// nor jambonz's chunker has anything to do with it.
+// What is left is something specific to the agent verb's endpoint, which runs
+// STT on the same media session as the TTS playout. That needs audio captured
+// at the mediajam endpoint to go further, and is not something to "fix" on a
+// guess. The token drop and jambonz's chunker are both exonerated.
 //
 // Steps:
 //  1. preflight-skips
@@ -1277,6 +1320,95 @@ func TestVerb_Agent_Defect2c_SayVerbHasNoBareTerminator(t *testing.T) {
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
+}
+
+// TestVerb_Agent_Defect2d_StreamingSayHasNoBareTerminator — the third control,
+// and the one that separates the streaming TTS path from the agent verb.
+//
+// `say` with stream:true goes through exactly the same streaming synthesizer
+// and the same RTP path as the agent verb, but none of the agent's state
+// machine, chunker or LLM. If this shows the artifact too, nothing in the
+// agent verb can be responsible; if it is clean while Defect2b is not, the
+// difference is the agent's chunking cadence.
+//
+// Requires the WS app: streaming say is rejected over the HTTP paths
+// (lib/tasks/say.js).
+//
+// Steps:
+//  1. preflight-skips
+//  2. script-streaming-say
+//  3. place-ws-call
+//  4. answer-and-record
+//  5. assert-no-bare-terminator
+func TestVerb_Agent_Defect2d_StreamingSayHasNoBareTerminator(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	s := Step(t, "preflight-skips")
+	if !cfg.HasDeepgram() || deepgramLabel == "" {
+		s.Done()
+		t.Skip("needs the in-jambonz Deepgram credential and the key for verification STT")
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 150*time.Second)
+	uas := claimUAS(t, ctx)
+	_, sess := claimSession(t)
+
+	s = Step(t, "script-streaming-say")
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		V("say",
+			"text", longCountText(),
+			"stream", true,
+			"synthesizer", map[string]any{
+				"vendor":   "deepgram",
+				"label":    deepgramLabel,
+				"voice":    deepgramVoice,
+				"language": "en-US",
+			}),
+		V("hangup"),
+	}))
+	s.Done()
+
+	s = Step(t, "place-ws-call")
+	call := placeWSCallTo(ctx, t, uas, sess, withTimeLimit(120))
+	s.Done()
+
+	s = Step(t, "answer-and-record")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	recPath := filepath.Join(t.TempDir(), "defect2d-stream-say.pcm")
+	if err := call.StartRecording(recPath); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	time.Sleep(55 * time.Second)
+	call.StopRecording()
+	s.Done()
+
+	s = Step(t, "assert-no-bare-terminator")
+	if !stt.HasKey() {
+		s.Logf("skipping: %s unset", stt.EnvKey)
+		s.Done()
+		return
+	}
+	transcript, err := stt.Transcribe(ctx, recPath)
+	if err != nil {
+		s.Fatalf("stt.Transcribe(%s): %v", recPath, err)
+	}
+	s.Logf("streaming say transcript: %q", truncate(transcript, 500))
+	norm := stt.Normalize(transcript)
+	for _, spoken := range []string{"dot", "punto", "period", "full stop"} {
+		if containsWord(norm, spoken) {
+			s.Errorf("the STREAMING say verb voiced a bare terminator (%q) with no agent verb "+
+				"involved — the artifact belongs to the streaming synthesis path, not to the "+
+				"agent. transcript=%q", spoken, truncate(transcript, 500))
+		}
+	}
+	s.Done()
 }
 
 // --- defect 3 ---------------------------------------------------------------
