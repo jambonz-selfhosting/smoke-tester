@@ -88,12 +88,29 @@ var (
 	xaiVoice    = "eve"
 	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
 
+	// google speech credential whose default STT model is a gemini live
+	// model, provisioned at TestMain IF GEMINI_API_KEY is set (optional).
+	// When unset, geminiLabel stays "" and the gemini gather/transcribe tests
+	// pass without exercising gemini.
+	geminiLabel string
+	geminiSID   string
+	// The live transcription model as Vertex AI publishes it; the
+	// recorded-audio sibling is a file API with no place in a call.
+	geminiSttModel = "gemini-3.5-transcribe-live-preview"
+
 	// speechmatics speech credential (STT-only) provisioned at TestMain IF
 	// SPEECHMATICS_API_KEY is set (optional vendor). When unset,
 	// speechmaticsLabel stays "" and the speechmatics gather/transcribe tests
 	// pass without exercising speechmatics.
 	speechmaticsLabel string
 	speechmaticsSID   string
+
+	// speechmaticsagent (Speechmatics Agent STT) speech credential
+	// (STT-only) provisioned at TestMain IF SPEECHMATICS_AGENT_API_KEY is
+	// set (optional vendor). When unset, speechmaticsAgentLabel stays ""
+	// and the agent-STT gather/transcribe tests pass without exercising it.
+	speechmaticsAgentLabel string
+	speechmaticsAgentSID   string
 
 	// openai speech credential (STT-only) provisioned at TestMain IF
 	// OPENAI_API_KEY is set (optional vendor). When unset, openaiLabel stays
@@ -230,6 +247,19 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: SPEECHMATICS_API_KEY not set — speechmatics STT tests will pass without exercising speechmatics")
 	}
 
+	// 3d-bis. speechmaticsagent (Agent STT) speech credential — optional.
+	// A separate key from SPEECHMATICS_API_KEY: different vendor, different
+	// endpoint, possibly different entitlement.
+	if cfg.HasSpeechmaticsAgent() {
+		if err := provisionSpeechmaticsAgentCredential(); err != nil {
+			log.Fatalf("tests/verbs: speechmaticsagent credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: speechmaticsagent credential label=%s sid=%s",
+			speechmaticsAgentLabel, speechmaticsAgentSID)
+	} else {
+		log.Printf("tests/verbs: SPEECHMATICS_AGENT_API_KEY not set — agent STT tests will pass without exercising it")
+	}
+
 	// 3e. openai STT speech credential — optional. Only provisioned when
 	// OPENAI_API_KEY is set; otherwise the openai gather/transcribe tests
 	// pass without exercising openai STT.
@@ -240,6 +270,18 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: openai credential label=%s sid=%s", openaiLabel, openaiSID)
 	} else {
 		log.Printf("tests/verbs: OPENAI_API_KEY not set — openai STT tests will pass without exercising openai")
+	}
+
+	// 3f. google/gemini STT speech credential — optional. Only provisioned
+	// when GEMINI_API_KEY (plus a service-account key) is set; otherwise the
+	// gemini gather/transcribe tests pass without exercising gemini STT.
+	if cfg.HasGeminiStt() {
+		if err := provisionGeminiCredential(); err != nil {
+			log.Fatalf("tests/verbs: gemini credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: gemini credential label=%s sid=%s", geminiLabel, geminiSID)
+	} else {
+		log.Printf("tests/verbs: GEMINI_KEYFILE not set — gemini STT tests will pass without exercising gemini")
 	}
 
 	// 4. Webhook server + ngrok tunnel + Application bound to the suite.
@@ -267,6 +309,7 @@ func TestMain(m *testing.M) {
 	teardownMurfCredential()
 	teardownXaiCredential()
 	teardownSpeechmaticsCredential()
+	teardownSpeechmaticsAgentCredential()
 	teardownOpenaiCredential()
 	if sipResolver != nil {
 		_ = sipResolver.Close()
@@ -378,6 +421,34 @@ func teardownMurfCredential() {
 	}
 }
 
+// provisionGeminiCredential creates a google speech credential whose default
+// STT model is a gemini live model, labelled `it-gemini-<runID>`. The
+// service-account JSON satisfies the api-server's google credential contract;
+// the api_key is what actually authenticates to the Gemini API, which refuses
+// service accounts. STT only — the gemini TTS models are a separate feature.
+func provisionGeminiCredential() error {
+	geminiLabel = "it-gemini-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "google",
+		Label:      geminiLabel,
+		ServiceKey: cfg.GeminiServiceKey,
+		STTModelID: geminiSttModel,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	// The feature server skips a google credential that has not passed its
+	// test, so a provisioned-but-untested one would look like an STT bug.
+	if _, err := client.TestAccountSpeechCredential(ctx, suite.AccountSID, sid); err != nil {
+		return err
+	}
+	geminiSID = sid
+	return nil
+}
+
 // provisionXaiCredential creates an xai speech credential under the suite
 // account, labelled `it-xai-<runID>`. Dual-use (xai supports both TTS and
 // STT); the xai TTS say tests reuse this same credential. Called only when
@@ -430,6 +501,43 @@ func provisionSpeechmaticsCredential() error {
 	}
 	speechmaticsSID = sid
 	return nil
+}
+
+// provisionSpeechmaticsAgentCredential creates a speechmaticsagent
+// (Speechmatics Agent STT) speech credential under the suite account,
+// labelled `it-speechmaticsagent-<runID>`. STT-only. speechmatics_stt_uri is
+// optional for this vendor — unset means the global endpoint — and a verb can
+// still override it per call via recognizer.speechmaticsOptions.host.
+// Called only when SPEECHMATICS_AGENT_API_KEY is set.
+func provisionSpeechmaticsAgentCredential() error {
+	speechmaticsAgentLabel = "it-speechmaticsagent-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor: "speechmaticsagent",
+		Label:  speechmaticsAgentLabel,
+		APIKey: cfg.SpeechmaticsAgentAPIKey,
+		// optional here, unlike the classic vendor: unset means the global
+		// endpoint, which routes to the nearest region
+		SpeechmaticsSTTURI: cfg.SpeechmaticsAgentHost,
+		UseForSTT:          true,
+	})
+	if err != nil {
+		return err
+	}
+	speechmaticsAgentSID = sid
+	return nil
+}
+
+func teardownSpeechmaticsAgentCredential() {
+	if speechmaticsAgentSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, speechmaticsAgentSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete speechmaticsagent credential %s: %v", speechmaticsAgentSID, err)
+	}
 }
 
 func teardownSpeechmaticsCredential() {

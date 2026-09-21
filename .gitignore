@@ -27,8 +27,10 @@ coverage.out
 report.xml
 report.html
 
-# generated binaries
-testreport
+# generated binaries. Anchored: an unanchored `testreport` also matches the
+# cmd/testreport SOURCE directory, which is how that tool stayed uncommitted
+# while the Makefile target quietly produced a 0-byte report.
+/testreport
 
 # editor / agent noise
 .vscode/
