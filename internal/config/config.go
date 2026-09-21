@@ -108,6 +108,15 @@ type Settings struct {
 	// from GptLiveModel, which is the GPT Live voice model in the URL.
 	GptLiveDelegationModel string
 
+	// Optional — Azure Voice Live. The host names a Microsoft Foundry or Azure
+	// Speech resource and has no default, so BOTH the key and the host must be
+	// set for the voicelive tests to run — see HasVoiceLive. VoiceLiveVoice is
+	// an Azure TTS voice name, not an OpenAI one.
+	VoiceLiveAPIKey string
+	VoiceLiveHost   string
+	VoiceLiveModel  string
+	VoiceLiveVoice  string
+
 	// Optional — Speechmatics STT API key. When set, TestMain provisions a
 	// speechmatics SpeechCredential under the ephemeral account and the
 	// speechmatics gather/transcribe tests exercise it (model selection +
@@ -218,6 +227,11 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // gemini. The dialogflow key is NOT a fallback — it lacks aiplatform access.
 func (s *Settings) HasGeminiStt() bool { return s.GeminiServiceKey != "" }
 
+// HasVoiceLive reports whether the Azure Voice Live S2S tests can run.
+// Optional, and needs BOTH values: unlike every other s2s vendor the endpoint
+// is resource-specific, so there is no host to fall back on.
+func (s *Settings) HasVoiceLive() bool { return s.VoiceLiveAPIKey != "" && s.VoiceLiveHost != "" }
+
 // HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
 // Optional: when the key is unset those tests pass without exercising gptlive.
 func (s *Settings) HasGptLive() bool { return s.GptLiveAPIKey != "" }
@@ -315,6 +329,10 @@ func parse() (*Settings, error) {
 		GptLiveHost:              os.Getenv("GPTLIVE_HOST"),
 		GptLivePath:              os.Getenv("GPTLIVE_PATH"),
 		GptLiveDelegationModel:   firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
+		VoiceLiveAPIKey:          os.Getenv("VOICELIVE_API_KEY"),
+		VoiceLiveHost:            os.Getenv("VOICELIVE_HOST"),
+		VoiceLiveModel:           firstNonEmpty(os.Getenv("VOICELIVE_MODEL"), "gpt-realtime"),
+		VoiceLiveVoice:           firstNonEmpty(os.Getenv("VOICELIVE_VOICE"), "en-US-AvaNeural"),
 		SpeechmaticsAPIKey:       os.Getenv("SPEECHMATICS_API_KEY"),
 		SpeechmaticsSTTURI:       firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
 		SpeechmaticsAgentAPIKey:  os.Getenv("SPEECHMATICS_AGENT_API_KEY"),
