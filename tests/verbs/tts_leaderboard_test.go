@@ -69,12 +69,14 @@
 //
 //   - NGROK_AUTHTOKEN (webhook + ws app), as for any Phase-2 test.
 //   - ssh access to the feature-server host for the vendor-side number.
-//     Host defaults to `bastion`; override with TTS_LB_SSH. Set
+//     Host defaults to `bastion`; override with TTS_LB_SSH, and pass extra
+//     ssh flags (an identity file, say) via TTS_LB_SSH_OPTS. Set
 //     TTS_LB_SSH=none to run with the end-to-end number only.
 //
 // # Knobs
 //
 //	TTS_LB_SSH       ssh host holding the feature-server log (default "bastion", "none" disables)
+//	TTS_LB_SSH_OPTS  extra ssh flags, comma-separated (e.g. "-i,~/key.pem")
 //	TTS_LB_LOG       path to the log on that host (default ~/.pm2/logs/jambonz-feature-server.log)
 //	TTS_LB_VENDORS   comma-separated vendor allow-list (default: every credential with use_for_tts)
 //	TTS_LB_MODES     comma-separated subset of "say,say.stream"
@@ -607,13 +609,17 @@ func ttsLBScrape(ctx context.Context, t *testing.T, callSID, vendor string,
 
 	logPath := ttsLBEnv("TTS_LB_LOG", "$HOME/.pm2/logs/jambonz-feature-server.log")
 	remote := fmt.Sprintf(
-		`grep -a -e '"callSid":"%s"' -e 'tts rtt time' %s | grep -a -e time_to_first_byte_ms -e 'tts rtt time'`,
+		// -h: the log path may glob several pm2 files, and grep would then
+		// prefix each match with "<file>:", which is not valid JSON.
+		`grep -ah -e '"callSid":"%s"' -e 'tts rtt time' %s | grep -ah -e time_to_first_byte_ms -e 'tts rtt time'`,
 		callSID, logPath)
 
 	sctx, cancel := context.WithTimeout(ctx, 90*time.Second)
 	defer cancel()
-	cmd := exec.CommandContext(sctx, "ssh",
-		"-o", "BatchMode=yes", "-o", "ConnectTimeout=20", host, remote)
+	args := []string{"-o", "BatchMode=yes", "-o", "ConnectTimeout=20"}
+	args = append(args, ttsLBSubset("TTS_LB_SSH_OPTS", nil)...)
+	args = append(args, host, remote)
+	cmd := exec.CommandContext(sctx, "ssh", args...)
 	blob, err := cmd.Output()
 	if err != nil && len(blob) == 0 {
 		t.Logf("scrape failed (host=%s): %v — end-to-end numbers only for this cell", host, err)
