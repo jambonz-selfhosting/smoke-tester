@@ -255,3 +255,261 @@ func TestVerb_LLM_VoiceLive_ToolHook(t *testing.T) {
 	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail")
 	s.Done()
 }
+
+// voiceLivePassphrase is a word the model would never volunteer, so hearing it
+// in the recording proves the agent-first response.create reached the service
+// and its audio reached the caller.
+const voiceLivePassphrase = "marmalade"
+
+// TestVerb_LLM_VoiceLive_Session covers the plain conversational path, with no
+// tools involved: the agent greets first, the caller speaks, the agent answers,
+// and the verb completes normally. It also pins the event stream, which the
+// tool test never looks at.
+//
+// The three events asserted are the ones that prove the session really ran
+// rather than merely connecting:
+//   - session.updated — Azure accepted our flat session config; until it
+//     arrives the media server gates caller audio, so nothing else can happen
+//   - conversation.item.input_audio_transcription.completed — the caller was
+//     actually transcribed (in cascaded mode this is Azure speech to text)
+//   - response.done — the agent produced a complete turn
+func TestVerb_LLM_VoiceLive_Session(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	if !cfg.HasVoiceLive() {
+		t.Log("VOICELIVE_API_KEY/VOICELIVE_HOST not set — passing without exercising voicelive S2S")
+		return
+	}
+
+	s := Step(t, "preflight-skips")
+	if !cfg.HasDeepgram() || deepgramLabel == "" {
+		s.Done()
+		t.Log("Deepgram not available — passing without exercising voicelive S2S")
+		return
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 180*time.Second)
+	uas := claimUAS(t, ctx)
+
+	s = Step(t, "ensure-prompt-wav")
+	promptWAV, err := tts.EnsureWAV(ctx, "testdata/llm",
+		"Hello there, please say the magic word.", tts.PromptOptions{Model: "aura-asteria-en"})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
+	}
+	s.Done()
+
+	_, sess := claimSession(t)
+
+	s = Step(t, "script-llm-verb")
+	llmVerb := V("llm",
+		"vendor", "voicelive",
+		"model", cfg.VoiceLiveModel,
+		"auth", map[string]any{"apiKey": cfg.VoiceLiveAPIKey},
+		"connectOptions", map[string]any{"host": cfg.VoiceLiveHost},
+		"actionHook", webhookSrv.PublicURL()+"/action/llm",
+		// carries the raw Voice Live server events; X-Test-Id must ride the
+		// query param because event payloads have no callInfo
+		"eventHook", SessionURL(sess, "llm-voicelive-event"),
+		"llmOptions", map[string]any{
+			"session_update": map[string]any{
+				"modalities": []string{"text", "audio"},
+				"instructions": "You are a terse test assistant. Whenever the caller asks for the magic " +
+					"word, reply with exactly one sentence containing the word " + voiceLivePassphrase + ".",
+				"voice": map[string]any{
+					"name": cfg.VoiceLiveVoice,
+					"type": "azure-standard",
+				},
+				"turn_detection": map[string]any{
+					"type":                "azure_semantic_vad",
+					"silence_duration_ms": 500,
+				},
+				// Must be explicit. Azure speech to text is automatic only for
+				// NON-multimodal models; a native-audio model such as
+				// gpt-realtime-2.1 emits no caller transcripts unless asked.
+				"input_audio_transcription": map[string]any{"model": "azure-speech"},
+			},
+			"response_create": map[string]any{
+				"instructions": "Greet the caller in one short sentence and ask how you can help.",
+			},
+		},
+	)
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{llmVerb, V("hangup")}))
+	SessionAckEmpty(sess, "llm")
+	s.Done()
+
+	s = Step(t, "place-call")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	s.Done()
+
+	s = Step(t, "answer-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	WaitFor(t, "wait-for-stt", RecognizerArmDelay)
+
+	recPath := filepath.Join(t.TempDir(), "llm-voicelive-session.pcm")
+
+	s = Step(t, "record-and-speak")
+	if err := call.StartRecording(recPath); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (pre): %v", err)
+	}
+	if err := call.SendWAV(promptWAV); err != nil {
+		s.Fatalf("SendWAV: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "collect-events")
+	// DrainCallbacks rather than WaitCallbackFor: the latter discards
+	// non-matching hooks, and we need to see several different event types.
+	want := map[string]bool{
+		"session.updated": false,
+		"conversation.item.input_audio_transcription.completed": false,
+		"response.done": false,
+	}
+	seen := map[string]int{}
+	deadline := time.Now().Add(25 * time.Second)
+	for time.Now().Before(deadline) {
+		allFound := true
+		for _, got := range want {
+			if !got {
+				allFound = false
+			}
+		}
+		if allFound {
+			break
+		}
+		for _, cb := range DrainCallbacks(sess, 2*time.Second) {
+			if cb.Hook != "action/llm-voicelive-event" {
+				continue
+			}
+			typ := cb.String("type")
+			seen[typ]++
+			if _, ok := want[typ]; ok {
+				want[typ] = true
+			}
+		}
+	}
+	for typ, got := range want {
+		if !got {
+			s.Errorf("eventHook never delivered %q; types seen: %v", typ, seen)
+		}
+	}
+	s.Logf("event types seen: %v", seen)
+	s.Done()
+
+	s = Step(t, "wait-for-reply-and-stop")
+	// collect-events returns as soon as the three events land, which is well
+	// before the agent has finished speaking — give the reply time to arrive.
+	time.Sleep(LLMReplyWindow)
+	call.StopRecording()
+	s.Done()
+
+	HangupAndWaitEnded(t, ctx, call)
+
+	s = Step(t, "assert-passphrase-spoken")
+	// Proves the agent's audio actually reached the caller, which no event
+	// assertion can show.
+	AssertTranscriptHasMost(s, ctx, recPath, 1, voiceLivePassphrase)
+	s.Done()
+}
+
+// TestVerb_LLM_VoiceLive_Hangup covers the built-in hangup tool on voicelive.
+//
+// Worth its own test because the hangup tool is declared with no parameters, so
+// the model calls it with an empty `arguments` string — a path that is easy to
+// drop on the floor while still passing the get_weather test, which always
+// carries an argument.
+func TestVerb_LLM_VoiceLive_Hangup(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	if !cfg.HasVoiceLive() {
+		t.Log("VOICELIVE_API_KEY/VOICELIVE_HOST not set — passing without exercising voicelive hangup")
+		return
+	}
+
+	s := Step(t, "preflight-skips")
+	if !cfg.HasDeepgram() || deepgramLabel == "" {
+		s.Done()
+		t.Log("Deepgram not available — passing without exercising voicelive hangup")
+		return
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 120*time.Second)
+	uas := claimUAS(t, ctx)
+	_, sess := claimSession(t)
+
+	s = Step(t, "ensure-caller-wav")
+	callerWAV, err := tts.EnsureWAV(ctx, "testdata/hangup", hangupCallerUtterance,
+		tts.PromptOptions{Model: "aura-asteria-en"})
+	if err != nil {
+		s.Fatalf("EnsureWAV caller utterance: %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "script-llm-hangup")
+	verb := V("llm",
+		"vendor", "voicelive",
+		"model", cfg.VoiceLiveModel,
+		"auth", map[string]any{"apiKey": cfg.VoiceLiveAPIKey},
+		"connectOptions", map[string]any{"host": cfg.VoiceLiveHost},
+		"actionHook", SessionURL(sess, "llm"),
+		"llmOptions", map[string]any{
+			"session_update": map[string]any{
+				"modalities":   []string{"text", "audio"},
+				"instructions": hangupRealtimePrompt,
+				"voice": map[string]any{
+					"name": cfg.VoiceLiveVoice,
+					"type": "azure-standard",
+				},
+				"turn_detection": map[string]any{
+					"type":                "azure_semantic_vad",
+					"silence_duration_ms": 500,
+				},
+			},
+			"response_create": map[string]any{
+				"instructions": "Greet the caller in one short sentence and ask how you can help.",
+			},
+		},
+		"hangup", map[string]any{"reason": hangupAppReason},
+	)
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{verb}))
+	SessionAckEmpty(sess, "llm")
+	s.Done()
+
+	s = Step(t, "place-caller")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	s.Done()
+
+	s = Step(t, "drive-conversation")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	driveHangupConversation(s, ctx, call, callerWAV)
+	s.Done()
+
+	s = Step(t, "assert-server-hangup")
+	// "" → the model supplies its own free-form reason, which by design wins
+	// over hangup.reason; assert only that SOME reason propagated.
+	assertServerHangup(s, call, "")
+	s.Done()
+
+	s = Step(t, "assert-completion-hangup")
+	assertCompletionHangup(s, ctx, sess, "llm")
+	s.Done()
+}
