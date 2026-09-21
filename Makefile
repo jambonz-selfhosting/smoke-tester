@@ -288,16 +288,20 @@ list-drachtio:
 
 test-report:
 	@# `go test -json` streams NDJSON test events; cmd/testreport renders
-	@# them into a self-contained HTML file. Don't fail make on test
-	@# failures — the point is to produce a viewable report even when red.
-	go test -json -count=1 -timeout $(TIMEOUT_REPORT) -parallel $(PARALLEL) $(TEST_PACKAGES) | go run ./cmd/testreport > report.html || true
+	@# them into a self-contained HTML file. The two steps are separated on
+	@# purpose: a red suite must still produce a report (hence `|| true` on
+	@# the test run), but a broken renderer must NOT — piping them together
+	@# hid a missing cmd/testreport behind a 0-byte report.html and an echo
+	@# claiming success.
+	go test -json -count=1 -timeout $(TIMEOUT_REPORT) -parallel $(PARALLEL) $(TEST_PACKAGES) > report.ndjson || true
+	go run ./cmd/testreport < report.ndjson > report.html
 	@echo "wrote report.html (open it in your browser)"
 
 lint:
 	go vet ./...
 
 clean:
-	rm -rf bin/ coverage.out report.xml report.html
+	rm -rf bin/ coverage.out report.xml report.html report.ndjson
 	find . -name '*.wav' -not -path './spikes/*' -not -path './tests/verbs/testdata/*' -delete
 
 # Empty phony prerequisite used to force pattern-rule recipes (%_test.go) to
