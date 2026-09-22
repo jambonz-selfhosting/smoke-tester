@@ -85,6 +85,14 @@ type Settings struct {
 	// carry, so it is a separate variable.
 	GeminiServiceKey string
 
+	// Optional — Gemini Developer API key ("AIza..."), for the google s2s
+	// (Gemini Live) tests. NOT interchangeable with GeminiServiceKey: Google
+	// refuses service accounts on the Developer API ("Access to Gemini API is
+	// restricted with service accounts"), and the Live s2s models it serves —
+	// gemini-3.8-live and -extended-thinking — are not published on Vertex AI,
+	// where the service account would otherwise work. Hence a separate key.
+	GeminiAPIKey string
+
 	// Optional — OpenAI GPT Live (limited-access alpha) API key. This is an
 	// OpenAI key enrolled in the GPT Live Early Access Program; a plain
 	// OPENAI_API_KEY is rejected at connect, so this is a SEPARATE variable
@@ -227,6 +235,12 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // gemini. The dialogflow key is NOT a fallback — it lacks aiplatform access.
 func (s *Settings) HasGeminiStt() bool { return s.GeminiServiceKey != "" }
 
+// HasGeminiS2S reports whether the google (Gemini Live) S2S tests can run.
+// Optional: when GEMINI_API_KEY is unset those tests pass without exercising
+// Gemini Live. GeminiServiceKey is deliberately NOT a fallback — see the
+// GeminiAPIKey field comment.
+func (s *Settings) HasGeminiS2S() bool { return s.GeminiAPIKey != "" }
+
 // HasVoiceLive reports whether the Azure Voice Live S2S tests can run.
 // Optional, and needs BOTH values: unlike every other s2s vendor the endpoint
 // is resource-specific, so there is no host to fall back on.
@@ -325,6 +339,7 @@ func parse() (*Settings, error) {
 		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
+		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
 		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
 		GptLiveHost:              os.Getenv("GPTLIVE_HOST"),
 		GptLivePath:              os.Getenv("GPTLIVE_PATH"),
