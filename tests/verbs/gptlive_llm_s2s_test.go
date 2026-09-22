@@ -691,10 +691,12 @@ func TestVerb_LLM_GptLive_ToolHook(t *testing.T) {
 	HangupAndWaitEnded(t, ctx, call)
 
 	s = Step(t, "assert-tool-result-spoken")
-	// "hail" only appears in the reply if our
+	// Either phrase only appears in the reply if our
 	// delegation.function_call_output.create envelope round-tripped through the
 	// delegation and the model relayed it to the caller — proving the full loop.
-	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail")
+	// Both are accepted because telephony STT renders "heavy hail" as "heavy
+	// hill" often enough to fail a run where the loop worked.
+	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail", "seventy one")
 	s.Done()
 }
 
