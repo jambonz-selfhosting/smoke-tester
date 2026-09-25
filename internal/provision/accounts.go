@@ -12,11 +12,12 @@ import (
 
 // AccountCreate is the request body for POST /Accounts.
 type AccountCreate struct {
-	Name               string   `json:"name"`
-	ServiceProviderSID string   `json:"service_provider_sid"`
-	SIPRealm           string   `json:"sip_realm,omitempty"`
-	RegistrationHook   *Webhook `json:"registration_hook,omitempty"`
-	QueueEventHook     *Webhook `json:"queue_event_hook,omitempty"`
+	Name                string   `json:"name"`
+	ServiceProviderSID  string   `json:"service_provider_sid"`
+	SIPRealm            string   `json:"sip_realm,omitempty"`
+	RegistrationHook    *Webhook `json:"registration_hook,omitempty"`
+	QueueEventHook      *Webhook `json:"queue_event_hook,omitempty"`
+	DisableMediaCapture *bool    `json:"disable_media_capture,omitempty"`
 }
 
 // Account mirrors the server's response shape.
@@ -30,6 +31,10 @@ type Account struct {
 	DeviceCallingApplicationSID string   `json:"device_calling_application_sid,omitempty"`
 	WebhookSecret               string   `json:"webhook_secret,omitempty"`
 	CreatedAt                   string   `json:"created_at,omitempty"`
+	// DisableMediaCapture is the account's own opt-out (MySQL BOOLEAN → 0/1).
+	DisableMediaCapture Flag `json:"disable_media_capture"`
+	// ServiceProviderAudioCapturePolicy is the owning SP's policy; read-only.
+	ServiceProviderAudioCapturePolicy string `json:"service_provider_audio_capture_policy"`
 }
 
 // CreateAccount POSTs /Accounts. Requires SP-scoped token.
@@ -80,10 +85,11 @@ func (c *Client) ListAccounts(ctx context.Context) ([]Account, error) {
 // AccountUpdate holds fields patchable on an Account. Most tenants only
 // update name / sip_realm / hooks — keep the struct narrow.
 type AccountUpdate struct {
-	Name             string   `json:"name,omitempty"`
-	SIPRealm         string   `json:"sip_realm,omitempty"`
-	RegistrationHook *Webhook `json:"registration_hook,omitempty"`
-	QueueEventHook   *Webhook `json:"queue_event_hook,omitempty"`
+	Name                string   `json:"name,omitempty"`
+	SIPRealm            string   `json:"sip_realm,omitempty"`
+	RegistrationHook    *Webhook `json:"registration_hook,omitempty"`
+	QueueEventHook      *Webhook `json:"queue_event_hook,omitempty"`
+	DisableMediaCapture *bool    `json:"disable_media_capture,omitempty"`
 }
 
 // UpdateAccount reassigns configuration. 204 on success.

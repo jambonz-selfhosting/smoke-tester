@@ -79,6 +79,7 @@ Spec source: `fern/apis/platform/platform.yaml`. Every response body is contract
 | 2.10 | SipRealms | `/Accounts/{sid}/SipRealms/{realm}` | ⊘ | ⊘ | — | Deferred. Low priority; not a release-gate signal. |
 | 2.11 | AppEnv | `/AppEnv?url=...` | ⊘ | ⊘ | — | Deferred. |
 | 2.12 | Error cases | (cross-cutting) | ☑ | ☑ | local | 404 on bogus SID; delete-in-use observes cluster cascade policy (finding: jambonz.me cascades accounts). |
+| 2.13 | Support audio capture opt-out | `/Accounts` `disable_media_capture`, `/ServiceProviders/{sid}` `support_audio_capture_policy` | ☑ | ☑ | local | Account default 0, SP policy default per_account, SP + account scope writes, derived read-only `service_provider_audio_capture_policy`, 400 on bad values. SIP side: `TestMediaCapture_NoRecordHeader` (6 policy × account cases) and `TestMediaCapture_Responses` (1xx/2xx/4xx/5xx each direction) assert `X-VoipMonitor-norecord`. |
 
 ---
 

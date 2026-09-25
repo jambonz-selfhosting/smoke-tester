@@ -49,6 +49,9 @@ var (
 	// `client` (which is suite.AccountClient) to provision sub-resources.
 	suite  *provision.SuiteAccount
 	client *provision.Client // == suite.AccountClient
+	// spClient is the service-provider-scope client, for the few tests that
+	// flip an SP-level setting (and restore it).
+	spClient *provision.Client
 
 	// SIP transport's static DNS resolver. Maps the suite's synthetic
 	// sip_realm to the SBC public IP so sipgo's transport can reach the
@@ -166,6 +169,7 @@ func TestMain(m *testing.M) {
 
 	sp := provision.New(cfg.APIBaseURL, cfg.SPAPIKey, "", v,
 		provision.WithLabel("sp"))
+	spClient = sp
 
 	// Sweep stale ephemeral accounts from previous (crashed) runs. Only
 	// accounts whose name starts with `it-` (and not the current run's
