@@ -3,7 +3,13 @@
   "title": "Account",
   "description": "A jambonz Account — tenant container belonging to a Service Provider. Required fields derived from swagger; optional fields accept null per live behaviour.",
   "type": "object",
-  "required": ["account_sid", "name", "service_provider_sid"],
+  "required": [
+    "account_sid",
+    "name",
+    "service_provider_sid",
+    "disable_media_capture",
+    "service_provider_disable_media_capture"
+  ],
   "properties": {
     "account_sid": { "type": "string" },
     "name": { "type": "string" },
@@ -23,7 +29,15 @@
     },
     "device_calling_application_sid": { "type": ["string", "null"] },
     "siprec_hook_sid": { "type": ["string", "null"] },
-    "webhook_secret": { "type": ["string", "null"] }
+    "webhook_secret": { "type": ["string", "null"] },
+    "disable_media_capture": {
+      "description": "opt-out of jambonz troubleshooting audio capture; MySQL BOOLEAN reads back as 0/1",
+      "anyOf": [{ "type": "boolean" }, { "enum": [0, 1] }]
+    },
+    "service_provider_disable_media_capture": {
+      "description": "read-only: the owning service provider has opted every account out",
+      "type": "boolean"
+    }
   },
   "additionalProperties": true
 }
