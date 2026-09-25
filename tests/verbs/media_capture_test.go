@@ -1,20 +1,5 @@
-// X-VoipMonitor-norecord on calls for accounts that opted out of jambonz
-// troubleshooting audio capture.
-//
-// Capture is off when service_providers.disable_media_capture OR
-// accounts.disable_media_capture is set. The SBCs then add
-// `X-VoipMonitor-norecord: 1` so a voipmonitor sniffer (norecord-header=yes)
-// discards the call:
-//
-//   - sbc-inbound: on every 18x and the 200 OK back to the caller
-//   - sbc-outbound: on the INVITE out to the callee
-//
-// The test flips the suite account's flag (account scope) and the SP's flag
-// (SP scope), so it is deliberately NOT t.Parallel(): the verbs package runs
-// it alone, and every other verbs test sees the flags in their default
-// state. Both flags are restored in t.Cleanup.
-//
-// Phase-2 test; skipped without NGROK_AUTHTOKEN.
+// X-VoipMonitor-norecord for accounts opted out of audio capture. Not parallel: it
+// flips the suite account and SP flags (restored in Cleanup).
 package verbs
 
 import (

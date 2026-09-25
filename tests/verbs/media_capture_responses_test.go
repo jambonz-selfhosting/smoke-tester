@@ -1,16 +1,5 @@
-// X-VoipMonitor-norecord on every response class, one subtest per case, so
-// each can be run (and packet-captured) on its own:
-//
-//	go test ./tests/verbs/ -run 'TestMediaCapture_Responses/inbound_4xx$'
-//
-// With the suite account opted out, sbc-inbound must put the header on the
-// 18x / 2xx / 4xx / 5xx it relays to the caller, and sbc-outbound on the
-// INVITE to the callee. The harness sees only the public legs; the private
-// legs (sbc-inbound INVITE → feature-server, sbc-outbound 18x/2xx/4xx/5xx →
-// feature-server) are checked from a packet capture on the SBC host.
-//
-// Not t.Parallel(): it flips the suite account's flag (restored in Cleanup).
-// Phase-2 test; skipped without NGROK_AUTHTOKEN.
+// X-VoipMonitor-norecord on each response class, one subtest per case so each can
+// be run and packet-captured alone. Not parallel: it flips the suite account flag.
 package verbs
 
 import (
