@@ -7,8 +7,9 @@ import (
 	"net/http"
 )
 
-// ServiceProvider is read-only from our perspective — creating/deleting real
-// SPs on a shared cluster is too destructive. Tier 1 only lists and gets.
+// ServiceProvider is never created or deleted — that is too destructive on a
+// shared cluster. Tier 1 lists and gets; UpdateServiceProvider only flips
+// flags that a test restores in t.Cleanup.
 type ServiceProvider struct {
 	ServiceProviderSID string   `json:"service_provider_sid"`
 	Name               string   `json:"name"`
@@ -16,6 +17,21 @@ type ServiceProvider struct {
 	RootDomain         string   `json:"root_domain,omitempty"`
 	MsTeamsFqdn        string   `json:"ms_teams_fqdn,omitempty"`
 	RegistrationHook   *Webhook `json:"registration_hook,omitempty"`
+	// DisableMediaCapture opts every account under the SP out of
+	// troubleshooting audio capture (MySQL BOOLEAN → 0/1).
+	DisableMediaCapture Flag `json:"disable_media_capture"`
+}
+
+// ServiceProviderUpdate is the narrow PUT body the harness sends; the SP
+// itself is never created or deleted (see ServiceProvider).
+type ServiceProviderUpdate struct {
+	DisableMediaCapture *bool `json:"disable_media_capture,omitempty"`
+}
+
+// UpdateServiceProvider PUTs /ServiceProviders/{sid}. 204 on success.
+func (c *Client) UpdateServiceProvider(ctx context.Context, sid string, body ServiceProviderUpdate) error {
+	_, err := c.Request(ctx, http.MethodPut, "/ServiceProviders/"+sid, body, "", http.StatusNoContent)
+	return err
 }
 
 func (c *Client) ListServiceProviders(ctx context.Context) ([]ServiceProvider, error) {

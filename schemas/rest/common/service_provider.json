@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ServiceProvider",
   "type": "object",
-  "required": ["service_provider_sid", "name"],
+  "required": ["service_provider_sid", "name", "disable_media_capture"],
   "properties": {
     "service_provider_sid": { "type": "string" },
     "name": { "type": "string" },
@@ -14,7 +14,11 @@
     "ms_teams_fqdn": { "type": ["string", "null"] },
     "test_number": { "type": ["string", "null"] },
     "test_application_name": { "type": ["string", "null"] },
-    "test_application_sid": { "type": ["string", "null"] }
+    "test_application_sid": { "type": ["string", "null"] },
+    "disable_media_capture": {
+      "description": "opts every account out of jambonz troubleshooting audio capture; MySQL BOOLEAN reads back as 0/1",
+      "anyOf": [{ "type": "boolean" }, { "enum": [0, 1] }]
+    }
   },
   "additionalProperties": true
 }
