@@ -30,7 +30,15 @@ func elevenlabsSynth(model string) map[string]any {
 	}
 }
 
-// The [excited] audio tag must be performed, not read aloud.
+// TestVerb_Say_Stream_ElevenlabsV3Conversational — streaming say over Text to
+// Dialogue; the [excited] audio tag must be performed, not read aloud.
+//
+// Steps:
+//  1. script-streaming-say
+//  2. place-ws-call
+//  3. answer-record-and-wait-end
+//  4. assert-audio-duration
+//  5. assert-transcript
 func TestVerb_Say_Stream_ElevenlabsV3Conversational(t *testing.T) {
 	requireElevenlabs(t)
 	t.Parallel()
@@ -38,6 +46,14 @@ func TestVerb_Say_Stream_ElevenlabsV3Conversational(t *testing.T) {
 		"[excited] Streaming synthesis is working correctly.", "excited")
 }
 
+// TestVerb_Say_Stream_ElevenlabsV3 — as above on eleven_v3.
+//
+// Steps:
+//  1. script-streaming-say
+//  2. place-ws-call
+//  3. answer-record-and-wait-end
+//  4. assert-audio-duration
+//  5. assert-transcript
 func TestVerb_Say_Stream_ElevenlabsV3(t *testing.T) {
 	requireElevenlabs(t)
 	t.Parallel()
@@ -45,7 +61,15 @@ func TestVerb_Say_Stream_ElevenlabsV3(t *testing.T) {
 		"[excited] Streaming synthesis is working correctly.", "excited")
 }
 
-// Regression guard: a stream-input model still takes the old transport.
+// TestVerb_Say_Stream_ElevenlabsFlash — regression guard: a stream-input model
+// still takes the old transport.
+//
+// Steps:
+//  1. script-streaming-say
+//  2. place-ws-call
+//  3. answer-record-and-wait-end
+//  4. assert-audio-duration
+//  5. assert-transcript
 func TestVerb_Say_Stream_ElevenlabsFlash(t *testing.T) {
 	requireElevenlabs(t)
 	t.Parallel()
@@ -82,22 +106,48 @@ func runElevenlabsStreamingSay(t *testing.T, tag, model, text, notSpoken string)
 		return
 	}
 	s = Step(t, "assert-transcript")
-	AssertTranscriptContains(s, ctx, wav, "streaming", "working correctly")
-	if notSpoken != "" && stt.HasKey() {
-		transcript, err := stt.Transcribe(ctx, wav)
-		if err != nil {
-			s.Fatalf("stt.Transcribe: %v", err)
+	if !stt.HasKey() {
+		s.Logf("skipping transcript assertion: %s unset", stt.EnvKey)
+		s.Done()
+		return
+	}
+	transcript, err := stt.Transcribe(ctx, wav)
+	if err != nil {
+		s.Fatalf("stt.Transcribe(%s): %v", wav, err)
+	}
+	s.Logf("transcript: %q", transcript)
+	for _, want := range []string{"streaming", "working correctly"} {
+		if !strings.Contains(transcript, stt.Normalize(want)) {
+			s.Errorf("transcript missing %q", want)
 		}
-		if strings.Contains(transcript, stt.Normalize(notSpoken)) {
-			s.Errorf("audio tag was read aloud: %q", transcript)
-		}
+	}
+	if notSpoken != "" && strings.Contains(transcript, stt.Normalize(notSpoken)) {
+		s.Errorf("audio tag was read aloud: %q", transcript)
 	}
 	s.Done()
 }
 
-// A live agent on eleven_v3_conversational: a barge-in into the greeting
-// (the socket is rotated), then a turn after 25s of silence, which outlasts
-// the Text to Dialogue 20s receive timeout unless keepalives are flowing.
+// TestVerb_Agent_ElevenlabsV3Conversational — a live agent on
+// eleven_v3_conversational: a barge-in into the greeting (the socket is
+// rotated), then a turn after 25s of silence. noResponseTimeout is off so no
+// reprompt fills that gap; it outlasts the 20s TTD receive timeout unless
+// keepalives are flowing.
+//
+// Steps:
+//  1. preflight-skips
+//  2. ensure-prompt-wavs
+//  3. script-agent-verb
+//  4. place-call
+//  5. answer-and-silence
+//  6. wait-into-greeting
+//  7. barge-in-and-record-reply
+//  8. assert-barge-in-reply
+//  9. assert-user-interruption
+//
+// 10. idle-past-ttd-timeout
+// 11. idle-turn-record-and-speak
+// 12. assert-idle-turn-reply
+// 13. hangup-and-wait-ended
 func TestVerb_Agent_ElevenlabsV3Conversational(t *testing.T) {
 	requireElevenlabs(t)
 	t.Parallel()
@@ -127,14 +177,16 @@ func TestVerb_Agent_ElevenlabsV3Conversational(t *testing.T) {
 	_, sess := claimSession(t)
 
 	s = Step(t, "script-agent-verb")
+	noReprompt := 0
 	ScriptAgent(sess, agentVerbOpts{
 		SystemPrompt: "You are a friendly voice assistant. " +
 			"On your first turn, greet the user with a long, slow welcome " +
 			"of at least three full sentences so they have time to interrupt. " +
 			"On subsequent turns, repeat the user's words back to them verbatim.",
-		Greeting: true,
-		BargeIn:  true,
-		TTS:      elevenlabsSynth("eleven_v3_conversational"),
+		Greeting:          true,
+		BargeIn:           true,
+		NoResponseTimeout: &noReprompt,
+		TTS:               elevenlabsSynth("eleven_v3_conversational"),
 	})
 	s.Done()
 
