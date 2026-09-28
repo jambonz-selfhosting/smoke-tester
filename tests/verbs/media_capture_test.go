@@ -52,9 +52,11 @@ func TestMediaCapture_NoRecordHeader(t *testing.T) {
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
-		if err := spClient.UpdateServiceProvider(cctx, cfg.SPSID,
-			provision.ServiceProviderUpdate{SupportAudioCapturePolicy: spInitial}); err != nil {
-			t.Logf("cleanup: restore SP support_audio_capture_policy: %v", err)
+		if cfg.AllowSPPolicyChanges {
+			if err := spClient.UpdateServiceProvider(cctx, cfg.SPSID,
+				provision.ServiceProviderUpdate{SupportAudioCapturePolicy: spInitial}); err != nil {
+				t.Logf("cleanup: restore SP support_audio_capture_policy: %v", err)
+			}
 		}
 		off := false
 		if err := client.UpdateAccount(cctx, suite.AccountSID,
@@ -83,6 +85,9 @@ func TestMediaCapture_NoRecordHeader(t *testing.T) {
 	for _, tc := range cases {
 		tc := tc
 		t.Run(fmt.Sprintf("%s_account_%s", tc.policy, onOff(tc.acc)), func(t *testing.T) {
+			if tc.policy != spInitial && !cfg.AllowSPPolicyChanges {
+				t.Skipf("needs JAMBONZ_ALLOW_SP_POLICY_CHANGES=true to set the SP policy to %s", tc.policy)
+			}
 			want := tc.want
 			ctx := WithTimeout(t, 60*time.Second)
 
@@ -91,9 +96,11 @@ func TestMediaCapture_NoRecordHeader(t *testing.T) {
 				provision.AccountUpdate{DisableMediaCapture: &tc.acc}); err != nil {
 				s.Fatalf("account-scope PUT disable_media_capture=%v: %v", tc.acc, err)
 			}
-			if err := spClient.UpdateServiceProvider(ctx, cfg.SPSID,
-				provision.ServiceProviderUpdate{SupportAudioCapturePolicy: tc.policy}); err != nil {
-				s.Fatalf("SP-scope PUT support_audio_capture_policy=%s: %v", tc.policy, err)
+			if cfg.AllowSPPolicyChanges {
+				if err := spClient.UpdateServiceProvider(ctx, cfg.SPSID,
+					provision.ServiceProviderUpdate{SupportAudioCapturePolicy: tc.policy}); err != nil {
+					s.Fatalf("SP-scope PUT support_audio_capture_policy=%s: %v", tc.policy, err)
+				}
 			}
 			s.Done()
 

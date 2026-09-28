@@ -1,5 +1,5 @@
 // X-VoipMonitor-norecord on each response class, one subtest per case so each can
-// be run and packet-captured alone. Not parallel: it flips the suite account flag.
+// be run and packet-captured alone. Not parallel: it flips the account flag and SP policy.
 package verbs
 
 import (
@@ -15,28 +15,42 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-// TestMediaCapture_Responses — account opted out; each subtest drives one
+// TestMediaCapture_Responses — for each capture mode, each subtest drives one
 // response class in one direction and asserts the header on the public leg.
 //
+//	go test ./tests/verbs/ -run 'TestMediaCapture_Responses/^disable_all$/^inbound_4xx$'
+//
 // Steps:
-//  1. opt-out-account — account-scope PUT disable_media_capture=true
+//  1. read-initial-policy — remember the SP policy for cleanup
 //  2. provision-application — webhook Application the UAC dials
-//  3. (per subtest) drive the call, then assert-header on what the harness received
+//  3. (per mode) set-flags — account flag + SP policy
+//  4. (per case) drive the call, then assert-header on what the harness received
 func TestMediaCapture_Responses(t *testing.T) {
 	requireWebhook(t)
-	ctx := WithTimeout(t, 300*time.Second)
+	if spClient == nil {
+		t.Skip("SP scope not configured (JAMBONZ_SP_API_KEY / JAMBONZ_SP_SID)")
+	}
+	ctx := WithTimeout(t, 900*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s := Step(t, "opt-out-account")
-	on, off := true, false
-	if err := client.UpdateAccount(ctx, suite.AccountSID, provision.AccountUpdate{DisableMediaCapture: &on}); err != nil {
-		s.Fatalf("PUT disable_media_capture=true: %v", err)
+	s := Step(t, "read-initial-policy")
+	sp, err := spClient.GetServiceProvider(ctx, cfg.SPSID)
+	if err != nil {
+		s.Fatalf("get service provider: %v", err)
 	}
+	spInitial := sp.SupportAudioCapturePolicy
 	t.Cleanup(func() {
 		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 		defer cancel()
+		off := false
 		if err := client.UpdateAccount(cctx, suite.AccountSID, provision.AccountUpdate{DisableMediaCapture: &off}); err != nil {
 			t.Logf("cleanup: restore account disable_media_capture: %v", err)
+		}
+		if cfg.AllowSPPolicyChanges {
+			if err := spClient.UpdateServiceProvider(cctx, cfg.SPSID,
+				provision.ServiceProviderUpdate{SupportAudioCapturePolicy: spInitial}); err != nil {
+				t.Logf("cleanup: restore SP support_audio_capture_policy: %v", err)
+			}
 		}
 	})
 	s.Done()
@@ -45,6 +59,40 @@ func TestMediaCapture_Responses(t *testing.T) {
 	appSID := provisionWebhookApp(t, ctx, "media-capture-resp")
 	s.Done()
 
+	for _, mode := range []struct {
+		name   string
+		policy string
+		acc    bool
+		want   bool
+	}{
+		{"account_optout", "per_account", true, true},
+		{"disable_all", "disable_all", false, true},
+		{"allow_all_overrides_account", "allow_all", true, false},
+		{"default", "per_account", false, false},
+	} {
+		mode := mode
+		t.Run(mode.name, func(t *testing.T) {
+			if mode.policy != spInitial && !cfg.AllowSPPolicyChanges {
+				t.Skipf("needs JAMBONZ_ALLOW_SP_POLICY_CHANGES=true to set the SP policy to %s", mode.policy)
+			}
+			s := Step(t, "set-flags")
+			if err := client.UpdateAccount(ctx, suite.AccountSID,
+				provision.AccountUpdate{DisableMediaCapture: &mode.acc}); err != nil {
+				s.Fatalf("PUT disable_media_capture=%v: %v", mode.acc, err)
+			}
+			if cfg.AllowSPPolicyChanges {
+				if err := spClient.UpdateServiceProvider(ctx, cfg.SPSID,
+					provision.ServiceProviderUpdate{SupportAudioCapturePolicy: mode.policy}); err != nil {
+					s.Fatalf("PUT support_audio_capture_policy=%s: %v", mode.policy, err)
+				}
+			}
+			s.Done()
+			runResponseCases(t, uas, appSID, mode.want)
+		})
+	}
+}
+
+func runResponseCases(t *testing.T, uas *UAS, appSID string, want bool) {
 	/* inbound: UAC → sbc-inbound → feature-server; the header must be on the
 	   responses sbc-inbound sends back to the UAC */
 	t.Run("inbound_1xx", func(t *testing.T) {
@@ -62,7 +110,7 @@ func TestMediaCapture_Responses(t *testing.T) {
 		t.Cleanup(func() { _ = pending.Close() })
 		s.Done()
 		s = Step(t, "assert-header")
-		assertNoRecord(s, pending.EarlyResponse())
+		assertNoRecord(s, pending.EarlyResponse(), want)
 		s.Done()
 		s = Step(t, "cancel")
 		if err := pending.CancelWithHeaders(ctx); err != nil {
@@ -90,7 +138,7 @@ func TestMediaCapture_Responses(t *testing.T) {
 		if !ok {
 			s.Fatalf("no 200 OK recorded")
 		}
-		assertNoRecord(s, m.RawResponse)
+		assertNoRecord(s, m.RawResponse, want)
 		s.Done()
 	})
 
@@ -118,7 +166,7 @@ func TestMediaCapture_Responses(t *testing.T) {
 			}
 			s.Done()
 			s = Step(t, "assert-header")
-			assertNoRecord(s, rej.Response)
+			assertNoRecord(s, rej.Response, want)
 			s.Done()
 		})
 	}
@@ -158,8 +206,8 @@ func TestMediaCapture_Responses(t *testing.T) {
 			s = Step(t, "assert-header")
 			got := call.Header(noRecordHeader)
 			s.Logf("INVITE to callee: %s=%q", noRecordHeader, got)
-			if got != "1" {
-				s.Errorf("INVITE to callee: %s=%q, want \"1\"", noRecordHeader, got)
+			if (got == "1") != want {
+				s.Errorf("INVITE to callee: %s=%q, want header=%v", noRecordHeader, got, want)
 			}
 			s.Done()
 			s = Step(t, "respond")
@@ -181,7 +229,7 @@ func TestMediaCapture_Responses(t *testing.T) {
 
 func appURI(appSID string) string { return "sip:app-" + appSID + "@" + suite.SIPRealm }
 
-func assertNoRecord(s *StepCtx, res *sip.Response) {
+func assertNoRecord(s *StepCtx, res *sip.Response, want bool) {
 	if res == nil {
 		s.Fatalf("no response to inspect")
 	}
@@ -190,7 +238,7 @@ func assertNoRecord(s *StepCtx, res *sip.Response) {
 		got = h.Value()
 	}
 	s.Logf("%d %s: %s=%q", res.StatusCode, res.Reason, noRecordHeader, got)
-	if got != "1" {
-		s.Errorf("%d %s: %s=%q, want \"1\"", res.StatusCode, res.Reason, noRecordHeader, got)
+	if (got == "1") != want {
+		s.Errorf("%d %s: %s=%q, want header=%v", res.StatusCode, res.Reason, noRecordHeader, got, want)
 	}
 }
