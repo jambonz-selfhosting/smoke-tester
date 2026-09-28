@@ -446,11 +446,13 @@ func provisionElevenlabsCredential() error {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
-		Vendor:    "elevenlabs",
-		Label:     elevenlabsLabel,
-		APIKey:    cfg.ElevenlabsAPIKey,
-		ModelID:   "eleven_flash_v2_5",
-		UseForTTS: true,
+		Vendor:  "elevenlabs",
+		Label:   elevenlabsLabel,
+		APIKey:  cfg.ElevenlabsAPIKey,
+		ModelID: "eleven_flash_v2_5",
+		// the api-server requires an STT model even on a TTS-only elevenlabs credential
+		STTModelID: "scribe_v1",
+		UseForTTS:  true,
 	})
 	if err != nil {
 		return err
