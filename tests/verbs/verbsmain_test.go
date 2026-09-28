@@ -79,6 +79,13 @@ var (
 	// Default Murf voice (verified live against api.murf.ai/v1/speech/voices).
 	murfVoice = "en-US-alina"
 
+	// ElevenLabs TTS credential, provisioned IF ELEVENLABS_API_KEY is set.
+	// Tests pick the model per verb via synthesizer options.model_id.
+	elevenlabsLabel string
+	elevenlabsSID   string
+	// George, a premade voice; legacy voices such as Rachel reject audio tags on eleven_v3
+	elevenlabsVoice = "JBFqnCBsd6RMkjVDRZzb"
+
 	// xai speech credential (dual-use STT+TTS) provisioned at TestMain IF
 	// XAI_API_KEY is set (optional vendor). When unset, xaiLabel stays "" and
 	// the xai gather/transcribe/say tests pass without exercising xai.
@@ -223,6 +230,16 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: MURF_API_KEY not set — Murf say test will skip")
 	}
 
+	// 3b2. ElevenLabs TTS speech credential — optional.
+	if cfg.HasElevenlabs() {
+		if err := provisionElevenlabsCredential(); err != nil {
+			log.Fatalf("tests/verbs: ElevenLabs credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: ElevenLabs credential label=%s sid=%s", elevenlabsLabel, elevenlabsSID)
+	} else {
+		log.Printf("tests/verbs: ELEVENLABS_API_KEY not set — ElevenLabs tests will skip")
+	}
+
 	// 3c. xai STT speech credential — optional. Only provisioned when
 	// XAI_API_KEY is set; otherwise the xai gather/transcribe tests pass
 	// without exercising xai STT.
@@ -307,6 +324,7 @@ func TestMain(m *testing.M) {
 	teardownDeepgramCredential()
 	teardownDeepgramFluxCredential()
 	teardownMurfCredential()
+	teardownElevenlabsCredential()
 	teardownXaiCredential()
 	teardownSpeechmaticsCredential()
 	teardownSpeechmaticsAgentCredential()
@@ -418,6 +436,37 @@ func teardownMurfCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, murfSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete Murf credential %s: %v", murfSID, err)
+	}
+}
+
+// provisionElevenlabsCredential creates a TTS-only ElevenLabs credential,
+// labelled `it-elevenlabs-<runID>`, defaulting to a stream-input model.
+func provisionElevenlabsCredential() error {
+	elevenlabsLabel = "it-elevenlabs-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "elevenlabs",
+		Label:     elevenlabsLabel,
+		APIKey:    cfg.ElevenlabsAPIKey,
+		ModelID:   "eleven_flash_v2_5",
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	elevenlabsSID = sid
+	return nil
+}
+
+func teardownElevenlabsCredential() {
+	if elevenlabsSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, elevenlabsSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete ElevenLabs credential %s: %v", elevenlabsSID, err)
 	}
 }
 
