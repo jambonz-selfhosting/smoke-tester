@@ -84,6 +84,9 @@ var (
 	// the xai gather/transcribe/say tests pass without exercising xai.
 	xaiLabel string
 	xaiSID   string
+	// zoom STT-only speech credential, provisioned only when ZOOM_API_KEY is set.
+	zoomLabel string
+	zoomSID   string
 	// Default xai TTS voice.
 	xaiVoice    = "eve"
 	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
@@ -235,6 +238,16 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: XAI_API_KEY not set — xai STT tests will pass without exercising xai")
 	}
 
+	// 3c'. zoom STT speech credential — optional, same pattern as xai.
+	if cfg.HasZoom() {
+		if err := provisionZoomCredential(); err != nil {
+			log.Fatalf("tests/verbs: zoom credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: zoom credential label=%s sid=%s", zoomLabel, zoomSID)
+	} else {
+		log.Printf("tests/verbs: ZOOM_API_KEY not set — zoom STT tests will pass without exercising zoom")
+	}
+
 	// 3d. speechmatics STT speech credential — optional. Only provisioned
 	// when SPEECHMATICS_API_KEY is set; otherwise the speechmatics gather/
 	// transcribe tests pass without exercising speechmatics STT.
@@ -308,6 +321,7 @@ func TestMain(m *testing.M) {
 	teardownDeepgramFluxCredential()
 	teardownMurfCredential()
 	teardownXaiCredential()
+	teardownZoomCredential()
 	teardownSpeechmaticsCredential()
 	teardownSpeechmaticsAgentCredential()
 	teardownOpenaiCredential()
@@ -479,6 +493,37 @@ func teardownXaiCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, xaiSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete xai credential %s: %v", xaiSID, err)
+	}
+}
+
+// provisionZoomCredential creates an STT-only zoom speech credential under
+// the suite account, labelled `it-zoom-<runID>`. Called only when
+// ZOOM_API_KEY is set.
+func provisionZoomCredential() error {
+	zoomLabel = "it-zoom-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "zoom",
+		Label:     zoomLabel,
+		APIKey:    cfg.ZoomAPIKey,
+		UseForSTT: true,
+	})
+	if err != nil {
+		return err
+	}
+	zoomSID = sid
+	return nil
+}
+
+func teardownZoomCredential() {
+	if zoomSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, zoomSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete zoom credential %s: %v", zoomSID, err)
 	}
 }
 

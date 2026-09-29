@@ -79,6 +79,11 @@ type Settings struct {
 	// exercising xai STT — see HasXai.
 	XaiAPIKey string
 
+	// Optional — Zoom Build platform API key (Scribe Live mode STT). When set,
+	// TestMain provisions a zoom SpeechCredential and the zoom gather/transcribe
+	// tests exercise it; unset, they pass without exercising zoom — see HasZoom.
+	ZoomAPIKey string
+
 	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the gemini
 	// live transcription models, which authenticate as a service account on
 	// Vertex AI. Needs roles/aiplatform.user, which the dialogflow key does not
@@ -227,6 +232,10 @@ func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 
+// HasZoom reports whether the zoom STT gather/transcribe tests can run.
+// Optional: when the key is unset those tests pass without exercising zoom.
+func (s *Settings) HasZoom() bool { return s.ZoomAPIKey != "" }
+
 // HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
 // can run. Optional: when the key is unset those tests pass without
 // exercising gemini.
@@ -338,6 +347,7 @@ func parse() (*Settings, error) {
 		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
 		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
+		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
 		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
 		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
