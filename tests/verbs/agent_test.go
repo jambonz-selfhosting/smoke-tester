@@ -99,16 +99,16 @@ type agentVerbOpts struct {
 	EventURL          string // POST target for user_transcript / llm_response / turn_end / user_interruption
 	ToolURL           string // POST target when LLM calls a function/tool (set when Tools is non-empty)
 	Tools             []map[string]any
-	BargeIn           bool   // default false: easier to test deterministic round-trips
-	NoResponseTimeout *int   // pointer so 0 means "explicitly disable"
-	EarlyGeneration   bool   // require turnDetection=krisp with this
-	TurnDetection     string // "stt" (default), "krisp"
-	NoiseIsolation    string // "" (off), "krisp", "rnnoise"
-	LLMVendor         string // default "deepseek" when empty
-	LLMModel          string // default "deepseek-chat" when empty
-	LLMApiKey         string // default cfg.DeepseekAPIKey when empty
-	// TTS defaults to deepgram when nil
-	TTS map[string]any
+	BargeIn           bool           // default false: easier to test deterministic round-trips
+	NoResponseTimeout *int           // pointer so 0 means "explicitly disable"
+	EarlyGeneration   bool           // require turnDetection=krisp with this
+	TurnDetection     string         // "stt" (default), "krisp"
+	NoiseIsolation    string         // "" (off), "krisp", "rnnoise"
+	LLMVendor         string         // default "deepseek" when empty
+	LLMModel          string         // default "deepseek-chat" when empty
+	LLMApiKey         string         // default cfg.DeepseekAPIKey when empty
+	STT               map[string]any // default deepgram when nil
+	TTS               map[string]any // default deepgram when nil
 }
 
 // buildAgentVerb builds the verb-map jambonz will run. Centralised here so
@@ -121,6 +121,14 @@ func buildAgentVerb(opts agentVerbOpts) map[string]any {
 	if len(opts.Tools) > 0 {
 		llmOptions["tools"] = opts.Tools
 	}
+	stt := opts.STT
+	if stt == nil {
+		stt = map[string]any{
+			"vendor":   "deepgram",
+			"label":    deepgramLabel,
+			"language": "en-US",
+		}
+	}
 	ttsCfg := opts.TTS
 	if ttsCfg == nil {
 		ttsCfg = map[string]any{
@@ -130,11 +138,7 @@ func buildAgentVerb(opts agentVerbOpts) map[string]any {
 		}
 	}
 	verb := V("agent",
-		"stt", map[string]any{
-			"vendor":   "deepgram",
-			"label":    deepgramLabel,
-			"language": "en-US",
-		},
+		"stt", stt,
 		"tts", ttsCfg,
 		"llm", map[string]any{
 			"vendor": firstNonEmpty(opts.LLMVendor, "deepseek"),
