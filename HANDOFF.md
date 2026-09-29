@@ -450,6 +450,142 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-09-18 — agent-verb defects fixed; one still open
+
+Follow-on from the reproduction entry below. Fixes on `feature-server`
+(`fix/agent-prod-defects`) and `@jambonz/llm` (`fix/tool-call-assistant-text`),
+verified against the live test cluster. Smoke suite is now 9 pass, 1 skip,
+1 fail.
+
+**Fixed**
+
+- Interrupted responses are trimmed to what was played even when the TTS vendor
+  sends no word alignment, estimated from elapsed playout and rounded up to the
+  sentence in progress. Measured: caller heard to "seven", `turn_end.response`
+  ends at "nine"; before, it ran to "thirty" however early the barge-in landed.
+- `trimLastAssistantMessage` no longer overwrites the previous turn when the
+  current stream committed nothing, and appends instead — which also stops
+  history ending on two consecutive user messages.
+- Tool-call turns: the pre-tool text is closed as its own `llm_response`, and
+  `@jambonz/llm` now carries it onto the wire in each vendor's native shape
+  (OpenAI `content`, Anthropic/Bedrock a text block, Gemini a text part).
+- `_onEndOfTurn` honours `bargeIn.enable:false`. It was confirming an
+  interruption unconditionally, so the agent cut itself off with barge-in
+  disabled; on tool turns the resulting split left the post-tool text in a turn
+  whose `turn_end` never fired.
+- Tokens arriving while a barge-in is only tentative keep flowing to TTS.
+- An oversize application frame is reported instead of swallowed: real cause
+  logged, alert naming `JAMBONES_WS_MAX_PAYLOAD`, in-flight messages failed
+  immediately, no reconnect. Default limit raised 24 KB → 64 KB.
+- Also `_commitPreflightResponse` is cleared on interruption, and the dead
+  `bargeIn.sticky` parse is gone.
+
+**Still open — the bare terminator ("punto"), `Defect2b`**
+
+Not fixed, and deliberately not guessed at. Ruled out, in order:
+
+1. feature-server chunking — both send paths instrumented; 80 well-formed
+   chunks, zero terminator-only.
+2. the vendor and mediajam's engine — replaying that exact chunk sequence
+   against live Deepgram is clean back-to-back, paced in real time, and spaced
+   40 ms apart (`mediajam internal/tts/bare_terminator_live_test.go`, on branch
+   `test/deepgram-stream-bare-terminator`).
+3. the one-shot TTS path — `say` over a live call is clean (`Defect2c`).
+4. the streaming TTS path — `say` with `stream:true`, same synthesizer and RTP
+   path, no agent verb, is clean (`Defect2d`).
+
+What is left is specific to the agent verb's endpoint, which runs STT on the
+same media session as the TTS playout. Going further needs audio captured at
+the mediajam endpoint.
+
+**Skip, not a failure:** `Defect1` skips when the interrupt utterance produces
+no transcript on either attempt, or the agent finished speaking first — roughly
+one run in three. The premise is not established on those runs, so there is
+nothing to judge.
+
+### 2026-09-18 — agent-verb production defects reproduced, with feature-server probes
+
+New file `tests/verbs/agent_prod_defects_test.go` — ten tests reproducing the
+defects a self-hosted 10.2.1 operator reported against the `agent` verb.
+Nothing was fixed. Each test asserts the intended behaviour, so an affected
+build fails with the evidence in the message.
+
+Run against the test cluster with temporary `[DEFECT-PROBE]` logging applied to
+the feature-server there (`debug/agent-prod-defect-logging`, working tree only,
+`git checkout -- lib` on the box to revert; the same commit is on the local
+feature-server branch of that name).
+
+**Reproduced, confirmed from both sides:**
+
+- **History not trimmed after barge-in.** Probe: `ttsVendor=deepgram
+  alignmentEnabled=false spokenTextIsNull=true willTrim=false`. Caller heard to
+  "six"; `turn_end.response` and history both ran to "thirty".
+- **Tool-call turns**, three faults, only one predicted: no flush on the tool
+  path (`preToolText='Checking that now.'`, accumulator never reset — one run
+  produced the reported concatenation verbatim, `"Checking that now.The"`); the
+  pre-tool text dropped from history (wire message
+  `{"role":"assistant","content":null,"tool_calls":[…]}`);
+  and **a `user_interruption` confirmed although `bargeIn` is disabled**
+  (`via=bargeInConfirmed bargeInEnabled=false` — the endOfTurn-while-speaking
+  path never checks whether barge-in is enabled). The third splits the turn,
+  which is why the post-tool text lands in a turn whose `turn_end` never fires.
+- **WS oversize ack.** Probe: `RangeError "Max payload size exceeded"`,
+  `WS_ERR_UNSUPPORTED_MESSAGE_LENGTH`, `maxPayload=24576`, `connections=1`,
+  `swallowed=true`, `inFlight=1`. **The socket closed 1006, not the 1009**
+  everyone assumed — a fix keyed on 1009 would not fire.
+
+**Two conclusions that contradict the internal code-review analysis:**
+
+1. The bare-terminator ("punto") symptom is NOT the barge-in token drop. With
+   BOTH send paths instrumented (the sentence-boundary one and the unguarded
+   flush one), a full count is 80 boundary chunks, zero flush chunks, zero
+   terminator-only. Four controls localise it: offline REST TTS, offline
+   per-chunk TTS, and a live call through the non-streaming `say` verb
+   (`Defect2c`) are all clean; only the agent verb's streaming path produces
+   it. It is downstream of jambonz's chunker.
+2. The token-drop window could not be hit at all. First-token to flush measured
+   250-580ms for deepseek AND gpt-4o-mini, so the response is fully generated
+   before a caller can react. Five attempts (fixed sleeps, raised maxTokens, a
+   copy-task prompt, and finally triggering the blip off the agent's own audio)
+   recorded zero discarded tokens. The code path is real; the exposure is about
+   half a second per turn unless the LLM streams slowly.
+
+**Did not reproduce:** mid-stream barge-in losing the assistant turn;
+`noResponseTimeout` with `greeting:false` (11.1.2 fix present); a bare `hangup`
+redirect (ends the call in <7s, so the operator's dead air is elsewhere);
+`agent:update` inject_context + generate_reply.
+
+Caveat kept in the file: `Defect1` flakes ~1 run in 2 when the interrupt
+utterance produces no transcript — it fails at `assert-interruption-confirmed`,
+which is a setup miss, not the defect.
+
+Not covered: `bargeIn.sticky` (a no-op with no black-box signal) and Anthropic
+prompt-cache hits (not surfaced on any hook).
+
+Found by code review while writing the probes, not covered by a test and NOT
+the reporter's issue (it needs `earlyGeneration`): `_commitPreflightResponse`
+is set at `state-machine.js:667` and cleared only at `:1048`, while
+`_confirmInterruption` resets `_currentResponseText` but not the flag. A
+barge-in on a preflight-hit turn therefore leaves it `true`, and the next
+ordinary turn appends its assistant message twice — once in `prompt()` and
+again via `addAssistantMessage`.
+
+### 2026-09-16 — custom SIP headers in `session:new` pinned by a smoke test
+
+Question answered: yes, custom SIP headers on the inbound INVITE reach the
+`session:new` payload. feature-server `lib/middleware.js` (`invokeWebCallback`)
+puts the whole INVITE under a top-level `sip` key when the call_hook method is
+POST or WS — headers live at `sip.headers`. Both requestors exclude `sip` from
+the snake_case transform, so names arrive as the SIP parser produced them
+(custom `X-` headers keep their case; standard ones are lowercased).
+
+A GET call_hook gets no `sip` object at all — that is the one way to lose them.
+
+New test `tests/verbs/sip_custom_headers_test.go`
+(`TestSessionNew_CustomSipHeaders`): UAC INVITEs `sip:app-<sid>@<realm>` with
+three custom `X-` headers, asserts each round-trips into `sip.headers`, and logs
+the decoded map. Passed first run against the live cluster.
+
 ### 2026-08-19 — permitted_marks was losing the comma; smoke test added
 
 `punctuation_overrides.permitted_marks` travelled to the media server as a

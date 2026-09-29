@@ -79,11 +79,21 @@ var (
 	// Default Murf voice (verified live against api.murf.ai/v1/speech/voices).
 	murfVoice = "en-US-alina"
 
+	// ElevenLabs TTS credential, provisioned IF ELEVENLABS_API_KEY is set.
+	// Tests pick the model per verb via synthesizer options.model_id.
+	elevenlabsLabel string
+	elevenlabsSID   string
+	// George, a premade voice; legacy voices such as Rachel reject audio tags on eleven_v3
+	elevenlabsVoice = "JBFqnCBsd6RMkjVDRZzb"
+
 	// xai speech credential (dual-use STT+TTS) provisioned at TestMain IF
 	// XAI_API_KEY is set (optional vendor). When unset, xaiLabel stays "" and
 	// the xai gather/transcribe/say tests pass without exercising xai.
 	xaiLabel string
 	xaiSID   string
+	// zoom STT-only speech credential, provisioned only when ZOOM_API_KEY is set.
+	zoomLabel string
+	zoomSID   string
 	// Default xai TTS voice.
 	xaiVoice    = "eve"
 	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
@@ -223,6 +233,16 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: MURF_API_KEY not set — Murf say test will skip")
 	}
 
+	// 3b2. ElevenLabs TTS speech credential — optional.
+	if cfg.HasElevenlabs() {
+		if err := provisionElevenlabsCredential(); err != nil {
+			log.Fatalf("tests/verbs: ElevenLabs credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: ElevenLabs credential label=%s sid=%s", elevenlabsLabel, elevenlabsSID)
+	} else {
+		log.Printf("tests/verbs: ELEVENLABS_API_KEY not set — ElevenLabs tests will skip")
+	}
+
 	// 3c. xai STT speech credential — optional. Only provisioned when
 	// XAI_API_KEY is set; otherwise the xai gather/transcribe tests pass
 	// without exercising xai STT.
@@ -233,6 +253,16 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: xai credential label=%s sid=%s", xaiLabel, xaiSID)
 	} else {
 		log.Printf("tests/verbs: XAI_API_KEY not set — xai STT tests will pass without exercising xai")
+	}
+
+	// 3c'. zoom STT speech credential — optional, same pattern as xai.
+	if cfg.HasZoom() {
+		if err := provisionZoomCredential(); err != nil {
+			log.Fatalf("tests/verbs: zoom credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: zoom credential label=%s sid=%s", zoomLabel, zoomSID)
+	} else {
+		log.Printf("tests/verbs: ZOOM_API_KEY not set — zoom STT tests will pass without exercising zoom")
 	}
 
 	// 3d. speechmatics STT speech credential — optional. Only provisioned
@@ -307,7 +337,9 @@ func TestMain(m *testing.M) {
 	teardownDeepgramCredential()
 	teardownDeepgramFluxCredential()
 	teardownMurfCredential()
+	teardownElevenlabsCredential()
 	teardownXaiCredential()
+	teardownZoomCredential()
 	teardownSpeechmaticsCredential()
 	teardownSpeechmaticsAgentCredential()
 	teardownOpenaiCredential()
@@ -421,6 +453,39 @@ func teardownMurfCredential() {
 	}
 }
 
+// provisionElevenlabsCredential creates a TTS-only ElevenLabs credential,
+// labelled `it-elevenlabs-<runID>`, defaulting to a stream-input model.
+func provisionElevenlabsCredential() error {
+	elevenlabsLabel = "it-elevenlabs-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:  "elevenlabs",
+		Label:   elevenlabsLabel,
+		APIKey:  cfg.ElevenlabsAPIKey,
+		ModelID: "eleven_flash_v2_5",
+		// the api-server requires an STT model even on a TTS-only elevenlabs credential
+		STTModelID: "scribe_v1",
+		UseForTTS:  true,
+	})
+	if err != nil {
+		return err
+	}
+	elevenlabsSID = sid
+	return nil
+}
+
+func teardownElevenlabsCredential() {
+	if elevenlabsSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, elevenlabsSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete ElevenLabs credential %s: %v", elevenlabsSID, err)
+	}
+}
+
 // provisionGeminiCredential creates a google speech credential whose default
 // STT model is a gemini live model, labelled `it-gemini-<runID>`. The
 // service-account JSON satisfies the api-server's google credential contract;
@@ -479,6 +544,37 @@ func teardownXaiCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, xaiSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete xai credential %s: %v", xaiSID, err)
+	}
+}
+
+// provisionZoomCredential creates an STT-only zoom speech credential under
+// the suite account, labelled `it-zoom-<runID>`. Called only when
+// ZOOM_API_KEY is set.
+func provisionZoomCredential() error {
+	zoomLabel = "it-zoom-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "zoom",
+		Label:     zoomLabel,
+		APIKey:    cfg.ZoomAPIKey,
+		UseForSTT: true,
+	})
+	if err != nil {
+		return err
+	}
+	zoomSID = sid
+	return nil
+}
+
+func teardownZoomCredential() {
+	if zoomSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, zoomSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete zoom credential %s: %v", zoomSID, err)
 	}
 }
 

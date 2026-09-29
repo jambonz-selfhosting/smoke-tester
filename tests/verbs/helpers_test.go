@@ -815,6 +815,32 @@ func AssertTranscriptContains(s *StepCtx, ctx context.Context, recording string,
 	}
 }
 
+// NonSilentMS reports how many milliseconds of a PCM16 8kHz file carry a
+// sample above thresh. Unlike Call.RMS/PCMBytesIn — which are cumulative over
+// the whole call and so dilute to meaninglessness on a long one — this measures
+// only the file handed to it.
+func NonSilentMS(pcmPath string, thresh int16) (int, error) {
+	data, err := os.ReadFile(pcmPath)
+	if err != nil {
+		return 0, fmt.Errorf("read pcm: %w", err)
+	}
+	const frameBytes = 80 * 2 // 10ms @ 8kHz
+	ms := 0
+	for off := 0; off+frameBytes <= len(data); off += frameBytes {
+		for i := 0; i < frameBytes; i += 2 {
+			v := int16(data[off+i]) | int16(data[off+i+1])<<8
+			if v < 0 {
+				v = -v
+			}
+			if v >= thresh {
+				ms += 10
+				break
+			}
+		}
+	}
+	return ms, nil
+}
+
 // LongestSilenceMS scans a linear-16 little-endian 8 kHz mono PCM file
 // and returns the longest contiguous window where the per-sample
 // absolute amplitude stayed below `thresh`. Used for SSML break-tag

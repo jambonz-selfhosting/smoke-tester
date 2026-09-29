@@ -73,17 +73,34 @@ type Settings struct {
 	// credential-missing log — see HasMurf.
 	MurfAPIKey string
 
+	// Optional — ElevenLabs API key for the eleven_v3 (Text to Dialogue)
+	// streaming tests. Unset = those tests skip — see HasElevenlabs.
+	ElevenlabsAPIKey string
+
 	// Optional — xAI STT API key. When set, TestMain provisions an xai
 	// SpeechCredential under the ephemeral account and the xai gather/
 	// transcribe tests exercise it. When unset those tests pass without
 	// exercising xai STT — see HasXai.
 	XaiAPIKey string
 
+	// Optional — Zoom Build platform API key (Scribe Live mode STT). When set,
+	// TestMain provisions a zoom SpeechCredential and the zoom gather/transcribe
+	// tests exercise it; unset, they pass without exercising zoom — see HasZoom.
+	ZoomAPIKey string
+
 	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the gemini
 	// live transcription models, which authenticate as a service account on
 	// Vertex AI. Needs roles/aiplatform.user, which the dialogflow key does not
 	// carry, so it is a separate variable.
 	GeminiServiceKey string
+
+	// Optional — Gemini Developer API key ("AIza..."), for the google s2s
+	// (Gemini Live) tests. NOT interchangeable with GeminiServiceKey: Google
+	// refuses service accounts on the Developer API ("Access to Gemini API is
+	// restricted with service accounts"), and the Live s2s models it serves —
+	// gemini-3.8-live and -extended-thinking — are not published on Vertex AI,
+	// where the service account would otherwise work. Hence a separate key.
+	GeminiAPIKey string
 
 	// Optional — OpenAI GPT Live (limited-access alpha) API key. This is an
 	// OpenAI key enrolled in the GPT Live Early Access Program; a plain
@@ -107,6 +124,15 @@ type Settings struct {
 	// turns on (delegation.responses.model, required by the server). Distinct
 	// from GptLiveModel, which is the GPT Live voice model in the URL.
 	GptLiveDelegationModel string
+
+	// Optional — Azure Voice Live. The host names a Microsoft Foundry or Azure
+	// Speech resource and has no default, so BOTH the key and the host must be
+	// set for the voicelive tests to run — see HasVoiceLive. VoiceLiveVoice is
+	// an Azure TTS voice name, not an OpenAI one.
+	VoiceLiveAPIKey string
+	VoiceLiveHost   string
+	VoiceLiveModel  string
+	VoiceLiveVoice  string
 
 	// Optional — Speechmatics STT API key. When set, TestMain provisions a
 	// speechmatics SpeechCredential under the ephemeral account and the
@@ -206,9 +232,16 @@ func (s *Settings) HasOpenAI() bool { return s.OpenAIAPIKey != "" }
 // the key is unset the test skips (passes) with a credential-missing log.
 func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 
+// HasElevenlabs reports whether the ElevenLabs TTS tests can run.
+func (s *Settings) HasElevenlabs() bool { return s.ElevenlabsAPIKey != "" }
+
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
+
+// HasZoom reports whether the zoom STT gather/transcribe tests can run.
+// Optional: when the key is unset those tests pass without exercising zoom.
+func (s *Settings) HasZoom() bool { return s.ZoomAPIKey != "" }
 
 // HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
 // can run. Optional: when the key is unset those tests pass without
@@ -217,6 +250,17 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // Optional: when GEMINI_KEYFILE is unset those tests pass without exercising
 // gemini. The dialogflow key is NOT a fallback — it lacks aiplatform access.
 func (s *Settings) HasGeminiStt() bool { return s.GeminiServiceKey != "" }
+
+// HasGeminiS2S reports whether the google (Gemini Live) S2S tests can run.
+// Optional: when GEMINI_API_KEY is unset those tests pass without exercising
+// Gemini Live. GeminiServiceKey is deliberately NOT a fallback — see the
+// GeminiAPIKey field comment.
+func (s *Settings) HasGeminiS2S() bool { return s.GeminiAPIKey != "" }
+
+// HasVoiceLive reports whether the Azure Voice Live S2S tests can run.
+// Optional, and needs BOTH values: unlike every other s2s vendor the endpoint
+// is resource-specific, so there is no host to fall back on.
+func (s *Settings) HasVoiceLive() bool { return s.VoiceLiveAPIKey != "" && s.VoiceLiveHost != "" }
 
 // HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
 // Optional: when the key is unset those tests pass without exercising gptlive.
@@ -309,12 +353,19 @@ func parse() (*Settings, error) {
 		DeepseekAPIKey:           os.Getenv("DEEPSEEK_API_KEY"),
 		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
 		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
+		ElevenlabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
+		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
-		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
+		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
+		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
 		GptLiveHost:              os.Getenv("GPTLIVE_HOST"),
 		GptLivePath:              os.Getenv("GPTLIVE_PATH"),
 		GptLiveDelegationModel:   firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
+		VoiceLiveAPIKey:          os.Getenv("VOICELIVE_API_KEY"),
+		VoiceLiveHost:            os.Getenv("VOICELIVE_HOST"),
+		VoiceLiveModel:           firstNonEmpty(os.Getenv("VOICELIVE_MODEL"), "gpt-realtime"),
+		VoiceLiveVoice:           firstNonEmpty(os.Getenv("VOICELIVE_VOICE"), "en-US-AvaNeural"),
 		SpeechmaticsAPIKey:       os.Getenv("SPEECHMATICS_API_KEY"),
 		SpeechmaticsSTTURI:       firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
 		SpeechmaticsAgentAPIKey:  os.Getenv("SPEECHMATICS_AGENT_API_KEY"),
