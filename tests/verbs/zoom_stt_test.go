@@ -1,13 +1,4 @@
-// Tests for the `gather` and `transcribe` verbs with STT vendor "zoom"
-// (Zoom Scribe Live mode).
-//
-// zoom is an OPTIONAL vendor (see config.HasZoom / provisionZoomCredential in
-// verbsmain_test.go): when ZOOM_API_KEY is unset zoomLabel stays "" and both
-// tests pass immediately after a log — never t.Skip, never a failure.
-//
-// Clones of the xai STT tests with the recognizer swapped to zoom. Zoom
-// endpoints turns server-side and sends only finals (no interims), so the
-// gather/transcribe flows are unchanged; timings stay on the LONG pad.
+// gather / transcribe / agent with STT vendor "zoom"; pass without exercising zoom when ZOOM_API_KEY is unset.
 package verbs
 
 import (
@@ -22,10 +13,19 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-// TestVerb_Gather_Speech_Zoom — stream a WAV into `gather input=[speech]`
-// using recognizer vendor "zoom", assert the returned transcript contains
-// the expected phrase. Clone of TestVerb_Gather_Speech (gather_speech_test.go)
-// with the recognizer swapped to zoom.
+// TestVerb_Gather_Speech_Zoom — gather input=[speech] on zoom returns the spoken phrase.
+//
+// Steps:
+//   - load-ground-truth
+//   - script-gather-speech-zoom
+//   - place-call
+//   - answer-and-silence
+//   - wait-for-recognizer
+//   - send-wav
+//   - post-speech-silence
+//   - wait-action-gather-callback
+//   - assert-transcript-sun-shining
+//   - hangup
 func TestVerb_Gather_Speech_Zoom(t *testing.T) {
 	if !cfg.HasZoom() || zoomLabel == "" {
 		t.Log("ZOOM_API_KEY not set — passing without exercising zoom STT")
@@ -128,10 +128,18 @@ func TestVerb_Gather_Speech_Zoom(t *testing.T) {
 	s.Done()
 }
 
-// TestVerb_Transcribe_Zoom — `transcribe` runs continuous STT via recognizer
-// vendor "zoom" and posts each utterance to transcriptionHook. Clone of
-// TestVerb_Transcribe_Basic (transcribe_test.go) with the recognizer
-// swapped to zoom.
+// TestVerb_Transcribe_Zoom — transcribe on zoom posts the utterance to transcriptionHook.
+//
+// Steps:
+//   - script-transcribe-pause-hangup-zoom
+//   - place-call
+//   - answer-and-silence
+//   - wait-for-recognizer
+//   - send-wav
+//   - post-speech-silence
+//   - collect-transcription-hook
+//   - assert-transcript-sun-shining
+//   - hangup
 func TestVerb_Transcribe_Zoom(t *testing.T) {
 	if !cfg.HasZoom() || zoomLabel == "" {
 		t.Log("ZOOM_API_KEY not set — passing without exercising zoom STT")
@@ -237,10 +245,17 @@ func TestVerb_Transcribe_Zoom(t *testing.T) {
 	s.Done()
 }
 
-// TestVerb_Agent_Echo_Zoom — the agent verb with zoom as its STT. Zoom sends
-// speech_started (forwarded as the agent's speechStarted) plus one final per
-// server-detected turn, and nothing else, so this proves those two signals
-// alone drive a full turn: user speaks, LLM replies, TTS echoes it back.
+// TestVerb_Agent_Echo_Zoom — two-turn agent echo on zoom; guards zoom's native end-of-turn.
+//
+// Steps:
+//   - preflight-skips
+//   - ensure-prompt-wav
+//   - script-agent-verb-zoom
+//   - place-call
+//   - answer-and-silence
+//   - wait-for-stt
+//   - turn-N-record-and-speak
+//   - turn-N-assert-echo
 func TestVerb_Agent_Echo_Zoom(t *testing.T) {
 	if !cfg.HasZoom() || zoomLabel == "" {
 		t.Log("ZOOM_API_KEY not set — passing without exercising zoom STT")
