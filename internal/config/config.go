@@ -73,6 +73,10 @@ type Settings struct {
 	// credential-missing log — see HasMurf.
 	MurfAPIKey string
 
+	// Optional — ElevenLabs API key for the eleven_v3 (Text to Dialogue)
+	// streaming tests. Unset = those tests skip — see HasElevenlabs.
+	ElevenlabsAPIKey string
+
 	// Optional — xAI STT API key. When set, TestMain provisions an xai
 	// SpeechCredential under the ephemeral account and the xai gather/
 	// transcribe tests exercise it. When unset those tests pass without
@@ -228,6 +232,9 @@ func (s *Settings) HasOpenAI() bool { return s.OpenAIAPIKey != "" }
 // the key is unset the test skips (passes) with a credential-missing log.
 func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 
+// HasElevenlabs reports whether the ElevenLabs TTS tests can run.
+func (s *Settings) HasElevenlabs() bool { return s.ElevenlabsAPIKey != "" }
+
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
@@ -346,6 +353,7 @@ func parse() (*Settings, error) {
 		DeepseekAPIKey:           os.Getenv("DEEPSEEK_API_KEY"),
 		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
 		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
+		ElevenlabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
 		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),

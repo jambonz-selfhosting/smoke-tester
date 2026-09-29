@@ -108,6 +108,7 @@ type agentVerbOpts struct {
 	LLMModel          string         // default "deepseek-chat" when empty
 	LLMApiKey         string         // default cfg.DeepseekAPIKey when empty
 	STT               map[string]any // default deepgram when nil
+	TTS               map[string]any // default deepgram when nil
 }
 
 // buildAgentVerb builds the verb-map jambonz will run. Centralised here so
@@ -128,13 +129,17 @@ func buildAgentVerb(opts agentVerbOpts) map[string]any {
 			"language": "en-US",
 		}
 	}
-	verb := V("agent",
-		"stt", stt,
-		"tts", map[string]any{
+	ttsCfg := opts.TTS
+	if ttsCfg == nil {
+		ttsCfg = map[string]any{
 			"vendor": "deepgram",
 			"label":  deepgramLabel,
 			"voice":  deepgramVoice,
-		},
+		}
+	}
+	verb := V("agent",
+		"stt", stt,
+		"tts", ttsCfg,
 		"llm", map[string]any{
 			"vendor": firstNonEmpty(opts.LLMVendor, "deepseek"),
 			"model":  firstNonEmpty(opts.LLMModel, "deepseek-chat"),
