@@ -1,4 +1,4 @@
-// ElevenLabs streaming TTS. eleven_v3* models are served only on the Text to
+// ElevenLabs TTS. eleven_v3* and eleven_v4* stream only on the Text to
 // Dialogue websocket, the rest on TTS stream-input; mediajam picks the
 // transport from model_id. All tests skip without ELEVENLABS_API_KEY.
 package verbs
@@ -42,7 +42,7 @@ func elevenlabsSynth(model string) map[string]any {
 func TestVerb_Say_Stream_ElevenlabsV3Conversational(t *testing.T) {
 	requireElevenlabs(t)
 	t.Parallel()
-	runElevenlabsStreamingSay(t, "say-stream-11labs-v3conv", "eleven_v3_conversational",
+	runElevenlabsSay(t, "say-stream-11labs-v3conv", "eleven_v3_conversational", true,
 		"[excited] Streaming synthesis is working correctly.", "excited")
 }
 
@@ -57,7 +57,7 @@ func TestVerb_Say_Stream_ElevenlabsV3Conversational(t *testing.T) {
 func TestVerb_Say_Stream_ElevenlabsV3(t *testing.T) {
 	requireElevenlabs(t)
 	t.Parallel()
-	runElevenlabsStreamingSay(t, "say-stream-11labs-v3", "eleven_v3",
+	runElevenlabsSay(t, "say-stream-11labs-v3", "eleven_v3", true,
 		"[excited] Streaming synthesis is working correctly.", "excited")
 }
 
@@ -73,11 +73,63 @@ func TestVerb_Say_Stream_ElevenlabsV3(t *testing.T) {
 func TestVerb_Say_Stream_ElevenlabsFlash(t *testing.T) {
 	requireElevenlabs(t)
 	t.Parallel()
-	runElevenlabsStreamingSay(t, "say-stream-11labs-flash", "eleven_flash_v2_5",
+	runElevenlabsSay(t, "say-stream-11labs-flash", "eleven_flash_v2_5", true,
 		"Streaming synthesis is working correctly.", "")
 }
 
-func runElevenlabsStreamingSay(t *testing.T, tag, model, text, notSpoken string) {
+// TestVerb_Say_Stream_ElevenlabsV4Turbo — streaming say on eleven_v4_turbo over
+// Text to Dialogue, with an audio tag that must not be read aloud.
+//
+// Steps:
+//  1. script-streaming-say
+//  2. place-ws-call
+//  3. answer-record-and-wait-end
+//  4. assert-audio-duration
+//  5. assert-transcript
+func TestVerb_Say_Stream_ElevenlabsV4Turbo(t *testing.T) {
+	requireElevenlabs(t)
+	t.Parallel()
+	runElevenlabsSay(t, "say-stream-11labs-v4turbo", "eleven_v4_turbo", true,
+		"[excited] Streaming synthesis is working correctly.", "excited")
+}
+
+// TestVerb_Say_Stream_ElevenlabsV4 — as above on eleven_v4.
+//
+// Steps:
+//  1. script-streaming-say
+//  2. place-ws-call
+//  3. answer-record-and-wait-end
+//  4. assert-audio-duration
+//  5. assert-transcript
+func TestVerb_Say_Stream_ElevenlabsV4(t *testing.T) {
+	requireElevenlabs(t)
+	t.Parallel()
+	runElevenlabsSay(t, "say-stream-11labs-v4", "eleven_v4", true,
+		"[excited] Streaming synthesis is working correctly.", "excited")
+}
+
+// TestVerb_Say_ElevenlabsV4AndV3 — one-shot (HTTP) say on each v3/v4 model;
+// /v1/text-to-speech serves them although stream-input does not.
+//
+// Steps (per model subtest):
+//  1. script-streaming-say
+//  2. place-ws-call
+//  3. answer-record-and-wait-end
+//  4. assert-audio-duration
+//  5. assert-transcript
+func TestVerb_Say_ElevenlabsV4AndV3(t *testing.T) {
+	requireElevenlabs(t)
+	t.Parallel()
+	for _, model := range []string{"eleven_v4_turbo", "eleven_v4", "eleven_v3"} {
+		t.Run(model, func(t *testing.T) {
+			t.Parallel()
+			runElevenlabsSay(t, "say-11labs-"+model, model, false,
+				"[excited] Speech synthesis is working correctly.", "excited")
+		})
+	}
+}
+
+func runElevenlabsSay(t *testing.T, tag, model string, stream bool, text, notSpoken string) {
 	t.Helper()
 	ctx := WithTimeout(t, 30*time.Second)
 	uas := claimUAS(t, ctx)
@@ -85,7 +137,7 @@ func runElevenlabsStreamingSay(t *testing.T, tag, model, text, notSpoken string)
 
 	s := Step(t, "script-streaming-say")
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
-		V("say", "text", text, "stream", true, "synthesizer", elevenlabsSynth(model)),
+		V("say", "text", text, "stream", stream, "synthesizer", elevenlabsSynth(model)),
 		V("hangup"),
 	}))
 	s.Done()
@@ -116,7 +168,7 @@ func runElevenlabsStreamingSay(t *testing.T, tag, model, text, notSpoken string)
 		s.Fatalf("stt.Transcribe(%s): %v", wav, err)
 	}
 	s.Logf("transcript: %q", transcript)
-	for _, want := range []string{"streaming", "working correctly"} {
+	for _, want := range []string{"synthesis", "working correctly"} {
 		if !strings.Contains(transcript, stt.Normalize(want)) {
 			s.Errorf("transcript missing %q", want)
 		}
@@ -149,6 +201,18 @@ func runElevenlabsStreamingSay(t *testing.T, tag, model, text, notSpoken string)
 // 12. assert-idle-turn-reply
 // 13. hangup-and-wait-ended
 func TestVerb_Agent_ElevenlabsV3Conversational(t *testing.T) {
+	runElevenlabsAgent(t, "eleven_v3_conversational")
+}
+
+// TestVerb_Agent_ElevenlabsV4Turbo — the same agent flow on eleven_v4_turbo,
+// the low-latency model built for agent loops.
+//
+// Steps: as TestVerb_Agent_ElevenlabsV3Conversational.
+func TestVerb_Agent_ElevenlabsV4Turbo(t *testing.T) {
+	runElevenlabsAgent(t, "eleven_v4_turbo")
+}
+
+func runElevenlabsAgent(t *testing.T, model string) {
 	requireElevenlabs(t)
 	t.Parallel()
 	requireWebhook(t)
@@ -186,7 +250,7 @@ func TestVerb_Agent_ElevenlabsV3Conversational(t *testing.T) {
 		Greeting:          true,
 		BargeIn:           true,
 		NoResponseTimeout: &noReprompt,
-		TTS:               elevenlabsSynth("eleven_v3_conversational"),
+		TTS:               elevenlabsSynth(model),
 	})
 	s.Done()
 
@@ -228,6 +292,11 @@ func TestVerb_Agent_ElevenlabsV3Conversational(t *testing.T) {
 	cbs := DrainCallbacks(sess, time.Second)
 	if len(findAgentEvents(cbs, "user_interruption")) == 0 {
 		s.Errorf("no user_interruption event: %s", summarizeEventTypes(cbs))
+	}
+	for _, te := range findAgentEvents(cbs, "turn_end") {
+		if lat, ok := te.JSON["latency"].(map[string]any); ok {
+			s.Logf("%s turn_end tts_ms=%v", model, lat["tts_ms"])
+		}
 	}
 	s.Done()
 
