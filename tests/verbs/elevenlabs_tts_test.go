@@ -34,7 +34,7 @@ func elevenlabsSynth(model string) map[string]any {
 // Dialogue; the [excited] audio tag must be performed, not read aloud.
 //
 // Steps:
-//  1. script-streaming-say
+//  1. script-say
 //  2. place-ws-call
 //  3. answer-record-and-wait-end
 //  4. assert-audio-duration
@@ -49,7 +49,7 @@ func TestVerb_Say_Stream_ElevenlabsV3Conversational(t *testing.T) {
 // TestVerb_Say_Stream_ElevenlabsV3 — as above on eleven_v3.
 //
 // Steps:
-//  1. script-streaming-say
+//  1. script-say
 //  2. place-ws-call
 //  3. answer-record-and-wait-end
 //  4. assert-audio-duration
@@ -65,7 +65,7 @@ func TestVerb_Say_Stream_ElevenlabsV3(t *testing.T) {
 // still takes the old transport.
 //
 // Steps:
-//  1. script-streaming-say
+//  1. script-say
 //  2. place-ws-call
 //  3. answer-record-and-wait-end
 //  4. assert-audio-duration
@@ -81,7 +81,7 @@ func TestVerb_Say_Stream_ElevenlabsFlash(t *testing.T) {
 // Text to Dialogue, with an audio tag that must not be read aloud.
 //
 // Steps:
-//  1. script-streaming-say
+//  1. script-say
 //  2. place-ws-call
 //  3. answer-record-and-wait-end
 //  4. assert-audio-duration
@@ -96,7 +96,7 @@ func TestVerb_Say_Stream_ElevenlabsV4Turbo(t *testing.T) {
 // TestVerb_Say_Stream_ElevenlabsV4 — as above on eleven_v4.
 //
 // Steps:
-//  1. script-streaming-say
+//  1. script-say
 //  2. place-ws-call
 //  3. answer-record-and-wait-end
 //  4. assert-audio-duration
@@ -112,7 +112,7 @@ func TestVerb_Say_Stream_ElevenlabsV4(t *testing.T) {
 // /v1/text-to-speech serves them although stream-input does not.
 //
 // Steps (per model subtest):
-//  1. script-streaming-say
+//  1. script-say
 //  2. place-ws-call
 //  3. answer-record-and-wait-end
 //  4. assert-audio-duration
@@ -135,7 +135,7 @@ func runElevenlabsSay(t *testing.T, tag, model string, stream bool, text, notSpo
 	uas := claimUAS(t, ctx)
 	_, sess := claimSession(t)
 
-	s := Step(t, "script-streaming-say")
+	s := Step(t, "script-say")
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		V("say", "text", text, "stream", stream, "synthesizer", elevenlabsSynth(model)),
 		V("hangup"),
@@ -199,7 +199,8 @@ func runElevenlabsSay(t *testing.T, tag, model string, stream bool, text, notSpo
 // 10. idle-past-ttd-timeout
 // 11. idle-turn-record-and-speak
 // 12. assert-idle-turn-reply
-// 13. hangup-and-wait-ended
+// 13. assert-idle-turn-end
+// 14. hangup-and-wait-ended
 func TestVerb_Agent_ElevenlabsV3Conversational(t *testing.T) {
 	runElevenlabsAgent(t, "eleven_v3_conversational")
 }
@@ -207,7 +208,22 @@ func TestVerb_Agent_ElevenlabsV3Conversational(t *testing.T) {
 // TestVerb_Agent_ElevenlabsV4Turbo — the same agent flow on eleven_v4_turbo,
 // the low-latency model built for agent loops.
 //
-// Steps: as TestVerb_Agent_ElevenlabsV3Conversational.
+// Steps:
+//  1. preflight-skips
+//  2. ensure-prompt-wavs
+//  3. script-agent-verb
+//  4. place-call
+//  5. answer-and-silence
+//  6. wait-into-greeting
+//  7. barge-in-and-record-reply
+//  8. assert-barge-in-reply
+//  9. assert-user-interruption
+//
+// 10. idle-past-ttd-timeout
+// 11. idle-turn-record-and-speak
+// 12. assert-idle-turn-reply
+// 13. assert-idle-turn-end
+// 14. hangup-and-wait-ended
 func TestVerb_Agent_ElevenlabsV4Turbo(t *testing.T) {
 	runElevenlabsAgent(t, "eleven_v4_turbo")
 }
@@ -322,6 +338,15 @@ func runElevenlabsAgent(t *testing.T, model string) {
 
 	s = Step(t, "assert-idle-turn-reply")
 	AssertTranscriptHasMost(s, ctx, idleRec, 2, contentWords(idlePrompt)...)
+	s.Done()
+
+	// the idle turn must end exactly once: none means TTS never reported empty,
+	// more means an early or late empty split the turn
+	s = Step(t, "assert-idle-turn-end")
+	idleCbs := DrainCallbacks(sess, 2*time.Second)
+	if n := len(findAgentEvents(idleCbs, "turn_end")); n != 1 {
+		s.Errorf("idle turn produced %d turn_end events, want 1: %s", n, summarizeEventTypes(idleCbs))
+	}
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
