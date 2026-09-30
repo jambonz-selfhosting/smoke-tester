@@ -457,7 +457,7 @@ None.
 - **Fix (branch `fix/gptlive-ga` in both repos, PRs open):**
   - mediajam `internal/s2s/gptlive.go`: no alpha header; `session.input_audio.append` / `session.output_audio.delta` (`delta` field); pins `session.start` audio.format to pcm@24k; barge-in = `session.input_transcript.delta` starting strictly after the burst's first `session.output_transcript.delta` (audio deltas carry no timing; question transcripts arrive late, so an unanchored burst fails closed).
   - feature-server `gptlive_s2s.js`: `session.start` + model; GA event names; unwraps `response.event`; tool results = `response.item.create`, then `response.create` once the turn completed and every call is answered.
-- **Commits (local, not on GitHub):** feature-server `e367fa4`, mediajam `34694d7`, both on `fix/gptlive-ga`; pushed over SSH straight into the box repos.
+- **Commits:** feature-server `e367fa4`, mediajam `34694d7` + `4b0eb08`, on `fix/gptlive-ga` (pushed to GitHub, PRs open; also pushed over SSH into the box repos).
 - **Deployed to hoan.jambonz.io the normal way:** `~/apps/feature-server` on `fix/gptlive-ga` (pm2 restarted); mediajam built in `/usr/local/src/mediajam` on `fix/gptlive-ga` → `/usr/bin/mediajam` (`v0.5.8-10-g34694d7`). The box's prior WIP on `fix/gemini-smart-language-codes` is in `git stash` there: `stash@{1}` = tracked changes, `stash@{0}` = the untracked `internal/stt/zoom/` files (were root-owned; dir chowned to jambonz).
 - **Result:** `make gptlive_llm_s2s_test.go` passes 3/3 (passphrase, tool result, and greeting all confirmed by independent STT).
 - **Later the same day — full-suite fallout, fixed:**
@@ -467,6 +467,15 @@ None.
   - Review fixes: recording offsets from bytes written (not wall clock), 1200ms cut gap, shared `pcmFramePeaks` helpers, and a `llm-gptlive-event` schema that every gptlive test now enforces (`assert-contract`).
   - Not yet investigated from that run: `Gather_InbandDigits`, `VoiceLive_ToolHook` (model picked New York), `Agent_Xai` (no turn_end), `Agent_Defect2b` (known open), `Krisp_TurnDetection` (empty transcript).
 - **Open:** `@jambonz/schema` `verbs/gptlive_s2s.schema.json` description still describes the alpha; client-delegation answer (`session.thinking.append`) wasn't exercised because the model raised no client delegation.
+
+### 2026-09-30 — KugelAudio TTS tests
+
+`tests/verbs/kugelaudio_tts_test.go`, gated on `KUGELAUDIO_API_KEY` (skips without it).
+Credential test (tts), one-shot say, streaming say, two streaming says on one socket,
+de-DE streaming (voice 1930), agent barge-in, and the Defect1 history-trim flow on
+kugelaudio (an alignment vendor), which trimmed turn_end.response to what the caller
+heard. All green on hoan.jambonz.io; the trim test can skip when the barge-in never
+confirms, the same premise-miss as Defect1.
 
 ### 2026-09-18 — agent-verb defects fixed; one still open
 

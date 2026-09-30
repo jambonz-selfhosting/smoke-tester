@@ -86,6 +86,12 @@ var (
 	// George, a premade voice; legacy voices such as Rachel reject audio tags on eleven_v3
 	elevenlabsVoice = "JBFqnCBsd6RMkjVDRZzb"
 
+	// KugelAudio TTS credential, provisioned IF KUGELAUDIO_API_KEY is set.
+	kugelaudioLabel string
+	kugelaudioSID   string
+	// Samantha Ferris (en-US); KugelAudio voice ids are numeric.
+	kugelaudioVoice = "1071"
+
 	// xai speech credential (dual-use STT+TTS) provisioned at TestMain IF
 	// XAI_API_KEY is set (optional vendor). When unset, xaiLabel stays "" and
 	// the xai gather/transcribe/say tests pass without exercising xai.
@@ -243,6 +249,16 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: ELEVENLABS_API_KEY not set — ElevenLabs tests will skip")
 	}
 
+	// 3b3. KugelAudio TTS speech credential — optional.
+	if cfg.HasKugelaudio() {
+		if err := provisionKugelaudioCredential(); err != nil {
+			log.Fatalf("tests/verbs: KugelAudio credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: KugelAudio credential label=%s sid=%s", kugelaudioLabel, kugelaudioSID)
+	} else {
+		log.Printf("tests/verbs: KUGELAUDIO_API_KEY not set — KugelAudio tests will skip")
+	}
+
 	// 3c. xai STT speech credential — optional. Only provisioned when
 	// XAI_API_KEY is set; otherwise the xai gather/transcribe tests pass
 	// without exercising xai STT.
@@ -338,6 +354,7 @@ func TestMain(m *testing.M) {
 	teardownDeepgramFluxCredential()
 	teardownMurfCredential()
 	teardownElevenlabsCredential()
+	teardownKugelaudioCredential()
 	teardownXaiCredential()
 	teardownZoomCredential()
 	teardownSpeechmaticsCredential()
@@ -483,6 +500,37 @@ func teardownElevenlabsCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, elevenlabsSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete ElevenLabs credential %s: %v", elevenlabsSID, err)
+	}
+}
+
+// provisionKugelaudioCredential creates a TTS-only KugelAudio credential,
+// labelled `it-kugelaudio-<runID>`, on the kugel-3 model.
+func provisionKugelaudioCredential() error {
+	kugelaudioLabel = "it-kugelaudio-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "kugelaudio",
+		Label:     kugelaudioLabel,
+		APIKey:    cfg.KugelaudioAPIKey,
+		ModelID:   "kugel-3",
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	kugelaudioSID = sid
+	return nil
+}
+
+func teardownKugelaudioCredential() {
+	if kugelaudioSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, kugelaudioSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete KugelAudio credential %s: %v", kugelaudioSID, err)
 	}
 }
 

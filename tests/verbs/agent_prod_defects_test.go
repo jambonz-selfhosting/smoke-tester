@@ -439,6 +439,12 @@ func countOccurrences(haystack, needle string) int {
 // 12. assert-response-matches-spoken
 func TestVerb_Agent_Defect1_HistoryTrimmedToSpokenAfterBargeIn(t *testing.T) {
 	t.Parallel()
+	runHistoryTrimAfterBargeIn(t, nil)
+}
+
+// runHistoryTrimAfterBargeIn is the Defect1 flow on the given TTS (nil = deepgram).
+func runHistoryTrimAfterBargeIn(t *testing.T, ttsSynth map[string]any) {
+	t.Helper()
 	requireWebhook(t)
 
 	s := Step(t, "preflight-skips")
@@ -477,6 +483,7 @@ func TestVerb_Agent_Defect1_HistoryTrimmedToSpokenAfterBargeIn(t *testing.T) {
 		SystemPrompt: longCountSystemPrompt,
 		Greeting:     false,
 		BargeIn:      true,
+		TTS:          ttsSynth,
 	}, func(verb map[string]any) {
 		if llm, ok := verb["llm"].(map[string]any); ok {
 			if opts, ok := llm["llmOptions"].(map[string]any); ok {

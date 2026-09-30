@@ -77,6 +77,9 @@ type Settings struct {
 	// streaming tests. Unset = those tests skip — see HasElevenlabs.
 	ElevenlabsAPIKey string
 
+	// Optional — KugelAudio TTS API key. Unset = the kugelaudio tests skip.
+	KugelaudioAPIKey string
+
 	// Optional — xAI STT API key. When set, TestMain provisions an xai
 	// SpeechCredential under the ephemeral account and the xai gather/
 	// transcribe tests exercise it. When unset those tests pass without
@@ -228,6 +231,9 @@ func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 // HasElevenlabs reports whether the ElevenLabs TTS tests can run.
 func (s *Settings) HasElevenlabs() bool { return s.ElevenlabsAPIKey != "" }
 
+// HasKugelaudio reports whether the KugelAudio TTS tests can run.
+func (s *Settings) HasKugelaudio() bool { return s.KugelaudioAPIKey != "" }
+
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
@@ -347,6 +353,7 @@ func parse() (*Settings, error) {
 		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
 		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
 		ElevenlabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
+		KugelaudioAPIKey:         os.Getenv("KUGELAUDIO_API_KEY"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
 		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
