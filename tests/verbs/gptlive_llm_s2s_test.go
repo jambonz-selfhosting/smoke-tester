@@ -32,6 +32,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jambonz-selfhosting/smoke-tester/internal/stt"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
@@ -823,4 +824,260 @@ func gptLivePeak(t *testing.T, path string) int {
 		}
 	}
 	return peak
+}
+
+// gptLiveMonologue is spoken via session.commentary.append so the agent is
+// reliably mid-speech when the caller interrupts. The marker word appears
+// only in the last sentence, so hearing it means the playout was not cut.
+const (
+	gptLiveMonologueMarker = "marmalade"
+	gptLiveMonologue       = "Read the following story aloud, word for word, at a relaxed pace. " +
+		"Do not stop until you reach the end unless the caller speaks.\n\n" +
+		"Welcome to the pineapple story hour. Long ago, on a quiet island far from any city, " +
+		"there lived an old lighthouse keeper named Tomas. Every evening he climbed one hundred " +
+		"and twelve stone steps to light the great lamp, and every morning he walked down again " +
+		"to feed his three grey cats. The fishermen of the island trusted his light more than " +
+		"the stars, because in forty years it had never once failed. One stormy winter night the " +
+		"wind grew so fierce that the windows rattled and the old stairs groaned beneath his " +
+		"boots, but Tomas kept climbing, one careful step at a time, singing an old song his " +
+		"mother had taught him. When he finally reached the top, the lamp flickered, steadied, " +
+		"and burned brighter than ever before. And that is the end of the story of the " +
+		"marmalade lighthouse."
+	gptLiveInterruptPrompt = "Stop please. What is two plus two?"
+)
+
+// gptLiveCutMaxMS is the longest the agent may keep talking after the caller
+// starts interrupting: vendor transcript latency plus playout drain. Without a
+// drain the audio generated ahead of realtime keeps playing far longer.
+const gptLiveCutMaxMS = 4000
+
+// TestVerb_LLM_GptLive_BargeIn proves the caller can interrupt the agent.
+// GPT-Live has no interruption event, so mediajam infers barge-in from the
+// transcript timeline and drains its playout; the proof is the recording:
+// the agent goes quiet soon after the caller starts talking, the story's last
+// sentence is never heard, and the interrupting question gets answered.
+//
+// Steps:
+//  1. preflight-skips — gptlive key guard, then deepgram guard (plain return)
+//  2. ensure-prompt-wav — the interrupting question
+//  3. script-and-call — gptlive verb + eventHook, WS transport (llm:update)
+//  4. answer-and-record
+//  5. start-monologue — on session.started, session.commentary.append
+//  6. wait-for-agent-speech — first session.output_transcript.delta, then 2s
+//  7. interrupt — send the question WAV while the agent is talking
+//  8. wait-for-answer
+//  9. hangup-and-wait-ended
+//  10. assert-interruption-heard — input transcript mentions "two"
+//  11. assert-playout-cut — mediajam reports an interrupted playout, and the
+//      recording goes quiet within gptLiveCutMaxMS of the interruption
+//  12. assert-answer-not-story — "four" heard, marker word not heard
+func TestVerb_LLM_GptLive_BargeIn(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	if !cfg.HasGptLive() {
+		t.Log("GPTLIVE_API_KEY not set — passing without exercising gptlive S2S barge-in")
+		return
+	}
+	s := Step(t, "preflight-skips")
+	if !cfg.HasDeepgram() || deepgramLabel == "" {
+		s.Done()
+		t.Log("Deepgram not available — passing without exercising gptlive S2S barge-in")
+		return
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 180*time.Second)
+	uas := claimUAS(t, ctx)
+
+	s = Step(t, "ensure-prompt-wav")
+	promptWAV, err := tts.EnsureWAV(ctx, "testdata/llm", gptLiveInterruptPrompt, tts.PromptOptions{
+		Model: "aura-asteria-en",
+	})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
+	}
+	s.Done()
+
+	_, sess := claimSession(t)
+
+	s = Step(t, "script-and-call")
+	llmVerb := gptLiveVerb(map[string]any{
+		"instructions": "You are a voice assistant on a phone call. Always speak English. " +
+			"If the caller interrupts you, stop and answer their question in one short sentence.",
+		"audio":      map[string]any{"output": map[string]any{"voice": gptLiveVoice}},
+		"delegation": map[string]any{"type": "client"},
+	}, "eventHook", SessionURL(sess, "llm-gptlive-event"))
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{llmVerb, V("hangup")}))
+	SessionAckEmpty(sess, "llm")
+	SessionAckEmpty(sess, "llm-gptlive-event")
+	call := placeWSCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	s.Done()
+
+	s = Step(t, "answer-and-record")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	recPath := filepath.Join(t.TempDir(), "gptlive-bargein.pcm")
+	if err := call.StartRecording(recPath); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	recStart := time.Now()
+	s.Done()
+
+	var drained []webhook.Callback
+	eventsOf := func(batch []webhook.Callback, ty string) []webhook.Callback {
+		var out []webhook.Callback
+		for _, cb := range batch {
+			if cb.Hook == "action/llm-gptlive-event" && cb.String("type") == ty {
+				out = append(out, cb)
+			}
+		}
+		return out
+	}
+
+	s = Step(t, "start-monologue")
+	started := false
+	for deadline := time.Now().Add(20 * time.Second); !started && time.Now().Before(deadline); {
+		batch := DrainCallbacks(sess, time.Second)
+		drained = append(drained, batch...)
+		started = len(eventsOf(batch, "session.started")) > 0
+	}
+	if !started {
+		s.Fatalf("no session.started within 20s; completionReason=%q", gptLiveCompletionReason(drained))
+	}
+	if err := sess.SendCommand("llm:update", map[string]any{
+		"type":          "session.commentary.append",
+		"delegation_id": nil,
+		"content":       gptLiveMonologue,
+	}); err != nil {
+		s.Fatalf("SendCommand(llm:update session.commentary.append): %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-for-agent-speech")
+	speaking := false
+	for deadline := time.Now().Add(20 * time.Second); !speaking && time.Now().Before(deadline); {
+		batch := DrainCallbacks(sess, 500*time.Millisecond)
+		drained = append(drained, batch...)
+		speaking = len(eventsOf(batch, "session.output_transcript.delta")) > 0
+	}
+	if !speaking {
+		s.Fatalf("the agent never started the monologue (no session.output_transcript.delta in 20s)")
+	}
+	// transcripts trail the audio; this puts the caller well inside the story
+	time.Sleep(2 * time.Second)
+	s.Done()
+
+	s = Step(t, "interrupt")
+	interruptMS := int(time.Since(recStart).Milliseconds())
+	if err := call.SendWAV(promptWAV); err != nil {
+		s.Fatalf("SendWAV: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	s.Logf("interrupted at %dms into the recording", interruptMS)
+	s.Done()
+
+	s = Step(t, "wait-for-answer")
+	drained = append(drained, DrainCallbacks(sess, 12*time.Second)...)
+	call.StopRecording()
+	s.Done()
+
+	HangupAndWaitEnded(t, ctx, call)
+
+	s = Step(t, "assert-interruption-heard")
+	var heard strings.Builder
+	for _, cb := range eventsOf(drained, "session.input_transcript.delta") {
+		heard.WriteString(cb.String("delta"))
+	}
+	s.Logf("caller transcript seen by GPT-Live: %q", heard.String())
+	if !strings.Contains(strings.ToLower(heard.String()), "two") {
+		s.Errorf("GPT-Live never transcribed the interruption (%q); without it mediajam has no "+
+			"barge-in signal", heard.String())
+	}
+	s.Done()
+
+	s = Step(t, "assert-playout-cut")
+	// mediajam emits this only when it drains the playout on a barge-in, which
+	// separates its drain from the vendor simply pausing
+	drainedByMediajam := false
+	for _, cb := range eventsOf(drained, "output_audio.playback_stopped") {
+		if cb.String("completion_reason") == "interrupted" {
+			drainedByMediajam = true
+		}
+	}
+	if !drainedByMediajam {
+		s.Errorf("no output_audio.playback_stopped{completion_reason:interrupted} — mediajam " +
+			"never took a barge-in from the transcript timeline")
+	}
+	gapAt, err := firstSilenceAfterMS(recPath, interruptMS, 800, gptLiveAudibledB)
+	if err != nil {
+		s.Fatalf("firstSilenceAfterMS: %v", err)
+	}
+	s.Logf("agent audio went quiet %dms after the interruption began", gapAt-interruptMS)
+	if gapAt < 0 || gapAt-interruptMS > gptLiveCutMaxMS {
+		s.Errorf("the agent kept talking for more than %dms after the caller interrupted "+
+			"(quiet gap at %dms, interruption at %dms) — mediajam did not drain the playout",
+			gptLiveCutMaxMS, gapAt, interruptMS)
+	}
+	s.Done()
+
+	s = Step(t, "assert-answer-not-story")
+	transcript, err := stt.Transcribe(ctx, recPath)
+	if err != nil {
+		s.Fatalf("stt.Transcribe: %v", err)
+	}
+	s.Logf("transcript: %q", transcript)
+	if !strings.Contains(transcript, "pineapple") {
+		s.Errorf("the story's opening was never heard, so nothing was interrupted: %q", transcript)
+	}
+	if strings.Contains(transcript, gptLiveMonologueMarker) {
+		s.Errorf("the story's last sentence (%q) was heard — the interruption did not cut it off: %q",
+			gptLiveMonologueMarker, transcript)
+	}
+	if !strings.Contains(transcript, "four") && !strings.Contains(transcript, " 4") {
+		s.Errorf("the interrupting question was not answered (no \"four\"): %q", transcript)
+	}
+	s.Done()
+}
+
+// firstSilenceAfterMS returns the start (ms into a PCM16 8kHz recording) of
+// the first run of at least minGapMS whose 10ms frames all peak below thresh,
+// searching from fromMS; -1 if there is none.
+func firstSilenceAfterMS(pcmPath string, fromMS, minGapMS int, thresh int) (int, error) {
+	data, err := os.ReadFile(pcmPath)
+	if err != nil {
+		return -1, err
+	}
+	const frameBytes = 80 * 2
+	runStart, run := -1, 0
+	for off := (fromMS / 10) * frameBytes; off+frameBytes <= len(data); off += frameBytes {
+		peak := 0
+		for i := 0; i < frameBytes; i += 2 {
+			v := int(int16(uint16(data[off+i]) | uint16(data[off+i+1])<<8))
+			if v < 0 {
+				v = -v
+			}
+			if v > peak {
+				peak = v
+			}
+		}
+		if peak >= thresh {
+			run = 0
+			continue
+		}
+		if run == 0 {
+			runStart = off / frameBytes * 10
+		}
+		run += 10
+		if run >= minGapMS {
+			return runStart, nil
+		}
+	}
+	return -1, nil
 }
