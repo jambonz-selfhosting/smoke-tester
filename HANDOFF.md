@@ -450,6 +450,15 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-09-30 — KugelAudio TTS tests
+
+`tests/verbs/kugelaudio_tts_test.go`, gated on `KUGELAUDIO_API_KEY` (skips without it).
+Credential test (tts), one-shot say, streaming say, two streaming says on one socket,
+de-DE streaming (voice 1930), agent barge-in, and the Defect1 history-trim flow on
+kugelaudio (an alignment vendor), which trimmed turn_end.response to what the caller
+heard. All green on hoan.jambonz.io; the trim test can skip when the barge-in never
+confirms, the same premise-miss as Defect1.
+
 ### 2026-09-18 — agent-verb defects fixed; one still open
 
 Follow-on from the reproduction entry below. Fixes on `feature-server`
