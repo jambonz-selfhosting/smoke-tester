@@ -454,7 +454,7 @@ None.
 
 - **Symptom:** all 3 `gptlive_llm_s2s_test.go` tests failed; OpenAI answered the startup event with `quicksilver_v2_access_denied`.
 - **Cause:** mediajam still sent the alpha opt-in header `OpenAI-Alpha: quicksilver=v2` plus alpha event names, and feature-server sent `session.update` to `v1/live?model=`. GPT-Live went GA ~2026-09-10 (`wss://api.openai.com/v1/live/sessions`, first event `session.start` with `model` in the session), and alpha access is now refused.
-- **Fix (uncommitted, branch `fix/gptlive-ga` in both repos):**
+- **Fix (branch `fix/gptlive-ga` in both repos, PRs open):**
   - mediajam `internal/s2s/gptlive.go`: no alpha header; `session.input_audio.append` / `session.output_audio.delta` (`delta` field); pins `session.start` audio.format to pcm@24k; barge-in = `session.input_transcript.delta` starting strictly after the burst's first `session.output_transcript.delta` (audio deltas carry no timing; question transcripts arrive late, so an unanchored burst fails closed).
   - feature-server `gptlive_s2s.js`: `session.start` + model; GA event names; unwraps `response.event`; tool results = `response.item.create`, then `response.create` once the turn completed and every call is answered.
 - **Commits (local, not on GitHub):** feature-server `e367fa4`, mediajam `34694d7`, both on `fix/gptlive-ga`; pushed over SSH straight into the box repos.
@@ -463,7 +463,8 @@ None.
 - **Later the same day — full-suite fallout, fixed:**
   - 9 inbound tests got `503 System Tampering Detected!`: mediajam was a licensed build (installed 2026-09-29 23:43 UTC, before this session; my rebuilds copied its flags) but the SBC drachtio was built with `CPPFLAGS=-DDISABLE_LICENSING=1`, so no `X-Jambonz-Session-Token` ever reached feature-server → mediajam rejected `endpoint.create` ("missing session token"). Per the user, rebuilt drachtio licensed the packer way (`scripts/install_drachtio.sh` without `-DDISABLE_LICENSING`; needed `make clean`, since make does not track CPPFLAGS) → `License validated … max sessions: 10`. Trial license expires **2026-10-03**; the 10-session cap now applies to drachtio as well as mediajam.
   - Barge-in cut off answers: GPT-Live starts replying while the caller finishes, so the question's last fragment landed after the burst start. mediajam `4b0eb08`: only a fragment starting a new utterance (≥600ms gap) barges in. Deployed licensed (`v0.5.8-11-g4b0eb08`).
-  - New `TestVerb_LLM_GptLive_BargeIn` (branch `feat/gptlive-coverage`, uncommitted); gptlive file 4/4 green.
+  - New `TestVerb_LLM_GptLive_BargeIn` (branch `feat/gptlive-coverage`, PR open); gptlive file 4/4 green.
+  - Review fixes: recording offsets from bytes written (not wall clock), 1200ms cut gap, shared `pcmFramePeaks` helpers, and a `llm-gptlive-event` schema that every gptlive test now enforces (`assert-contract`).
   - Not yet investigated from that run: `Gather_InbandDigits`, `VoiceLive_ToolHook` (model picked New York), `Agent_Xai` (no turn_end), `Agent_Defect2b` (known open), `Krisp_TurnDetection` (empty transcript).
 - **Open:** `@jambonz/schema` `verbs/gptlive_s2s.schema.json` description still describes the alpha; client-delegation answer (`session.thinking.append`) wasn't exercised because the model raised no client delegation.
 

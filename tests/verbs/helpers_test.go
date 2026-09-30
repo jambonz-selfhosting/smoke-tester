@@ -815,74 +815,90 @@ func AssertTranscriptContains(s *StepCtx, ctx context.Context, recording string,
 	}
 }
 
-// NonSilentMS reports how many milliseconds of a PCM16 8kHz file carry a
-// sample above thresh. Unlike Call.RMS/PCMBytesIn — which are cumulative over
-// the whole call and so dilute to meaninglessness on a long one — this measures
-// only the file handed to it.
-func NonSilentMS(pcmPath string, thresh int16) (int, error) {
+// pcmFramePeaks returns the peak absolute amplitude of each 10ms frame of a
+// linear-16 little-endian 8kHz mono PCM file (a trailing partial frame is dropped).
+func pcmFramePeaks(pcmPath string) ([]int, error) {
 	data, err := os.ReadFile(pcmPath)
 	if err != nil {
-		return 0, fmt.Errorf("read pcm: %w", err)
+		return nil, fmt.Errorf("read pcm: %w", err)
 	}
 	const frameBytes = 80 * 2 // 10ms @ 8kHz
-	ms := 0
+	peaks := make([]int, 0, len(data)/frameBytes)
 	for off := 0; off+frameBytes <= len(data); off += frameBytes {
+		peak := 0
 		for i := 0; i < frameBytes; i += 2 {
-			v := int16(data[off+i]) | int16(data[off+i+1])<<8
+			v := int(int16(uint16(data[off+i]) | uint16(data[off+i+1])<<8))
 			if v < 0 {
 				v = -v
 			}
-			if v >= thresh {
-				ms += 10
-				break
+			if v > peak {
+				peak = v
 			}
+		}
+		peaks = append(peaks, peak)
+	}
+	return peaks, nil
+}
+
+// NonSilentMS reports how many milliseconds of a PCM16 8kHz file carry a
+// sample at or above thresh. Unlike Call.RMS/PCMBytesIn — cumulative over the
+// whole call — this measures only the file handed to it.
+func NonSilentMS(pcmPath string, thresh int16) (int, error) {
+	peaks, err := pcmFramePeaks(pcmPath)
+	if err != nil {
+		return 0, err
+	}
+	ms := 0
+	for _, p := range peaks {
+		if p >= int(thresh) {
+			ms += 10
 		}
 	}
 	return ms, nil
 }
 
-// LongestSilenceMS scans a linear-16 little-endian 8 kHz mono PCM file
-// and returns the longest contiguous window where the per-sample
-// absolute amplitude stayed below `thresh`. Used for SSML break-tag
-// tests: a `<break time="500ms"/>` should produce a measurable silence
-// gap in the recording.
-//
-// Implementation note: walks samples in 10ms frames (80 samples each)
-// and treats a frame as "silent" if its peak absolute amplitude is
-// below thresh. Frame-based smoothing avoids false splits from a
-// single noisy sample mid-silence.
+// LongestSilenceMS returns the longest run of 10ms frames in a PCM16 8kHz
+// file whose peak stays below thresh (frame-based, so one noisy sample does
+// not split a silence). Used for SSML break-tag tests.
 func LongestSilenceMS(pcmPath string, thresh int16) (int, error) {
-	data, err := os.ReadFile(pcmPath)
+	peaks, err := pcmFramePeaks(pcmPath)
 	if err != nil {
-		return 0, fmt.Errorf("read pcm: %w", err)
-	}
-	const frameSamples = 80 // 10ms @ 8kHz
-	const frameBytes = frameSamples * 2
-	if len(data) < frameBytes {
-		return 0, nil
+		return 0, err
 	}
 	maxRun, cur := 0, 0
-	for off := 0; off+frameBytes <= len(data); off += frameBytes {
-		var peak int16
-		for i := 0; i < frameBytes; i += 2 {
-			s := int16(data[off+i]) | int16(data[off+i+1])<<8
-			if s < 0 {
-				s = -s
-			}
-			if s > peak {
-				peak = s
-			}
-		}
-		if peak < thresh {
+	for _, p := range peaks {
+		if p < int(thresh) {
 			cur++
-			if cur > maxRun {
-				maxRun = cur
-			}
+			maxRun = max(maxRun, cur)
 		} else {
 			cur = 0
 		}
 	}
-	return maxRun * 10, nil // each frame = 10ms
+	return maxRun * 10, nil
+}
+
+// SilenceAfterMS finds the first run of at least minGapMS whose frames all
+// peak below thresh, searching from fromMS. It returns the run's start and
+// full length in ms, or start -1 if there is none.
+func SilenceAfterMS(pcmPath string, fromMS, minGapMS, thresh int) (start, length int, err error) {
+	peaks, err := pcmFramePeaks(pcmPath)
+	if err != nil {
+		return -1, 0, err
+	}
+	for f := max(fromMS/10, 0); f < len(peaks); f++ {
+		if peaks[f] >= thresh {
+			continue
+		}
+		end := f
+		for end < len(peaks) && peaks[end] < thresh {
+			end++
+		}
+		if (end-f)*10 >= minGapMS {
+			return f * 10, (end - f) * 10, nil
+		}
+		f = end
+	}
+	return -1, 0, nil
 }
 
 // AssertTranscriptContainsInOrder runs Deepgram STT and asserts each

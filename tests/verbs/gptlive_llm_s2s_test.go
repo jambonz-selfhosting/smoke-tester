@@ -26,8 +26,8 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"os"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -81,11 +81,8 @@ const gptLiveGreetRequest = "Immediately greet the caller using the exact text b
 	"Do not wait for the caller to speak first. After the greeting, pause and listen.\n\n" +
 	"Welcome to the pineapple hotline, how can I help?"
 
-// gptLiveConnectOptions maps the optional GPTLIVE_HOST / GPTLIVE_PATH env
-// overrides onto the verb's connectOptions, or returns nil so the
-// feature-server uses its own default URL. Kept in one place because both
-// tests need identical connection behavior — if the inferred URL is wrong,
-// one env var should fix both.
+// gptLiveConnectOptions maps GPTLIVE_HOST / GPTLIVE_PATH onto connectOptions,
+// or returns nil for the feature-server default.
 func gptLiveConnectOptions() map[string]any {
 	opts := map[string]any{}
 	if cfg.GptLiveHost != "" {
@@ -141,32 +138,59 @@ func gptLiveCompletionReason(cbs []webhook.Callback) string {
 	return ""
 }
 
+const gptLiveEventHook = "action/llm-gptlive-event"
+
+// gptLiveEvents returns the eventHook callbacks of the given event type.
+func gptLiveEvents(cbs []webhook.Callback, ty string) []webhook.Callback {
+	var out []webhook.Callback
+	for _, cb := range cbs {
+		if cb.Hook == gptLiveEventHook && cb.String("type") == ty {
+			out = append(out, cb)
+		}
+	}
+	return out
+}
+
 // gptLiveClientDelegationID returns the id of the first client-targeted
 // session.delegation.created in the stream, or "" if the model never raised one.
 func gptLiveClientDelegationID(cbs []webhook.Callback) string {
-	for _, cb := range cbs {
-		if cb.Hook != "action/llm-gptlive-event" || cb.String("type") != "session.delegation.created" {
-			continue
-		}
-		if cb.NestedString("delegation.target") == "client" {
-			if id := cb.NestedString("delegation.id"); id != "" {
-				return id
-			}
+	for _, cb := range gptLiveEvents(cbs, "session.delegation.created") {
+		if cb.NestedString("delegation.target") == "client" && cb.NestedString("delegation.id") != "" {
+			return cb.NestedString("delegation.id")
 		}
 	}
 	return ""
 }
 
-// gptLiveSawInputTranscript reports whether OpenAI recognized CALLER audio: an
-// input transcript fragment can only appear if the media server lifted its
-// input gate and forwarded our audio.
+// gptLiveSawInputTranscript reports whether OpenAI transcribed CALLER audio,
+// which it can only do once the media server lifts its input gate.
 func gptLiveSawInputTranscript(cbs []webhook.Callback) bool {
+	return len(gptLiveEvents(cbs, "session.input_transcript.delta")) > 0
+}
+
+// gptLiveAssertContract validates every gptlive event/tool callback against its
+// schema; the webhook server only logs violations, so this makes them fail.
+func gptLiveAssertContract(s *StepCtx, cbs []webhook.Callback) {
+	n := 0
 	for _, cb := range cbs {
-		if cb.Hook == "action/llm-gptlive-event" && cb.String("type") == "session.input_transcript.delta" {
-			return true
+		var rel string
+		switch cb.Hook {
+		case gptLiveEventHook:
+			rel = "callbacks/llm-gptlive-event.schema.json"
+		case "action/llm-gptlive-tool":
+			rel = "callbacks/llm-tool.schema.json"
+		default:
+			continue
+		}
+		n++
+		if err := webhookSrv.Validator.ValidateResponse(rel, cb.Body); err != nil {
+			s.Errorf("%s payload violates its contract: %v; body=%s", cb.Hook, err, cb.Body)
 		}
 	}
-	return false
+	if n == 0 {
+		s.Errorf("no gptlive callbacks to validate")
+	}
+	s.Logf("validated %d gptlive callbacks", n)
 }
 
 // TestVerb_LLM_GptLive_Session proves the gptlive path connects, starts a
@@ -200,6 +224,7 @@ func gptLiveSawInputTranscript(cbs []webhook.Callback) bool {
 //  9. wait-for-reply-and-stop
 //  10. hangup-and-wait-ended
 //  11. assert-passphrase-spoken — independent STT of the recording
+//  12. assert-contract — every eventHook payload matches its schema
 func TestVerb_LLM_GptLive_Session(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -286,12 +311,7 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 	if err := call.StartRecording(recPath); err != nil {
 		s.Fatalf("StartRecording: %v", err)
 	}
-	// These writes are deliberately NON-fatal. If GPT-Live rejects the session,
-	// the feature-server ends the
-	// llm verb and the scripted hangup runs, closing the RTP socket underneath
-	// us — SendWAV then fails with "use of closed network connection", which
-	// masks the actual cause. The real diagnosis is on the event/action hooks,
-	// so log and press on to wait-for-session-started.
+	// Non-fatal: a rejected session hangs up under us, and the real cause is on the hooks.
 	if err := call.SendSilence(); err != nil {
 		s.Logf("SendSilence (pre) failed, call may already be torn down: %v", err)
 	}
@@ -323,7 +343,7 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 		}
 		drained = append(drained, batch...)
 		for _, cb := range batch {
-			if cb.Hook == "action/llm-gptlive-event" && cb.String("type") == "session.started" {
+			if cb.Hook == gptLiveEventHook && cb.String("type") == "session.started" {
 				started = true
 				s.Logf("session.started: %s", string(cb.Body))
 			}
@@ -337,7 +357,7 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 		types := make([]string, 0, len(drained))
 		errCode, errMsg := "", ""
 		for _, cb := range drained {
-			if cb.Hook != "action/llm-gptlive-event" {
+			if cb.Hook != gptLiveEventHook {
 				continue
 			}
 			if ty := cb.String("type"); ty != "" {
@@ -353,13 +373,10 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 			}
 		}
 		switch {
-		case errCode == "forbidden" || strings.Contains(errCode, "access_denied") ||
-			strings.Contains(strings.ToLower(errMsg), "access"):
-			// Entitlement, not code. A FAILURE rather than a skip because setting
-			// GPTLIVE_API_KEY is an explicit statement of intent to exercise GPT-Live.
+		case errCode == "forbidden" || strings.HasSuffix(errCode, "access_denied"):
+			// a failure, not a skip: setting GPTLIVE_API_KEY means GPT-Live must work
 			s.Errorf("GPT-Live refused the session: %s (code=%q). The handshake succeeded, so "+
-				"URL and auth are right; this account is not entitled to the requested session "+
-				"(a leftover OpenAI-Alpha header routes to the retired alpha backend).",
+				"URL and auth are right; the account is not entitled to this session.",
 				errMsg, errCode)
 		case reason == "connection failure":
 			s.Errorf("never reached session.started and the verb ended with %q — the GPT-Live "+
@@ -401,7 +418,7 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 		after := DrainCallbacks(sess, 8*time.Second)
 		drained = append(drained, after...)
 		for _, cb := range after {
-			if cb.Hook == "action/llm-gptlive-event" && cb.String("type") == "error" {
+			if cb.Hook == gptLiveEventHook && cb.String("type") == "error" {
 				s.Errorf("GPT-Live rejected our session.thinking.append: code=%q %q",
 					cb.NestedString("error.code"), cb.NestedString("error.message"))
 			}
@@ -438,6 +455,10 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 	// mixed back to the caller.
 	AssertTranscriptHasMost(s, ctx, recPath, 1, gptLivePassphrase)
 	s.Done()
+
+	s = Step(t, "assert-contract")
+	gptLiveAssertContract(s, append(drained, DrainCallbacks(sess, time.Second)...))
+	s.Done()
 }
 
 // TestVerb_LLM_GptLive_ToolHook proves the gptlive path supports app-declared
@@ -457,6 +478,7 @@ func TestVerb_LLM_GptLive_Session(t *testing.T) {
 //  5. answer-and-silence  6. wait-for-stt  7. record-and-speak
 //  8. wait-for-tool-call  9. assert-tool-args  10. wait-for-reply-and-stop
 //  11. hangup-and-wait-ended  12. assert-tool-result-spoken
+//  13. assert-contract — the toolHook payload matches its schema
 func TestVerb_LLM_GptLive_ToolHook(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -633,6 +655,10 @@ func TestVerb_LLM_GptLive_ToolHook(t *testing.T) {
 	// hill" often enough to fail a run where the loop worked.
 	AssertTranscriptHasMost(s, ctx, recPath, 1, "hail", "seventy one")
 	s.Done()
+
+	s = Step(t, "assert-contract")
+	gptLiveAssertContract(s, []webhook.Callback{toolCB})
+	s.Done()
 }
 
 // TestVerb_LLM_GptLive_AgentSpeaksFirst checks the agent CAN open the
@@ -643,19 +669,18 @@ func TestVerb_LLM_GptLive_ToolHook(t *testing.T) {
 // nothing but the background silence symmetric-RTP requires, so audible audio
 // can only be an unprompted first turn.
 //
-// HOW the agent is made to open the call: there is no response.create, and a
-// greeting in `instructions` does not open the call, so once session.started
-// arrives the test sends session.commentary.append (content for the model to
-// speak) as an llm:update COMMAND. That is reachable only over the application
-// WebSocket (REST updateCall rejects llm_update), hence placeWSCallTo.
+// The agent is asked to open with session.commentary.append, an llm:update
+// command only reachable over the application WebSocket (hence placeWSCallTo).
+// Appended content only guides the model, which may stay silent, so it gets
+// gptLiveGreetAttempts calls. Only recording amplitude proves speech: the
+// media server emits playback_started for silent deltas too.
 //
-// WHY IT STILL RETRIES. Appended content guides the model; it may stay silent,
-// paraphrase, or be interrupted, streaming digital silence instead. So this
-// makes up to gptLiveGreetAttempts calls and passes if any one greets.
-//
-// CRITICAL: output_audio.playback_started is NOT proof the agent spoke — the
-// media server emits it for silent deltas too. Only the recording's amplitude
-// is proof, which is why every attempt measures peak/rms.
+// Steps (per attempt N):
+//  1. preflight-skips
+//  2. attempt-N-script-and-call — gptlive verb + eventHook, WS transport
+//  3. attempt-N-listen — on session.started send the greeting request, record a fixed window
+//  4. assert-greeting-heard — audible, and STT hears the greeting's words
+//  5. assert-contract — every eventHook payload matches its schema
 const gptLiveGreetAttempts = 3
 
 func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
@@ -675,6 +700,8 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 	s.Done()
 
 	ctx := WithTimeout(t, 300*time.Second)
+
+	var allCBs []webhook.Callback
 
 	// one attempt: place a call, send only silence, measure what the caller heard
 	attempt := func(n int) (peak int, recPath string, sawSessionStarted bool, types []string) {
@@ -722,7 +749,7 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 			batch := DrainCallbacks(sess, 2*time.Second)
 			drained = append(drained, batch...)
 			for _, cb := range batch {
-				if cb.Hook != "action/llm-gptlive-event" {
+				if cb.Hook != gptLiveEventHook {
 					continue
 				}
 				ty := cb.String("type")
@@ -747,6 +774,7 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 				}
 			}
 		}
+		allCBs = append(allCBs, drained...)
 		if !requested && sawSessionStarted {
 			st.Errorf("session.started arrived but the greeting request was never sent")
 		}
@@ -796,6 +824,10 @@ func TestVerb_LLM_GptLive_AgentSpeaksFirst(t *testing.T) {
 	// 24kHz audio survived resampling and playout to the caller.
 	AssertTranscriptHasMost(s, ctx, bestPath, 1, gptLiveGreetPassphrase, gptLiveGreetPassphrase2)
 	s.Done()
+
+	s = Step(t, "assert-contract")
+	gptLiveAssertContract(s, allCBs)
+	s.Done()
 }
 
 // gptLiveAudibledB is the peak amplitude above which a recording contains real
@@ -808,20 +840,14 @@ const gptLiveAudibledB = 200
 // silent audio frames when it declines, so frame counts and playback events
 // cannot distinguish speech from silence.
 func gptLivePeak(t *testing.T, path string) int {
-	pcm, err := os.ReadFile(path)
+	peaks, err := pcmFramePeaks(path)
 	if err != nil {
 		t.Logf("cannot read recording %s: %v", path, err)
 		return -1
 	}
 	peak := 0
-	for i := 0; i+1 < len(pcm); i += 2 {
-		v := int(int16(uint16(pcm[i]) | uint16(pcm[i+1])<<8))
-		if v < 0 {
-			v = -v
-		}
-		if v > peak {
-			peak = v
-		}
+	for _, p := range peaks {
+		peak = max(peak, p)
 	}
 	return peak
 }
@@ -851,6 +877,10 @@ const (
 // drain the audio generated ahead of realtime keeps playing far longer.
 const gptLiveCutMaxMS = 4000
 
+// gptLiveCutGapMS is the quiet run that counts as the cut: longer than the
+// agent's own pauses between sentences, shorter than the wait for its answer.
+const gptLiveCutGapMS = 1200
+
 // TestVerb_LLM_GptLive_BargeIn proves the caller can interrupt the agent.
 // GPT-Live has no interruption event, so mediajam infers barge-in from the
 // transcript timeline and drains its playout; the proof is the recording:
@@ -867,10 +897,11 @@ const gptLiveCutMaxMS = 4000
 //  7. interrupt — send the question WAV while the agent is talking
 //  8. wait-for-answer
 //  9. hangup-and-wait-ended
-//  10. assert-interruption-heard — input transcript mentions "two"
+//  10. assert-interruption-heard — input transcript mentions two / 2
 //  11. assert-playout-cut — mediajam reports an interrupted playout, and the
-//      recording goes quiet within gptLiveCutMaxMS of the interruption
+//     recording goes quiet within gptLiveCutMaxMS of the interruption
 //  12. assert-answer-not-story — "four" heard, marker word not heard
+//  13. assert-contract — every eventHook payload matches its schema
 func TestVerb_LLM_GptLive_BargeIn(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -922,29 +953,21 @@ func TestVerb_LLM_GptLive_BargeIn(t *testing.T) {
 		s.Fatalf("SendSilence: %v", err)
 	}
 	recPath := filepath.Join(t.TempDir(), "gptlive-bargein.pcm")
+	// the recorder writes only received RTP, so file offsets come from bytes written
+	recBase := call.PCMBytesIn()
 	if err := call.StartRecording(recPath); err != nil {
 		s.Fatalf("StartRecording: %v", err)
 	}
-	recStart := time.Now()
 	s.Done()
 
 	var drained []webhook.Callback
-	eventsOf := func(batch []webhook.Callback, ty string) []webhook.Callback {
-		var out []webhook.Callback
-		for _, cb := range batch {
-			if cb.Hook == "action/llm-gptlive-event" && cb.String("type") == ty {
-				out = append(out, cb)
-			}
-		}
-		return out
-	}
 
 	s = Step(t, "start-monologue")
 	started := false
 	for deadline := time.Now().Add(20 * time.Second); !started && time.Now().Before(deadline); {
 		batch := DrainCallbacks(sess, time.Second)
 		drained = append(drained, batch...)
-		started = len(eventsOf(batch, "session.started")) > 0
+		started = len(gptLiveEvents(batch, "session.started")) > 0
 	}
 	if !started {
 		s.Fatalf("no session.started within 20s; completionReason=%q", gptLiveCompletionReason(drained))
@@ -963,7 +986,7 @@ func TestVerb_LLM_GptLive_BargeIn(t *testing.T) {
 	for deadline := time.Now().Add(20 * time.Second); !speaking && time.Now().Before(deadline); {
 		batch := DrainCallbacks(sess, 500*time.Millisecond)
 		drained = append(drained, batch...)
-		speaking = len(eventsOf(batch, "session.output_transcript.delta")) > 0
+		speaking = len(gptLiveEvents(batch, "session.output_transcript.delta")) > 0
 	}
 	if !speaking {
 		s.Fatalf("the agent never started the monologue (no session.output_transcript.delta in 20s)")
@@ -973,7 +996,7 @@ func TestVerb_LLM_GptLive_BargeIn(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "interrupt")
-	interruptMS := int(time.Since(recStart).Milliseconds())
+	interruptMS := int((call.PCMBytesIn() - recBase) / 16) // 16 bytes/ms at 8kHz PCM16
 	if err := call.SendWAV(promptWAV); err != nil {
 		s.Fatalf("SendWAV: %v", err)
 	}
@@ -992,21 +1015,20 @@ func TestVerb_LLM_GptLive_BargeIn(t *testing.T) {
 
 	s = Step(t, "assert-interruption-heard")
 	var heard strings.Builder
-	for _, cb := range eventsOf(drained, "session.input_transcript.delta") {
+	for _, cb := range gptLiveEvents(drained, "session.input_transcript.delta") {
 		heard.WriteString(cb.String("delta"))
 	}
 	s.Logf("caller transcript seen by GPT-Live: %q", heard.String())
-	if !strings.Contains(strings.ToLower(heard.String()), "two") {
+	if words := strings.Fields(stt.Normalize(heard.String())); !slices.Contains(words, "two") && !slices.Contains(words, "2") {
 		s.Errorf("GPT-Live never transcribed the interruption (%q); without it mediajam has no "+
 			"barge-in signal", heard.String())
 	}
 	s.Done()
 
 	s = Step(t, "assert-playout-cut")
-	// mediajam emits this only when it drains the playout on a barge-in, which
-	// separates its drain from the vendor simply pausing
+	// only mediajam's drain emits this, so it separates the drain from the vendor pausing
 	drainedByMediajam := false
-	for _, cb := range eventsOf(drained, "output_audio.playback_stopped") {
+	for _, cb := range gptLiveEvents(drained, "output_audio.playback_stopped") {
 		if cb.String("completion_reason") == "interrupted" {
 			drainedByMediajam = true
 		}
@@ -1015,15 +1037,19 @@ func TestVerb_LLM_GptLive_BargeIn(t *testing.T) {
 		s.Errorf("no output_audio.playback_stopped{completion_reason:interrupted} — mediajam " +
 			"never took a barge-in from the transcript timeline")
 	}
-	gapAt, err := firstSilenceAfterMS(recPath, interruptMS, 800, gptLiveAudibledB)
+	gapAt, gapLen, err := SilenceAfterMS(recPath, interruptMS, gptLiveCutGapMS, gptLiveAudibledB)
 	if err != nil {
-		s.Fatalf("firstSilenceAfterMS: %v", err)
+		s.Fatalf("SilenceAfterMS: %v", err)
 	}
-	s.Logf("agent audio went quiet %dms after the interruption began", gapAt-interruptMS)
-	if gapAt < 0 || gapAt-interruptMS > gptLiveCutMaxMS {
-		s.Errorf("the agent kept talking for more than %dms after the caller interrupted "+
-			"(quiet gap at %dms, interruption at %dms) — mediajam did not drain the playout",
-			gptLiveCutMaxMS, gapAt, interruptMS)
+	switch {
+	case gapAt < 0:
+		s.Errorf("the agent never went quiet for %dms after the caller interrupted at %dms — "+
+			"mediajam did not drain the playout", gptLiveCutGapMS, interruptMS)
+	case gapAt-interruptMS > gptLiveCutMaxMS:
+		s.Errorf("the agent kept talking for %dms after the caller interrupted (limit %dms) — "+
+			"mediajam did not drain the playout", gapAt-interruptMS, gptLiveCutMaxMS)
+	default:
+		s.Logf("agent audio went quiet %dms after the interruption began, for %dms", gapAt-interruptMS, gapLen)
 	}
 	s.Done()
 
@@ -1033,51 +1059,20 @@ func TestVerb_LLM_GptLive_BargeIn(t *testing.T) {
 		s.Fatalf("stt.Transcribe: %v", err)
 	}
 	s.Logf("transcript: %q", transcript)
-	if !strings.Contains(transcript, "pineapple") {
+	words := strings.Fields(transcript)
+	if !slices.Contains(words, "pineapple") {
 		s.Errorf("the story's opening was never heard, so nothing was interrupted: %q", transcript)
 	}
-	if strings.Contains(transcript, gptLiveMonologueMarker) {
+	if slices.Contains(words, gptLiveMonologueMarker) {
 		s.Errorf("the story's last sentence (%q) was heard — the interruption did not cut it off: %q",
 			gptLiveMonologueMarker, transcript)
 	}
-	if !strings.Contains(transcript, "four") && !strings.Contains(transcript, " 4") {
+	if !slices.Contains(words, "four") && !slices.Contains(words, "4") {
 		s.Errorf("the interrupting question was not answered (no \"four\"): %q", transcript)
 	}
 	s.Done()
-}
 
-// firstSilenceAfterMS returns the start (ms into a PCM16 8kHz recording) of
-// the first run of at least minGapMS whose 10ms frames all peak below thresh,
-// searching from fromMS; -1 if there is none.
-func firstSilenceAfterMS(pcmPath string, fromMS, minGapMS int, thresh int) (int, error) {
-	data, err := os.ReadFile(pcmPath)
-	if err != nil {
-		return -1, err
-	}
-	const frameBytes = 80 * 2
-	runStart, run := -1, 0
-	for off := (fromMS / 10) * frameBytes; off+frameBytes <= len(data); off += frameBytes {
-		peak := 0
-		for i := 0; i < frameBytes; i += 2 {
-			v := int(int16(uint16(data[off+i]) | uint16(data[off+i+1])<<8))
-			if v < 0 {
-				v = -v
-			}
-			if v > peak {
-				peak = v
-			}
-		}
-		if peak >= thresh {
-			run = 0
-			continue
-		}
-		if run == 0 {
-			runStart = off / frameBytes * 10
-		}
-		run += 10
-		if run >= minGapMS {
-			return runStart, nil
-		}
-	}
-	return -1, nil
+	s = Step(t, "assert-contract")
+	gptLiveAssertContract(s, drained)
+	s.Done()
 }
