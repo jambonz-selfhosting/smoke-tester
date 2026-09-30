@@ -450,6 +450,18 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-09-30 — gptlive moved from the alpha protocol to GPT-Live GA
+
+- **Symptom:** all 3 `gptlive_llm_s2s_test.go` tests failed; OpenAI answered the startup event with `quicksilver_v2_access_denied`.
+- **Cause:** mediajam still sent the alpha opt-in header `OpenAI-Alpha: quicksilver=v2` plus alpha event names, and feature-server sent `session.update` to `v1/live?model=`. GPT-Live went GA ~2026-09-10 (`wss://api.openai.com/v1/live/sessions`, first event `session.start` with `model` in the session), and alpha access is now refused.
+- **Fix (uncommitted, branch `fix/gptlive-ga` in both repos):**
+  - mediajam `internal/s2s/gptlive.go`: no alpha header; `session.input_audio.append` / `session.output_audio.delta` (`delta` field); pins `session.start` audio.format to pcm@24k; barge-in = `session.input_transcript.delta` starting strictly after the burst's first `session.output_transcript.delta` (audio deltas carry no timing; question transcripts arrive late, so an unanchored burst fails closed).
+  - feature-server `gptlive_s2s.js`: `session.start` + model; GA event names; unwraps `response.event`; tool results = `response.item.create`, then `response.create` once the turn completed and every call is answered.
+- **Commits (local, not on GitHub):** feature-server `e367fa4`, mediajam `34694d7`, both on `fix/gptlive-ga`; pushed over SSH straight into the box repos.
+- **Deployed to hoan.jambonz.io the normal way:** `~/apps/feature-server` on `fix/gptlive-ga` (pm2 restarted); mediajam built in `/usr/local/src/mediajam` on `fix/gptlive-ga` → `/usr/bin/mediajam` (`v0.5.8-10-g34694d7`). The box's prior WIP on `fix/gemini-smart-language-codes` is in `git stash` there: `stash@{1}` = tracked changes, `stash@{0}` = the untracked `internal/stt/zoom/` files (were root-owned; dir chowned to jambonz).
+- **Result:** `make gptlive_llm_s2s_test.go` passes 3/3 (passphrase, tool result, and greeting all confirmed by independent STT). One run lost the tail of "pineapple" to the fixed 12s recording window; reruns passed.
+- **Open:** `@jambonz/schema` `verbs/gptlive_s2s.schema.json` description still describes the alpha; client-delegation answer (`session.thinking.append`) wasn't exercised because the model raised no client delegation.
+
 ### 2026-09-18 — agent-verb defects fixed; one still open
 
 Follow-on from the reproduction entry below. Fixes on `feature-server`

@@ -122,7 +122,7 @@ type Settings struct {
 
 	// Optional — the Responses-side model a `responses` delegation runs its
 	// turns on (delegation.responses.model, required by the server). Distinct
-	// from GptLiveModel, which is the GPT Live voice model in the URL.
+	// from GptLiveModel, which is the GPT-Live voice model.
 	GptLiveDelegationModel string
 
 	// Optional — Azure Voice Live. The host names a Microsoft Foundry or Azure
@@ -262,7 +262,7 @@ func (s *Settings) HasGeminiS2S() bool { return s.GeminiAPIKey != "" }
 // is resource-specific, so there is no host to fall back on.
 func (s *Settings) HasVoiceLive() bool { return s.VoiceLiveAPIKey != "" && s.VoiceLiveHost != "" }
 
-// HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
+// HasGptLive reports whether the OpenAI GPT-Live S2S tests can run.
 // Optional: when the key is unset those tests pass without exercising gptlive.
 func (s *Settings) HasGptLive() bool { return s.GptLiveAPIKey != "" }
 
