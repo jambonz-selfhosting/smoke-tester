@@ -105,27 +105,20 @@ type Settings struct {
 	// where the service account would otherwise work. Hence a separate key.
 	GeminiAPIKey string
 
-	// Optional — OpenAI GPT Live (limited-access alpha) API key. This is an
-	// OpenAI key enrolled in the GPT Live Early Access Program; a plain
-	// OPENAI_API_KEY is rejected at connect, so this is a SEPARATE variable
-	// rather than a fallback to OpenAIAPIKey — otherwise the gptlive tests
-	// would fail for everyone who happens to have an ordinary OpenAI key.
-	// When unset the gptlive tests pass without exercising GPT Live — see
-	// HasGptLive.
+	// Optional — OpenAI GPT-Live API key, kept separate from OpenAIAPIKey so
+	// the gptlive tests run only when explicitly asked for. When unset they
+	// pass without exercising GPT-Live — see HasGptLive.
 	GptLiveAPIKey string
 
-	// Optional — GPT Live model/host/path overrides. The alpha's model names
-	// churn, and the connection URL jambonz defaults to (api.openai.com,
-	// v1/live?model=<model>) is INFERRED from the Event API reference rather
-	// than documented, so these let a run target the real endpoint without a
-	// code change. Empty host/path means "use the feature-server default".
+	// Optional — GPT-Live model/host/path overrides. Empty host/path means the
+	// feature-server default (api.openai.com, v1/live/sessions).
 	GptLiveModel string
 	GptLiveHost  string
 	GptLivePath  string
 
 	// Optional — the Responses-side model a `responses` delegation runs its
 	// turns on (delegation.responses.model, required by the server). Distinct
-	// from GptLiveModel, which is the GPT Live voice model in the URL.
+	// from GptLiveModel, which is the GPT-Live voice model.
 	GptLiveDelegationModel string
 
 	// Optional — Azure Voice Live. The host names a Microsoft Foundry or Azure
@@ -268,7 +261,7 @@ func (s *Settings) HasGeminiS2S() bool { return s.GeminiAPIKey != "" }
 // is resource-specific, so there is no host to fall back on.
 func (s *Settings) HasVoiceLive() bool { return s.VoiceLiveAPIKey != "" && s.VoiceLiveHost != "" }
 
-// HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
+// HasGptLive reports whether the OpenAI GPT-Live S2S tests can run.
 // Optional: when the key is unset those tests pass without exercising gptlive.
 func (s *Settings) HasGptLive() bool { return s.GptLiveAPIKey != "" }
 
