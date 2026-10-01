@@ -468,6 +468,17 @@ None.
   - Not yet investigated from that run: `Gather_InbandDigits`, `VoiceLive_ToolHook` (model picked New York), `Agent_Xai` (no turn_end), `Agent_Defect2b` (known open), `Krisp_TurnDetection` (empty transcript).
 - **Open:** `@jambonz/schema` `verbs/gptlive_s2s.schema.json` description still describes the alpha; client-delegation answer (`session.thinking.append`) wasn't exercised because the model raised no client delegation.
 
+### 2026-10-01 — Speechify TTS tests
+
+`tests/verbs/speechify_tts_test.go`, gated on `SPEECHIFY_API_KEY`. 11 pass on hoan.jambonz.io.
+- Run with `-parallel 1`: the test key's plan allows 1 request/second, and parallel runs draw 429s
+  (mediajam now retries them, but a burst of parallel calls still adds seconds to a turn).
+- `TestVerb_Agent_Speechify_HistoryTrimmedToSpoken` SKIPs ("barge-in never confirmed"), and so do
+  the deepgram (`Defect1`) and kugelaudio variants in the same run: the test sees three untyped
+  events and no `user_interruption`/interrupted `turn_end`. The box's feature-server log shows the
+  barge-in confirmed and the turn trimmed to the 24 confirmed chars, so this is harness-side, not
+  vendor-side. Not investigated further.
+
 ### 2026-09-30 — KugelAudio TTS tests
 
 `tests/verbs/kugelaudio_tts_test.go`, gated on `KUGELAUDIO_API_KEY` (skips without it).

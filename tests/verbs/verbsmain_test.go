@@ -92,6 +92,12 @@ var (
 	// Samantha Ferris (en-US); KugelAudio voice ids are numeric.
 	kugelaudioVoice = "1071"
 
+	// Speechify TTS credential, provisioned IF SPEECHIFY_API_KEY is set.
+	// No model on the credential, so mediajam picks one from the language.
+	speechifyLabel string
+	speechifySID   string
+	speechifyVoice = "geffen_32"
+
 	// xai speech credential (dual-use STT+TTS) provisioned at TestMain IF
 	// XAI_API_KEY is set (optional vendor). When unset, xaiLabel stays "" and
 	// the xai gather/transcribe/say tests pass without exercising xai.
@@ -259,6 +265,16 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: KUGELAUDIO_API_KEY not set — KugelAudio tests will skip")
 	}
 
+	// 3b4. Speechify TTS speech credential — optional.
+	if cfg.HasSpeechify() {
+		if err := provisionSpeechifyCredential(); err != nil {
+			log.Fatalf("tests/verbs: Speechify credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: Speechify credential label=%s sid=%s", speechifyLabel, speechifySID)
+	} else {
+		log.Printf("tests/verbs: SPEECHIFY_API_KEY not set — Speechify tests will skip")
+	}
+
 	// 3c. xai STT speech credential — optional. Only provisioned when
 	// XAI_API_KEY is set; otherwise the xai gather/transcribe tests pass
 	// without exercising xai STT.
@@ -355,6 +371,7 @@ func TestMain(m *testing.M) {
 	teardownMurfCredential()
 	teardownElevenlabsCredential()
 	teardownKugelaudioCredential()
+	teardownSpeechifyCredential()
 	teardownXaiCredential()
 	teardownZoomCredential()
 	teardownSpeechmaticsCredential()
@@ -531,6 +548,36 @@ func teardownKugelaudioCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, kugelaudioSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete KugelAudio credential %s: %v", kugelaudioSID, err)
+	}
+}
+
+// provisionSpeechifyCredential creates a TTS-only Speechify credential,
+// labelled `it-speechify-<runID>`.
+func provisionSpeechifyCredential() error {
+	speechifyLabel = "it-speechify-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "speechify",
+		Label:     speechifyLabel,
+		APIKey:    cfg.SpeechifyAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	speechifySID = sid
+	return nil
+}
+
+func teardownSpeechifyCredential() {
+	if speechifySID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, speechifySID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete Speechify credential %s: %v", speechifySID, err)
 	}
 }
 
