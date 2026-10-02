@@ -34,6 +34,11 @@ type Settings struct {
 	SPAPIKey string
 	SPSID    string
 
+	// AllowSPPolicyChanges lets tests change the SP's support audio capture
+	// policy. allow_all overrides every account's opt-out, so leave it off on
+	// a shared cluster with customer accounts under the SP.
+	AllowSPPolicyChanges bool
+
 	// Required — SBC public IP. Verb tests dial this IP for all SIP
 	// traffic regardless of the Request-URI domain. The harness installs
 	// a custom DNS resolver in the SIP transport so the synthetic
@@ -469,6 +474,14 @@ func parse() (*Settings, error) {
 		ttl = time.Duration(n) * time.Hour
 	}
 	s.OrphanTTL = ttl
+
+	if v := os.Getenv("JAMBONZ_ALLOW_SP_POLICY_CHANGES"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("JAMBONZ_ALLOW_SP_POLICY_CHANGES must be true/false: %w", err)
+		}
+		s.AllowSPPolicyChanges = b
+	}
 
 	// contract strictness defaults on per ADR-0015
 	s.ContractStrict = true

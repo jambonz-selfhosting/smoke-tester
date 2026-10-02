@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ServiceProvider",
   "type": "object",
-  "required": ["service_provider_sid", "name"],
+  "required": ["service_provider_sid", "name", "support_audio_capture_policy"],
   "properties": {
     "service_provider_sid": { "type": "string" },
     "name": { "type": "string" },
@@ -14,7 +14,11 @@
     "ms_teams_fqdn": { "type": ["string", "null"] },
     "test_number": { "type": ["string", "null"] },
     "test_application_name": { "type": ["string", "null"] },
-    "test_application_sid": { "type": ["string", "null"] }
+    "test_application_sid": { "type": ["string", "null"] },
+    "support_audio_capture_policy": {
+      "description": "allow_all / disable_all override every account; per_account defers to accounts.disable_media_capture",
+      "enum": ["allow_all", "disable_all", "per_account"]
+    }
   },
   "additionalProperties": true
 }
