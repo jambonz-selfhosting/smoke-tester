@@ -450,6 +450,16 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-10-02 — Authorization-level write guards (api-server #134 + carrier ownership)
+
+- **New:** `tests/rest/authz_test.go` with 3 tests (coverage-matrix row 2.14): `TestAuthz_ServiceProvider_OperatorOnlyFields`, `TestAuthz_Account_OperatorOnlyFields`, `TestAuthz_VoipCarrier_Tenancy`. Every rejected write also validates the error body against `rest/common/general_error.json`.
+- **Gating:** commercial clusters only. `requireOperatorColumns` skips when the suite account has no `carrier_kyc_status` (open-source api-server has none of these guards).
+- **Safe on an unguarded cluster:** writes to the shared SP and to the managed-carrier columns re-send the current value; anything a rejected POST creates anyway is cleaned up.
+- **Verified locally** against the private api-server (test MySQL/Redis + `node app.js`, admin-created SP and SP key, `JAMBONZ_API_URL=http://127.0.0.1:3000/v1`):
+  - `main` (unfixed): 53 failures, one per known hole, and no leaked resources.
+  - `security/sp-operator-only-fields` (now carries both fixes): all 3 green, and the full `tests/rest` suite green.
+- **Not run against hoan.jambonz.io:** its api-server predates #137, so the existing account schema (`service_provider_audio_capture_policy` required) fails suite setup for the whole `tests/rest` package. Expect these tests to stay RED on any cluster until that api-server PR is deployed.
+
 ### 2026-09-30 — gptlive moved from the alpha protocol to GPT-Live GA
 
 - **Symptom:** all 3 `gptlive_llm_s2s_test.go` tests failed; OpenAI answered the startup event with `quicksilver_v2_access_denied`.
