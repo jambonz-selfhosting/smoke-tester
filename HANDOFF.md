@@ -450,6 +450,15 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-10-02 — dev broke on clusters older than api-server #137; report hid it
+
+- **Symptom:** on hoan.jambonz.io every `tests/rest` and `tests/verbs` test vanished, yet `make test-report` said "22 tests, 0 failed".
+- **Cause 1:** #33 made `disable_media_capture`, `service_provider_audio_capture_policy` and `support_audio_capture_policy` *required* in `schemas/rest/common/{account,service_provider}.json`. An api-server without #137 omits them, so `TestMain` died in suite setup for both packages.
+- **Fix 1:** those fields are optional again (still typed). The 3 media-capture tests skip via `requireMediaCapture`, which checks for the derived account field `service_provider_audio_capture_policy`. The SP column alone is not a usable signal: hoan.jambonz.io has a migrated DB (the column exists) but pre-#137 api-server code.
+- **Cause 2:** `cmd/testreport` counted only per-test events, and a package that fails in `TestMain` emits none.
+- **Fix 2:** a failed package with no failed test now becomes a `(package setup)` failure carrying the package output (`cmd/testreport/main_test.go`). Replaying the bad run's `report.ndjson` now gives "24 tests, 2 failed".
+- **Now on hoan.jambonz.io:** `tests/rest` passes except the 3 `TestAuthz_*` tests (expected until the api-server fix is deployed); media capture skips; `TestVerb_Say_Basic` passes.
+
 ### 2026-10-02 — Authorization-level write guards (api-server #134 + carrier ownership)
 
 - **New:** `tests/rest/authz_test.go` with 3 tests (coverage-matrix row 2.14): `TestAuthz_ServiceProvider_OperatorOnlyFields`, `TestAuthz_Account_OperatorOnlyFields`, `TestAuthz_VoipCarrier_Tenancy`. Every rejected write also validates the error body against `rest/common/general_error.json`.
