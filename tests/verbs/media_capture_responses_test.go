@@ -30,6 +30,7 @@ func TestMediaCapture_Responses(t *testing.T) {
 	if spClient == nil {
 		t.Skip("SP scope not configured (JAMBONZ_SP_API_KEY / JAMBONZ_SP_SID)")
 	}
+	requireMediaCapture(t)
 	ctx := WithTimeout(t, 900*time.Second)
 	uas := claimUAS(t, ctx)
 

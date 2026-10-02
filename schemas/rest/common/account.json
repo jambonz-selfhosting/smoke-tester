@@ -3,13 +3,7 @@
   "title": "Account",
   "description": "A jambonz Account — tenant container belonging to a Service Provider. Required fields derived from swagger; optional fields accept null per live behaviour.",
   "type": "object",
-  "required": [
-    "account_sid",
-    "name",
-    "service_provider_sid",
-    "disable_media_capture",
-    "service_provider_audio_capture_policy"
-  ],
+  "required": ["account_sid", "name", "service_provider_sid"],
   "properties": {
     "account_sid": { "type": "string" },
     "name": { "type": "string" },

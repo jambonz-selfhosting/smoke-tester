@@ -39,6 +39,7 @@ func TestMediaCapture_NoRecordHeader(t *testing.T) {
 	if spClient == nil {
 		t.Skip("SP scope not configured (JAMBONZ_SP_API_KEY / JAMBONZ_SP_SID)")
 	}
+	requireMediaCapture(t)
 	ctx := WithTimeout(t, 240*time.Second)
 	uas := claimUAS(t, ctx)
 
@@ -190,4 +191,20 @@ func onOff(optedOut bool) string {
 		return "optout"
 	}
 	return "optin"
+}
+
+// requireMediaCapture skips on clusters whose api-server predates the audio
+// capture opt-out (api-server #137).
+func requireMediaCapture(t *testing.T) {
+	t.Helper()
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	ok, err := spClient.SupportsMediaCapture(ctx, suite.AccountSID)
+	if err != nil {
+		recordFailure(t, "detect-media-capture", err.Error())
+		t.Fatalf("detect media capture support: %v", err)
+	}
+	if !ok {
+		t.Skip("api-server has no support audio capture opt-out (predates #137)")
+	}
 }

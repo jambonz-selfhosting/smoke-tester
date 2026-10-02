@@ -2,7 +2,7 @@
   "$schema": "https://json-schema.org/draft/2020-12/schema",
   "title": "ServiceProvider",
   "type": "object",
-  "required": ["service_provider_sid", "name", "support_audio_capture_policy"],
+  "required": ["service_provider_sid", "name"],
   "properties": {
     "service_provider_sid": { "type": "string" },
     "name": { "type": "string" },
