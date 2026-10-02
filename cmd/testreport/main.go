@@ -45,6 +45,9 @@ type result struct {
 	Output  string
 }
 
+// packageSetup names the synthetic result for a package that failed outside any test.
+const packageSetup = "(package setup)"
+
 // Failed reports whether this test should lead the report.
 func (r result) Failed() bool { return r.Status == "fail" }
 
@@ -77,6 +80,8 @@ func parse(r io.Reader) (summary, error) {
 		sum     summary
 		results = map[string]*result{}
 		output  = map[string][]string{}
+		pkgFail = map[string]float64{} // package -> elapsed, for packages that failed
+		pkgOut  = map[string][]string{}
 		noTests []string
 		wall    float64
 		lines   int
@@ -107,8 +112,14 @@ func parse(r io.Reader) (summary, error) {
 			if e.Action == "output" && strings.Contains(e.Output, "no test files") {
 				noTests = append(noTests, e.Package)
 			}
+			if e.Action == "output" {
+				pkgOut[e.Package] = append(pkgOut[e.Package], e.Output)
+			}
 			if e.Action == "pass" || e.Action == "fail" {
 				wall += e.Elapsed
+			}
+			if e.Action == "fail" {
+				pkgFail[e.Package] = e.Elapsed
 			}
 			continue
 		}
@@ -131,6 +142,23 @@ func parse(r io.Reader) (summary, error) {
 	if lines == 0 {
 		return sum, fmt.Errorf("no `go test -json` events on stdin " +
 			"(is the pipeline wired up, and did the build succeed?)")
+	}
+	// A package that dies in TestMain (or panics, or fails to build) emits no
+	// test result of its own; without this it would vanish from a green report.
+	for pkg, elapsed := range pkgFail {
+		failedTest := false
+		for _, res := range results {
+			if res.Package == pkg && res.Failed() {
+				failedTest = true
+				break
+			}
+		}
+		if !failedTest {
+			results[pkg+"."+packageSetup] = &result{
+				Package: pkg, Name: packageSetup, Status: "fail", Elapsed: elapsed,
+			}
+			output[pkg+"."+packageSetup] = pkgOut[pkg]
+		}
 	}
 	if len(results) == 0 {
 		return sum, fmt.Errorf("stream carried %d events but no test results", lines)

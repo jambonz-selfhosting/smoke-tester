@@ -175,3 +175,20 @@ func (c *Client) ManagedAccount(t *testing.T, ctx context.Context, body AccountC
 	})
 	return sid
 }
+
+// SupportsMediaCapture reports whether the api-server has the support audio
+// capture opt-out (api-server #137). The derived account field is the signal:
+// a migrated database exposes the raw columns even under an older api-server.
+func (c *Client) SupportsMediaCapture(ctx context.Context, accountSID string) (bool, error) {
+	raw, err := c.Request(ctx, http.MethodGet, "/Accounts/"+accountSID, nil,
+		"rest/accounts/getAccount.response.200.json", http.StatusOK)
+	if err != nil {
+		return false, err
+	}
+	var a map[string]json.RawMessage
+	if err := json.Unmarshal(raw, &a); err != nil {
+		return false, fmt.Errorf("decode Account: %w", err)
+	}
+	_, ok := a["service_provider_audio_capture_policy"]
+	return ok, nil
+}

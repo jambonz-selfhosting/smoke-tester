@@ -188,7 +188,15 @@ func TestVerb_Gather_InbandDigits(t *testing.T) {
 
 	s = Step(t, "send-inband-tones")
 	if err := call.SendWAV(wavPath); err != nil {
-		s.Fatalf("SendWAV: %v", err)
+		// gather completes on the 4th tone and the scripted hangup sends BYE
+		// while the WAV's trailing silence is still being written
+		byeCtx, byeCancel := context.WithTimeout(ctx, 2*time.Second)
+		_, byeErr := call.AwaitReceivedRequest(byeCtx, "BYE")
+		byeCancel()
+		if byeErr != nil {
+			s.Fatalf("SendWAV: %v", err)
+		}
+		s.Logf("tone burst cut short by jambonz's BYE (gather already completed): %v", err)
 	}
 	s.Done()
 
