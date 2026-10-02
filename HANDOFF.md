@@ -450,6 +450,12 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-10-02 — `TestVerb_Gather_InbandDigits` failed on a race, not on detection
+
+- **Symptom:** `send-inband-tones` failed with `SendWAV write: use of closed network connection` (also listed "not yet investigated" on 2026-09-30).
+- **Cause:** detection works (`action/gather` arrived with `digits:"1234"`, `reason:"dtmfDetected"`). Gather completes on the 4th tone, the scripted `hangup` sends BYE, and the WAV's trailing silence is still being written to the now-closed RTP socket.
+- **Fix:** a `SendWAV` error is tolerated only if jambonz's BYE arrives within 2s; the digits assertion is unchanged. 3/3 green on hoan.jambonz.io, alongside `TestVerb_Gather_Digits`.
+
 ### 2026-10-02 — dev broke on clusters older than api-server #137; report hid it
 
 - **Symptom:** on hoan.jambonz.io every `tests/rest` and `tests/verbs` test vanished, yet `make test-report` said "22 tests, 0 failed".
