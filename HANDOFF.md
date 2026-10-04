@@ -450,6 +450,205 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-10-02 — `TestVerb_Gather_InbandDigits` failed on a race, not on detection
+
+- **Symptom:** `send-inband-tones` failed with `SendWAV write: use of closed network connection` (also listed "not yet investigated" on 2026-09-30).
+- **Cause:** detection works (`action/gather` arrived with `digits:"1234"`, `reason:"dtmfDetected"`). Gather completes on the 4th tone, the scripted `hangup` sends BYE, and the WAV's trailing silence is still being written to the now-closed RTP socket.
+- **Fix:** a `SendWAV` error is tolerated only if jambonz's BYE arrives within 2s; the digits assertion is unchanged. 3/3 green on hoan.jambonz.io, alongside `TestVerb_Gather_Digits`.
+
+### 2026-10-02 — dev broke on clusters older than api-server #137; report hid it
+
+- **Symptom:** on hoan.jambonz.io every `tests/rest` and `tests/verbs` test vanished, yet `make test-report` said "22 tests, 0 failed".
+- **Cause 1:** #33 made `disable_media_capture`, `service_provider_audio_capture_policy` and `support_audio_capture_policy` *required* in `schemas/rest/common/{account,service_provider}.json`. An api-server without #137 omits them, so `TestMain` died in suite setup for both packages.
+- **Fix 1:** those fields are optional again (still typed). The 3 media-capture tests skip via `requireMediaCapture`, which checks for the derived account field `service_provider_audio_capture_policy`. The SP column alone is not a usable signal: hoan.jambonz.io has a migrated DB (the column exists) but pre-#137 api-server code.
+- **Cause 2:** `cmd/testreport` counted only per-test events, and a package that fails in `TestMain` emits none.
+- **Fix 2:** a failed package with no failed test now becomes a `(package setup)` failure carrying the package output (`cmd/testreport/main_test.go`). Replaying the bad run's `report.ndjson` now gives "24 tests, 2 failed".
+- **Now on hoan.jambonz.io:** `tests/rest` passes except the 3 `TestAuthz_*` tests (expected until the api-server fix is deployed); media capture skips; `TestVerb_Say_Basic` passes.
+
+### 2026-10-02 — Authorization-level write guards (api-server #134 + carrier ownership)
+
+- **New:** `tests/rest/authz_test.go` with 3 tests (coverage-matrix row 2.14): `TestAuthz_ServiceProvider_OperatorOnlyFields`, `TestAuthz_Account_OperatorOnlyFields`, `TestAuthz_VoipCarrier_Tenancy`. Every rejected write also validates the error body against `rest/common/general_error.json`.
+- **Gating:** commercial clusters only. `requireOperatorColumns` skips when the suite account has no `carrier_kyc_status` (open-source api-server has none of these guards).
+- **Safe on an unguarded cluster:** writes to the shared SP and to the managed-carrier columns re-send the current value; anything a rejected POST creates anyway is cleaned up.
+- **Verified locally** against the private api-server (test MySQL/Redis + `node app.js`, admin-created SP and SP key, `JAMBONZ_API_URL=http://127.0.0.1:3000/v1`):
+  - `main` (unfixed): 53 failures, one per known hole, and no leaked resources.
+  - `security/sp-operator-only-fields` (now carries both fixes): all 3 green, and the full `tests/rest` suite green.
+- **Not run against hoan.jambonz.io:** its api-server predates #137, so the existing account schema (`service_provider_audio_capture_policy` required) fails suite setup for the whole `tests/rest` package. Expect these tests to stay RED on any cluster until that api-server PR is deployed.
+
+### 2026-09-30 — gptlive moved from the alpha protocol to GPT-Live GA
+
+- **Symptom:** all 3 `gptlive_llm_s2s_test.go` tests failed; OpenAI answered the startup event with `quicksilver_v2_access_denied`.
+- **Cause:** mediajam still sent the alpha opt-in header `OpenAI-Alpha: quicksilver=v2` plus alpha event names, and feature-server sent `session.update` to `v1/live?model=`. GPT-Live went GA ~2026-09-10 (`wss://api.openai.com/v1/live/sessions`, first event `session.start` with `model` in the session), and alpha access is now refused.
+- **Fix (branch `fix/gptlive-ga` in both repos, PRs open):**
+  - mediajam `internal/s2s/gptlive.go`: no alpha header; `session.input_audio.append` / `session.output_audio.delta` (`delta` field); pins `session.start` audio.format to pcm@24k; barge-in = `session.input_transcript.delta` starting strictly after the burst's first `session.output_transcript.delta` (audio deltas carry no timing; question transcripts arrive late, so an unanchored burst fails closed).
+  - feature-server `gptlive_s2s.js`: `session.start` + model; GA event names; unwraps `response.event`; tool results = `response.item.create`, then `response.create` once the turn completed and every call is answered.
+- **Commits:** feature-server `e367fa4`, mediajam `34694d7` + `4b0eb08`, on `fix/gptlive-ga` (pushed to GitHub, PRs open; also pushed over SSH into the box repos).
+- **Deployed to hoan.jambonz.io the normal way:** `~/apps/feature-server` on `fix/gptlive-ga` (pm2 restarted); mediajam built in `/usr/local/src/mediajam` on `fix/gptlive-ga` → `/usr/bin/mediajam` (`v0.5.8-10-g34694d7`). The box's prior WIP on `fix/gemini-smart-language-codes` is in `git stash` there: `stash@{1}` = tracked changes, `stash@{0}` = the untracked `internal/stt/zoom/` files (were root-owned; dir chowned to jambonz).
+- **Result:** `make gptlive_llm_s2s_test.go` passes 3/3 (passphrase, tool result, and greeting all confirmed by independent STT).
+- **Later the same day — full-suite fallout, fixed:**
+  - 9 inbound tests got `503 System Tampering Detected!`: mediajam was a licensed build (installed 2026-09-29 23:43 UTC, before this session; my rebuilds copied its flags) but the SBC drachtio was built with `CPPFLAGS=-DDISABLE_LICENSING=1`, so no `X-Jambonz-Session-Token` ever reached feature-server → mediajam rejected `endpoint.create` ("missing session token"). Per the user, rebuilt drachtio licensed the packer way (`scripts/install_drachtio.sh` without `-DDISABLE_LICENSING`; needed `make clean`, since make does not track CPPFLAGS) → `License validated … max sessions: 10`. Trial license expires **2026-10-03**; the 10-session cap now applies to drachtio as well as mediajam.
+  - Barge-in cut off answers: GPT-Live starts replying while the caller finishes, so the question's last fragment landed after the burst start. mediajam `4b0eb08`: only a fragment starting a new utterance (≥600ms gap) barges in. Deployed licensed (`v0.5.8-11-g4b0eb08`).
+  - New `TestVerb_LLM_GptLive_BargeIn` (branch `feat/gptlive-coverage`, PR open); gptlive file 4/4 green.
+  - Review fixes: recording offsets from bytes written (not wall clock), 1200ms cut gap, shared `pcmFramePeaks` helpers, and a `llm-gptlive-event` schema that every gptlive test now enforces (`assert-contract`).
+  - Not yet investigated from that run: `Gather_InbandDigits`, `VoiceLive_ToolHook` (model picked New York), `Agent_Xai` (no turn_end), `Agent_Defect2b` (known open), `Krisp_TurnDetection` (empty transcript).
+- **Open:** `@jambonz/schema` `verbs/gptlive_s2s.schema.json` description still describes the alpha; client-delegation answer (`session.thinking.append`) wasn't exercised because the model raised no client delegation.
+
+### 2026-10-01 — Speechify TTS tests
+
+`tests/verbs/speechify_tts_test.go`, gated on `SPEECHIFY_API_KEY`. 11 pass on hoan.jambonz.io.
+- Run with `-parallel 1`: the test key's plan allows 1 request/second, and parallel runs draw 429s
+  (mediajam now retries them, but a burst of parallel calls still adds seconds to a turn).
+- `TestVerb_Agent_Speechify_HistoryTrimmedToSpoken` SKIPs ("barge-in never confirmed"), and so do
+  the deepgram (`Defect1`) and kugelaudio variants in the same run: the test sees three untyped
+  events and no `user_interruption`/interrupted `turn_end`. The box's feature-server log shows the
+  barge-in confirmed and the turn trimmed to the 24 confirmed chars, so this is harness-side, not
+  vendor-side. Not investigated further.
+
+### 2026-09-30 — KugelAudio TTS tests
+
+`tests/verbs/kugelaudio_tts_test.go`, gated on `KUGELAUDIO_API_KEY` (skips without it).
+Credential test (tts), one-shot say, streaming say, two streaming says on one socket,
+de-DE streaming (voice 1930), agent barge-in, and the Defect1 history-trim flow on
+kugelaudio (an alignment vendor), which trimmed turn_end.response to what the caller
+heard. All green on hoan.jambonz.io; the trim test can skip when the barge-in never
+confirms, the same premise-miss as Defect1.
+
+### 2026-09-18 — agent-verb defects fixed; one still open
+
+Follow-on from the reproduction entry below. Fixes on `feature-server`
+(`fix/agent-prod-defects`) and `@jambonz/llm` (`fix/tool-call-assistant-text`),
+verified against the live test cluster. Smoke suite is now 9 pass, 1 skip,
+1 fail.
+
+**Fixed**
+
+- Interrupted responses are trimmed to what was played even when the TTS vendor
+  sends no word alignment, estimated from elapsed playout and rounded up to the
+  sentence in progress. Measured: caller heard to "seven", `turn_end.response`
+  ends at "nine"; before, it ran to "thirty" however early the barge-in landed.
+- `trimLastAssistantMessage` no longer overwrites the previous turn when the
+  current stream committed nothing, and appends instead — which also stops
+  history ending on two consecutive user messages.
+- Tool-call turns: the pre-tool text is closed as its own `llm_response`, and
+  `@jambonz/llm` now carries it onto the wire in each vendor's native shape
+  (OpenAI `content`, Anthropic/Bedrock a text block, Gemini a text part).
+- `_onEndOfTurn` honours `bargeIn.enable:false`. It was confirming an
+  interruption unconditionally, so the agent cut itself off with barge-in
+  disabled; on tool turns the resulting split left the post-tool text in a turn
+  whose `turn_end` never fired.
+- Tokens arriving while a barge-in is only tentative keep flowing to TTS.
+- An oversize application frame is reported instead of swallowed: real cause
+  logged, alert naming `JAMBONES_WS_MAX_PAYLOAD`, in-flight messages failed
+  immediately, no reconnect. Default limit raised 24 KB → 64 KB.
+- Also `_commitPreflightResponse` is cleared on interruption, and the dead
+  `bargeIn.sticky` parse is gone.
+
+**Still open — the bare terminator ("punto"), `Defect2b`**
+
+Not fixed, and deliberately not guessed at. Ruled out, in order:
+
+1. feature-server chunking — both send paths instrumented; 80 well-formed
+   chunks, zero terminator-only.
+2. the vendor and mediajam's engine — replaying that exact chunk sequence
+   against live Deepgram is clean back-to-back, paced in real time, and spaced
+   40 ms apart (`mediajam internal/tts/bare_terminator_live_test.go`, on branch
+   `test/deepgram-stream-bare-terminator`).
+3. the one-shot TTS path — `say` over a live call is clean (`Defect2c`).
+4. the streaming TTS path — `say` with `stream:true`, same synthesizer and RTP
+   path, no agent verb, is clean (`Defect2d`).
+
+What is left is specific to the agent verb's endpoint, which runs STT on the
+same media session as the TTS playout. Going further needs audio captured at
+the mediajam endpoint.
+
+**Skip, not a failure:** `Defect1` skips when the interrupt utterance produces
+no transcript on either attempt, or the agent finished speaking first — roughly
+one run in three. The premise is not established on those runs, so there is
+nothing to judge.
+
+### 2026-09-18 — agent-verb production defects reproduced, with feature-server probes
+
+New file `tests/verbs/agent_prod_defects_test.go` — ten tests reproducing the
+defects a self-hosted 10.2.1 operator reported against the `agent` verb.
+Nothing was fixed. Each test asserts the intended behaviour, so an affected
+build fails with the evidence in the message.
+
+Run against the test cluster with temporary `[DEFECT-PROBE]` logging applied to
+the feature-server there (`debug/agent-prod-defect-logging`, working tree only,
+`git checkout -- lib` on the box to revert; the same commit is on the local
+feature-server branch of that name).
+
+**Reproduced, confirmed from both sides:**
+
+- **History not trimmed after barge-in.** Probe: `ttsVendor=deepgram
+  alignmentEnabled=false spokenTextIsNull=true willTrim=false`. Caller heard to
+  "six"; `turn_end.response` and history both ran to "thirty".
+- **Tool-call turns**, three faults, only one predicted: no flush on the tool
+  path (`preToolText='Checking that now.'`, accumulator never reset — one run
+  produced the reported concatenation verbatim, `"Checking that now.The"`); the
+  pre-tool text dropped from history (wire message
+  `{"role":"assistant","content":null,"tool_calls":[…]}`);
+  and **a `user_interruption` confirmed although `bargeIn` is disabled**
+  (`via=bargeInConfirmed bargeInEnabled=false` — the endOfTurn-while-speaking
+  path never checks whether barge-in is enabled). The third splits the turn,
+  which is why the post-tool text lands in a turn whose `turn_end` never fires.
+- **WS oversize ack.** Probe: `RangeError "Max payload size exceeded"`,
+  `WS_ERR_UNSUPPORTED_MESSAGE_LENGTH`, `maxPayload=24576`, `connections=1`,
+  `swallowed=true`, `inFlight=1`. **The socket closed 1006, not the 1009**
+  everyone assumed — a fix keyed on 1009 would not fire.
+
+**Two conclusions that contradict the internal code-review analysis:**
+
+1. The bare-terminator ("punto") symptom is NOT the barge-in token drop. With
+   BOTH send paths instrumented (the sentence-boundary one and the unguarded
+   flush one), a full count is 80 boundary chunks, zero flush chunks, zero
+   terminator-only. Four controls localise it: offline REST TTS, offline
+   per-chunk TTS, and a live call through the non-streaming `say` verb
+   (`Defect2c`) are all clean; only the agent verb's streaming path produces
+   it. It is downstream of jambonz's chunker.
+2. The token-drop window could not be hit at all. First-token to flush measured
+   250-580ms for deepseek AND gpt-4o-mini, so the response is fully generated
+   before a caller can react. Five attempts (fixed sleeps, raised maxTokens, a
+   copy-task prompt, and finally triggering the blip off the agent's own audio)
+   recorded zero discarded tokens. The code path is real; the exposure is about
+   half a second per turn unless the LLM streams slowly.
+
+**Did not reproduce:** mid-stream barge-in losing the assistant turn;
+`noResponseTimeout` with `greeting:false` (11.1.2 fix present); a bare `hangup`
+redirect (ends the call in <7s, so the operator's dead air is elsewhere);
+`agent:update` inject_context + generate_reply.
+
+Caveat kept in the file: `Defect1` flakes ~1 run in 2 when the interrupt
+utterance produces no transcript — it fails at `assert-interruption-confirmed`,
+which is a setup miss, not the defect.
+
+Not covered: `bargeIn.sticky` (a no-op with no black-box signal) and Anthropic
+prompt-cache hits (not surfaced on any hook).
+
+Found by code review while writing the probes, not covered by a test and NOT
+the reporter's issue (it needs `earlyGeneration`): `_commitPreflightResponse`
+is set at `state-machine.js:667` and cleared only at `:1048`, while
+`_confirmInterruption` resets `_currentResponseText` but not the flag. A
+barge-in on a preflight-hit turn therefore leaves it `true`, and the next
+ordinary turn appends its assistant message twice — once in `prompt()` and
+again via `addAssistantMessage`.
+
+### 2026-09-16 — custom SIP headers in `session:new` pinned by a smoke test
+
+Question answered: yes, custom SIP headers on the inbound INVITE reach the
+`session:new` payload. feature-server `lib/middleware.js` (`invokeWebCallback`)
+puts the whole INVITE under a top-level `sip` key when the call_hook method is
+POST or WS — headers live at `sip.headers`. Both requestors exclude `sip` from
+the snake_case transform, so names arrive as the SIP parser produced them
+(custom `X-` headers keep their case; standard ones are lowercased).
+
+A GET call_hook gets no `sip` object at all — that is the one way to lose them.
+
+New test `tests/verbs/sip_custom_headers_test.go`
+(`TestSessionNew_CustomSipHeaders`): UAC INVITEs `sip:app-<sid>@<realm>` with
+three custom `X-` headers, asserts each round-trips into `sip.headers`, and logs
+the decoded map. Passed first run against the live cluster.
+
 ### 2026-08-19 — permitted_marks was losing the comma; smoke test added
 
 `punctuation_overrides.permitted_marks` travelled to the media server as a

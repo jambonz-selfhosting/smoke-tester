@@ -747,6 +747,32 @@ func (c *Call) AnsweredStatus() int {
 	return 0
 }
 
+// AnswerWithoutTelephoneEvent answers an inbound call offering PCMU only, so
+// the far end sees a leg that cannot carry RFC 2833 and must fall back to
+// inband tones. Real endpoints of that kind are common (older gateways, some
+// WebRTC bridges) and they are the half of the DTMF matrix a telephone-event
+// capable UAS cannot exercise.
+func (c *Call) AnswerWithoutTelephoneEvent() error {
+	if s := c.State(); s == StateAnswered || s == StateEnded {
+		return invalidState("AnswerWithoutTelephoneEvent", s, StateInit, StateTrying, StateRinging)
+	}
+	if c.direction != Inbound {
+		return fmt.Errorf("AnswerWithoutTelephoneEvent: only valid on an inbound call")
+	}
+	if err := c.in.AnswerOptions(diago.AnswerOptions{
+		Codecs: []media.Codec{media.CodecAudioUlaw},
+	}); err != nil {
+		return fmt.Errorf("AnswerWithoutTelephoneEvent: %w", err)
+	}
+	c.setState(StateAnswered, "")
+	m := diago.MediaProps{}
+	_, _ = c.in.AudioReader(diago.WithAudioReaderMediaProps(&m))
+	c.mediaMu.Lock()
+	c.codec = m.Codec.Name
+	c.mediaMu.Unlock()
+	return nil
+}
+
 // AwaitReceivedRequest polls the recorded-received-messages slice every
 // 200ms (under the same mutex the other recording accessors use) until a
 // recorded message matches one of `methods`, or ctx is cancelled/expires.
@@ -1043,6 +1069,24 @@ func (c *Call) SendDTMFWithDuration(digits string, perTone time.Duration) error 
 	if pw == nil {
 		return fmt.Errorf("SendDTMF: no RTP packet writer")
 	}
+
+	// Stop the silence loop, exactly as SendWAV does, and only once the call is
+	// known to be sendable. Both write to the same diago RTPPacketWriter, whose
+	// WriteSamples takes only an RLock while mutating the shared packet and
+	// nextTimestamp — a concurrent silence frame lands between a digit's
+	// packets and advances the timestamp the whole event is supposed to share.
+	// On the wire that turned 16 digits into 96 single-packet events, nothing
+	// like what a real phone sends.
+	//
+	// The loop does not come back: like SendWAV, this leaves the leg quiet
+	// afterwards. Call SendSilence again if the test needs outbound RTP to keep
+	// flowing (NAT bindings are already latched by the digits themselves).
+	c.mediaMu.Lock()
+	if c.silenceCancel != nil {
+		c.silenceCancel()
+		c.silenceCancel = nil
+	}
+	c.mediaMu.Unlock()
 
 	const (
 		sampleRate   = 8000
