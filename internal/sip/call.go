@@ -138,7 +138,8 @@ func newOutboundCall(d *diago.DialogClientSession, owner string) *Call {
 
 func (c *Call) setState(s State, reason string) {
 	c.mu.Lock()
-	if s == c.state {
+	// Ended is terminal: a BYE can land while Answer() still waits for the ACK.
+	if s == c.state || c.state == StateEnded {
 		c.mu.Unlock()
 		return
 	}
