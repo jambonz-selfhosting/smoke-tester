@@ -450,6 +450,12 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-10-05 — `TestVerb_Dial_SimultaneousAnswer`: dial leaked a leg when two targets answered at once
+
+- **Symptom:** multi-target `dial`, two callees answer within milliseconds; one callee never gets a BYE, even after the caller hangs up. The SBC call count stays +1 per leak.
+- **Test:** each of 5 rounds holds both callees at a barrier after 180 and releases them together. Asserts exactly one leg is hung up within 5s, and every leg is hung up within 5s of the caller's BYE.
+- **Result:** fails in round 1 on unpatched feature-server (hoan.jambonz.io, 11.1.6); green once the feature-server fix is deployed.
+
 ### 2026-10-02 — `TestVerb_Gather_InbandDigits` failed on a race, not on detection
 
 - **Symptom:** `send-inband-tones` failed with `SendWAV write: use of closed network connection` (also listed "not yet investigated" on 2026-09-30).

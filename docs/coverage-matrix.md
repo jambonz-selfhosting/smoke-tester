@@ -94,7 +94,7 @@ Each row is: place a call that triggers the verb, assert webhook events + audio/
 | 3.2 | `play` | `call_hook`, `call_status_hook`, `actionHook` | ☑ | ☐ | fern (verbs.yaml) + local (actionHook) | Basic, loop, array-of-urls. `actionHook` payload fields deferred. |
 | 3.3 | `pause` | `call_hook` | ☑ | ☐ | local | 1s + 3s variants; duration window + RMS silence assertion. |
 | 3.4 | `gather` | `call_hook`, `actionHook` | ☑ | ☐ | local | `numDigits=4 input=[digits]` → DTMF via hand-rolled RFC 2833. |
-| 3.5 | `dial` | `call_hook`, `call_status_hook`, `dial.actionHook`, optional `dial.confirmHook`, optional `dial.dtmfHook` | ☑ | ☐ | local | Two UASes on separate ports. Callee streams reference WAV, caller records, Deepgram confirms content — proves real media bridge. |
+| 3.5 | `dial` | `call_hook`, `call_status_hook`, `dial.actionHook`, optional `dial.confirmHook`, optional `dial.dtmfHook` | ☑ | ☐ | local | Two UASes on separate ports. Callee streams reference WAV, caller records, Deepgram confirms content — proves real media bridge. `TestVerb_Dial_SimultaneousAnswer`: two targets answer in the same instant, so the loser must get a BYE and no leg may outlive the caller. |
 | 3.6 | `hangup` | `call_status_hook` | ☑ | ☐ | fern | Basic + WithHeaders asserting X-Custom-A/B on received BYE. |
 | 3.7 | `answer` | `call_hook` | ☑ | ☐ | local | `answer + pause + hangup` flow; 200 OK in call.Sent(). |
 | 3.8 | `redirect` | `actionHook` → fetched-URL returns new verbs | ☑ | ☐ | local | Second webhook fetch observed at `/action/redirect`. |
