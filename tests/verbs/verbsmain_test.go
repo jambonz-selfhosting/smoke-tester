@@ -693,10 +693,10 @@ func teardownZoomCredential() {
 }
 
 // provisionGradiumCredential creates an STT-only gradium speech credential under
-// the suite account, labelled `it-gradium-<runID>`. Called only when
+// the suite account, labelled `it-<runID>-gradium`. Called only when
 // GRADIUM_API_KEY is set.
 func provisionGradiumCredential() error {
-	gradiumLabel = "it-gradium-" + provision.RunID()
+	gradiumLabel = provision.Name("gradium")
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
 	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{

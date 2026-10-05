@@ -486,8 +486,14 @@ func TestVerb_Gather_Speech_Gradium_Spanish(t *testing.T) {
 //
 // Steps:
 //   - provision-credentials
-//   - eu: gather + assert-transcript
-//   - unreachable: gather + assert-no-transcript
+//   - script-gather-speech-gradium
+//   - place-call
+//   - answer-and-silence
+//   - wait-for-recognizer
+//   - send-wav
+//   - wait-action-gather-callback
+//   - assert-transcript
+//   - assert-no-transcript-unreachable
 func TestVerb_Gather_Speech_Gradium_RegionCredential(t *testing.T) {
 	if !cfg.HasGradium() || gradiumLabel == "" {
 		t.Log("GRADIUM_API_KEY not set — passing without exercising gradium STT")
@@ -500,7 +506,7 @@ func TestVerb_Gather_Speech_Gradium_RegionCredential(t *testing.T) {
 		"eu":          "https://eu.api.gradium.ai",
 		"unreachable": "https://unreachable.invalid",
 	} {
-		label := "it-gradium-" + name + "-" + provision.RunID()
+		label := provision.Name("gradium-" + name)
 		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 		sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
 			Vendor: "gradium", Label: label, APIKey: cfg.GradiumAPIKey, UseForSTT: true, APIURI: uri,
@@ -522,9 +528,12 @@ func TestVerb_Gather_Speech_Gradium_RegionCredential(t *testing.T) {
 	eu := gradiumGather(t, map[string]any{"vendor": "gradium", "label": labels["eu"], "language": "en-US"}, wav)
 	assertHits(t, eu, 1, "sun", "shining")
 
-	if bad := gradiumGather(t, map[string]any{
+	bad := gradiumGather(t, map[string]any{
 		"vendor": "gradium", "label": labels["unreachable"], "language": "en-US",
-	}, wav); bad != "" {
-		t.Errorf("unreachable api_uri still transcribed %q: api_uri is not reaching the STT connection", bad)
+	}, wav)
+	s = Step(t, "assert-no-transcript-unreachable")
+	if bad != "" {
+		s.Errorf("unreachable api_uri still transcribed %q: api_uri is not reaching the STT connection", bad)
 	}
+	s.Done()
 }
