@@ -1,4 +1,7 @@
 // gather / transcribe / agent with STT vendor "gradium"; pass without exercising gradium when GRADIUM_API_KEY is unset.
+//
+// Not parallel: a Gradium account caps concurrent sessions (3 on the test key),
+// and a refused session fails the verb with "Concurrency limit exceeded".
 package verbs
 
 import (
@@ -33,7 +36,6 @@ func TestVerb_Gather_Speech_Gradium(t *testing.T) {
 		return
 	}
 
-	t.Parallel()
 	requireWebhook(t)
 	ctx := WithTimeout(t, 90*time.Second)
 	uas := claimUAS(t, ctx)
@@ -147,7 +149,6 @@ func TestVerb_Transcribe_Gradium(t *testing.T) {
 		return
 	}
 
-	t.Parallel()
 	requireWebhook(t)
 	ctx := WithTimeout(t, 90*time.Second)
 	uas := claimUAS(t, ctx)
@@ -262,7 +263,6 @@ func TestVerb_Agent_Echo_Gradium(t *testing.T) {
 		t.Log("GRADIUM_API_KEY not set — passing without exercising gradium STT")
 		return
 	}
-	t.Parallel()
 	requireWebhook(t)
 
 	s := Step(t, "preflight-skips")
@@ -360,7 +360,8 @@ func gradiumGather(t *testing.T, recognizer map[string]any, wavPath string) stri
 			"timeout", 15,
 			"actionHook", actionURL,
 			"recognizer", recognizer),
-		V("hangup"),
+		// keep the call up while a long clip is still streaming; the test hangs up
+		V("pause", "length", 20),
 	}))
 	SessionAckEmpty(sess, "gather")
 	s.Done()
@@ -438,7 +439,6 @@ func TestVerb_Gather_Speech_Gradium_Options(t *testing.T) {
 		t.Log("GRADIUM_API_KEY not set — passing without exercising gradium STT")
 		return
 	}
-	t.Parallel()
 	transcript := gradiumGather(t, map[string]any{
 		"vendor":   "gradium",
 		"label":    gradiumLabel,
@@ -472,7 +472,6 @@ func TestVerb_Gather_Speech_Gradium_Spanish(t *testing.T) {
 		t.Log("GRADIUM_API_KEY not set — passing without exercising gradium STT")
 		return
 	}
-	t.Parallel()
 	transcript := gradiumGather(t, map[string]any{
 		"vendor":   "gradium",
 		"label":    gradiumLabel,
@@ -494,7 +493,6 @@ func TestVerb_Gather_Speech_Gradium_RegionCredential(t *testing.T) {
 		t.Log("GRADIUM_API_KEY not set — passing without exercising gradium STT")
 		return
 	}
-	t.Parallel()
 
 	s := Step(t, "provision-credentials")
 	labels := map[string]string{}
