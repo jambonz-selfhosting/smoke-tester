@@ -109,6 +109,11 @@ var (
 	// zoom STT-only speech credential, provisioned only when ZOOM_API_KEY is set.
 	zoomLabel string
 	zoomSID   string
+
+	// gradium STT-only speech credential, provisioned only when GRADIUM_API_KEY is set.
+	gradiumLabel string
+	gradiumSID   string
+
 	// Default xai TTS voice.
 	xaiVoice    = "eve"
 	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
@@ -300,6 +305,15 @@ func TestMain(m *testing.M) {
 	} else {
 		log.Printf("tests/verbs: ZOOM_API_KEY not set — zoom STT tests will pass without exercising zoom")
 	}
+	// 3c''. gradium STT speech credential — optional, same pattern as zoom.
+	if cfg.HasGradium() {
+		if err := provisionGradiumCredential(); err != nil {
+			log.Fatalf("tests/verbs: gradium credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: gradium credential label=%s sid=%s", gradiumLabel, gradiumSID)
+	} else {
+		log.Printf("tests/verbs: GRADIUM_API_KEY not set — gradium STT tests will pass without exercising gradium")
+	}
 
 	// 3d. speechmatics STT speech credential — optional. Only provisioned
 	// when SPEECHMATICS_API_KEY is set; otherwise the speechmatics gather/
@@ -378,6 +392,7 @@ func TestMain(m *testing.M) {
 	teardownSpeechifyCredential()
 	teardownXaiCredential()
 	teardownZoomCredential()
+	teardownGradiumCredential()
 	teardownSpeechmaticsCredential()
 	teardownSpeechmaticsAgentCredential()
 	teardownOpenaiCredential()
@@ -674,6 +689,37 @@ func teardownZoomCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, zoomSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete zoom credential %s: %v", zoomSID, err)
+	}
+}
+
+// provisionGradiumCredential creates an STT-only gradium speech credential under
+// the suite account, labelled `it-gradium-<runID>`. Called only when
+// GRADIUM_API_KEY is set.
+func provisionGradiumCredential() error {
+	gradiumLabel = "it-gradium-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "gradium",
+		Label:     gradiumLabel,
+		APIKey:    cfg.GradiumAPIKey,
+		UseForSTT: true,
+	})
+	if err != nil {
+		return err
+	}
+	gradiumSID = sid
+	return nil
+}
+
+func teardownGradiumCredential() {
+	if gradiumSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, gradiumSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete gradium credential %s: %v", gradiumSID, err)
 	}
 }
 

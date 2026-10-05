@@ -99,6 +99,11 @@ type Settings struct {
 	// tests exercise it; unset, they pass without exercising zoom — see HasZoom.
 	ZoomAPIKey string
 
+	// Optional — Gradium API key (streaming STT). When set, TestMain provisions
+	// a gradium SpeechCredential and the gradium gather/transcribe/agent tests
+	// exercise it; unset, they pass without exercising gradium — see HasGradium.
+	GradiumAPIKey string
+
 	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the gemini
 	// live transcription models, which authenticate as a service account on
 	// Vertex AI. Needs roles/aiplatform.user, which the dialogflow key does not
@@ -253,6 +258,10 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // Optional: when the key is unset those tests pass without exercising zoom.
 func (s *Settings) HasZoom() bool { return s.ZoomAPIKey != "" }
 
+// HasGradium reports whether the gradium STT gather/transcribe tests can run.
+// Optional: when the key is unset those tests pass without exercising gradium.
+func (s *Settings) HasGradium() bool { return s.GradiumAPIKey != "" }
+
 // HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
 // can run. Optional: when the key is unset those tests pass without
 // exercising gemini.
@@ -368,6 +377,7 @@ func parse() (*Settings, error) {
 		SpeechifyAPIKey:          os.Getenv("SPEECHIFY_API_KEY"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
 		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
+		GradiumAPIKey:            os.Getenv("GRADIUM_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
 		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
 		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
