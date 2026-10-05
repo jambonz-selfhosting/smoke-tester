@@ -9,6 +9,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jambonz-selfhosting/smoke-tester/internal/provision"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
@@ -340,4 +341,192 @@ func TestVerb_Agent_Echo_Gradium(t *testing.T) {
 	}
 
 	HangupAndWaitEnded(t, ctx, call)
+}
+
+// gradiumGather runs one gather on gradium with recognizer, plays wavPath, and
+// returns the recognized transcript ("" when the action has none).
+func gradiumGather(t *testing.T, recognizer map[string]any, wavPath string) string {
+	t.Helper()
+	requireWebhook(t)
+	ctx := WithTimeout(t, 90*time.Second)
+	uas := claimUAS(t, ctx)
+	_, sess := claimSession(t)
+
+	s := Step(t, "script-gather-speech-gradium")
+	actionURL := SessionURL(sess, "gather")
+	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
+		V("gather",
+			"input", []any{"speech"},
+			"timeout", 15,
+			"actionHook", actionURL,
+			"recognizer", recognizer),
+		V("hangup"),
+	}))
+	SessionAckEmpty(sess, "gather")
+	s.Done()
+
+	s = Step(t, "place-call")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(60))
+	s.Done()
+
+	s = Step(t, "answer-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	WaitFor(t, "wait-for-recognizer", RecognizerArmDelayLong)
+
+	s = Step(t, "send-wav")
+	if err := call.SendWAV(wavPath); err != nil {
+		s.Fatalf("SendWAV(%s): %v", wavPath, err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence (post): %v", err)
+	}
+	s.Done()
+
+	s = Step(t, "wait-action-gather-callback")
+	waitCtx, wcancel := context.WithTimeout(ctx, 45*time.Second)
+	defer wcancel()
+	cb, err := sess.WaitCallbackFor(waitCtx, "action/gather")
+	if err != nil {
+		s.Fatalf("WaitCallbackFor action/gather: %v", err)
+	}
+	s.Logf("action/gather body: %s", string(cb.Body))
+	s.Done()
+
+	_ = call.Hangup()
+	return extractTranscript(cb)
+}
+
+// assertHits fails unless transcript holds at least min of words (case-insensitive).
+func assertHits(t *testing.T, transcript string, min int, words ...string) {
+	t.Helper()
+	s := Step(t, "assert-transcript")
+	normalized := strings.ToLower(transcript)
+	hits := 0
+	for _, w := range words {
+		if strings.Contains(normalized, w) {
+			hits++
+		}
+	}
+	s.Logf("recognized: %q (%d/%d of %v)", transcript, hits, len(words), words)
+	if hits < min {
+		s.Errorf("transcript %q matched %d of %v; want >= %d", transcript, hits, words, min)
+	}
+	s.Done()
+}
+
+// TestVerb_Gather_Speech_Gradium_Options — every gradiumOptions field reaches
+// Gradium and still yields the phrase: keywords + boost, delayInFrames, temp,
+// paddingBonus, turn_detection, and the EU host via gradiumSttUri.
+//
+// Steps:
+//   - script-gather-speech-gradium
+//   - place-call
+//   - answer-and-silence
+//   - wait-for-recognizer
+//   - send-wav
+//   - wait-action-gather-callback
+//   - assert-transcript
+func TestVerb_Gather_Speech_Gradium_Options(t *testing.T) {
+	if !cfg.HasGradium() || gradiumLabel == "" {
+		t.Log("GRADIUM_API_KEY not set — passing without exercising gradium STT")
+		return
+	}
+	t.Parallel()
+	transcript := gradiumGather(t, map[string]any{
+		"vendor":   "gradium",
+		"label":    gradiumLabel,
+		"language": "en-US",
+		"gradiumOptions": map[string]any{
+			"keywords":       []string{"sun", "shining"},
+			"keywordBoost":   3,
+			"delayInFrames":  16,
+			"temp":           0,
+			"paddingBonus":   -1,
+			"turn_detection": map[string]any{"threshold": 0.6, "horizon": 2},
+			"gradiumSttUri":  "eu.api.gradium.ai",
+		},
+	}, resolveFixture(t, speechWAV))
+	assertHits(t, transcript, 1, "sun", "shining")
+}
+
+// TestVerb_Gather_Speech_Gradium_Spanish — es-ES maps to Gradium's "es";
+// gather returns the clip's first sentence, "una mesa para hoy, por favor".
+//
+// Steps:
+//   - script-gather-speech-gradium
+//   - place-call
+//   - answer-and-silence
+//   - wait-for-recognizer
+//   - send-wav
+//   - wait-action-gather-callback
+//   - assert-transcript
+func TestVerb_Gather_Speech_Gradium_Spanish(t *testing.T) {
+	if !cfg.HasGradium() || gradiumLabel == "" {
+		t.Log("GRADIUM_API_KEY not set — passing without exercising gradium STT")
+		return
+	}
+	t.Parallel()
+	transcript := gradiumGather(t, map[string]any{
+		"vendor":   "gradium",
+		"label":    gradiumLabel,
+		"language": "es-ES",
+	}, resolveFixture(t, spanishWAV))
+	assertHits(t, transcript, 2, "mesa", "hoy", "favor")
+}
+
+// TestVerb_Gather_Speech_Gradium_RegionCredential — the credential's api_uri
+// selects the STT host: the EU host transcribes, an unreachable one does not
+// (so the field is really used, not ignored).
+//
+// Steps:
+//   - provision-credentials
+//   - eu: gather + assert-transcript
+//   - unreachable: gather + assert-no-transcript
+func TestVerb_Gather_Speech_Gradium_RegionCredential(t *testing.T) {
+	if !cfg.HasGradium() || gradiumLabel == "" {
+		t.Log("GRADIUM_API_KEY not set — passing without exercising gradium STT")
+		return
+	}
+	t.Parallel()
+
+	s := Step(t, "provision-credentials")
+	labels := map[string]string{}
+	for name, uri := range map[string]string{
+		"eu":          "https://eu.api.gradium.ai",
+		"unreachable": "https://unreachable.invalid",
+	} {
+		label := "it-gradium-" + name + "-" + provision.RunID()
+		ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+		sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+			Vendor: "gradium", Label: label, APIKey: cfg.GradiumAPIKey, UseForSTT: true, APIURI: uri,
+		})
+		cancel()
+		if err != nil {
+			s.Fatalf("create %s credential: %v", name, err)
+		}
+		t.Cleanup(func() {
+			ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+			defer cancel()
+			_ = client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, sid)
+		})
+		labels[name] = label
+	}
+	s.Done()
+
+	wav := resolveFixture(t, speechWAV)
+	eu := gradiumGather(t, map[string]any{"vendor": "gradium", "label": labels["eu"], "language": "en-US"}, wav)
+	assertHits(t, eu, 1, "sun", "shining")
+
+	if bad := gradiumGather(t, map[string]any{
+		"vendor": "gradium", "label": labels["unreachable"], "language": "en-US",
+	}, wav); bad != "" {
+		t.Errorf("unreachable api_uri still transcribed %q: api_uri is not reaching the STT connection", bad)
+	}
 }
