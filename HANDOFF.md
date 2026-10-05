@@ -450,6 +450,13 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-10-05 — KugelAudio Clarity (clarity-1) noise isolation
+
+- **Feature:** noiseIsolation vendor `kugelaudio` (Clarity cloud speech enhancement, not TTS/STT). Branch `feat/kugelaudio_clarity` in mediajam (vendor), mrf (channel vars on `noise.start`), feature-server (credential lookup), schema (enum + `label`), smoke-tester (`tests/verbs/kugelaudio_clarity_test.go`). Uses the account's kugelaudio TTS credential.
+- **Tests:** `TestVerb_NoiseIsolation_Kugelaudio_Listen` (listen-fork A/B vs a control call) and `TestVerb_Agent_NoiseIsolation_Kugelaudio` (shorthand + labelled-credential fallback, background `config.listen` fork). The noise check counts frames above half the noise RMS; energy ratios can't separate denoising from a gain drop. All 14 `NoiseIsolation|Kugelaudio` tests green on hoan.jambonz.io.
+- **Release order:** schema must publish (agent enum + `label`) and mrf must release before feature-server bumps both; until then the agent verb rejects `"kugelaudio"`. The box carries hand-copied `node_modules` files.
+- **Free plan:** two concurrent Clarity streams, exactly what these tests open at peak.
+
 ### 2026-10-05 — `TestVerb_Dial_SimultaneousAnswer`: dial leaked a leg when two targets answered at once
 
 - **Symptom:** multi-target `dial`, two callees answer within milliseconds; one callee never gets a BYE, even after the caller hangs up. The SBC call count stays +1 per leak.
