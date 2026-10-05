@@ -105,6 +105,11 @@ func runSimultaneousAnswerRound(t *testing.T, ctx context.Context, callerUAS *UA
 					return
 				}
 				if err := c.Answer(); err != nil {
+					// The loser's BYE can land on the heels of the ACK; diago then reports no ACK.
+					if byeWithin(c, 2*time.Second) {
+						_ = c.Hangup()
+						return
+					}
 					GoroutineFailf(t, "callee:answer", "%s Answer: %v", uas.Username, err)
 					return
 				}
@@ -184,6 +189,17 @@ func waitLegsEnded(ctx context.Context, legs []*jsip.Call, want int, within time
 		}
 		time.Sleep(100 * time.Millisecond)
 	}
+}
+
+func byeWithin(c *jsip.Call, within time.Duration) bool {
+	deadline := time.Now().Add(within)
+	for time.Now().Before(deadline) {
+		if len(c.ReceivedByMethod("BYE")) > 0 {
+			return true
+		}
+		time.Sleep(50 * time.Millisecond)
+	}
+	return false
 }
 
 func legsUp(legs []*jsip.Call) string {
