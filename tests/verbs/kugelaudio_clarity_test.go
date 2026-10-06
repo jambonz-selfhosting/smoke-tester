@@ -44,8 +44,8 @@ func requireKugelaudioNoise(t *testing.T) {
 }
 
 // TestVerb_NoiseIsolation_Kugelaudio_Listen — the same noisy prompt (speech
-// over white noise, with a noise-only lead and tail) is sent on two concurrent
-// calls that fork their inbound audio with `listen`: a control call, and one
+// over white noise, with a noise-only lead and tail) is sent on two calls, one
+// after the other, that fork their inbound audio with `listen`: a control call, and one
 // with config.noiseIsolation vendor=kugelaudio and the noise isolation
 // credential's label. Noise isolation runs ahead of the fork, so in the
 // filtered fork the noise-only lead must go quiet while the speech stays
@@ -53,14 +53,14 @@ func requireKugelaudioNoise(t *testing.T) {
 //
 // Steps:
 //  1. build-noisy-prompt
-//  2. control:fork-noisy-prompt (subtest legs/control)
-//  3. clarity:fork-noisy-prompt (subtest legs/clarity)
+//  2. control:fork-noisy-prompt
+//  3. clarity:fork-noisy-prompt
 //  4. assert-noise-removed
 //  5. assert-speech-kept
 func TestVerb_NoiseIsolation_Kugelaudio_Listen(t *testing.T) {
 	requireKugelaudioNoise(t)
 	t.Parallel()
-	ctx := WithTimeout(t, 120*time.Second)
+	ctx := WithTimeout(t, 150*time.Second)
 
 	s := Step(t, "build-noisy-prompt")
 	noisy := filepath.Join(t.TempDir(), "noisy-prompt.wav")
@@ -70,22 +70,12 @@ func TestVerb_NoiseIsolation_Kugelaudio_Listen(t *testing.T) {
 	}
 	s.Done()
 
-	var control, filtered forkResult
-	t.Run("legs", func(t *testing.T) {
-		t.Run("control", func(t *testing.T) {
-			t.Parallel()
-			control = forkNoisyPrompt(t, ctx, "control", noisy, nil)
-		})
-		t.Run("clarity", func(t *testing.T) {
-			t.Parallel()
-			filtered = forkNoisyPrompt(t, ctx, "clarity", noisy, map[string]any{
-				"enable": true, "vendor": "kugelaudio", "label": kugelaudioNoiseLabel,
-			})
-		})
+	// sequential on purpose: parallel subtests queue for a -parallel slot,
+	// which in a full run can outlast this test's budget
+	control := forkNoisyPrompt(t, ctx, "control", noisy, nil)
+	filtered := forkNoisyPrompt(t, ctx, "clarity", noisy, map[string]any{
+		"enable": true, "vendor": "kugelaudio", "label": kugelaudioNoiseLabel,
 	})
-	if t.Failed() {
-		return
-	}
 
 	s = Step(t, "assert-noise-removed")
 	cShare := leadLoudShare(s, "control", control.msgs, control.sent, np)
@@ -235,7 +225,10 @@ func forkNoisyPrompt(t *testing.T, ctx context.Context, leg, wavPath string, noi
 	t.Helper()
 	s := Step(t, leg+":fork-noisy-prompt")
 	uas := claimUAS(t, ctx)
-	testID, sess := claimSession(t)
+	// one test may run several legs; each needs its own session and WS
+	testID := t.Name() + "/" + leg
+	sess := webhookReg.New(testID)
+	t.Cleanup(func() { webhookReg.Release(testID) })
 	collected := collectWSInBackground(ctx, sess)
 
 	script := webhook.Script{}
