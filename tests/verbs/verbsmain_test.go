@@ -92,9 +92,11 @@ var (
 	// KugelAudio TTS credential, provisioned IF KUGELAUDIO_API_KEY is set.
 	kugelaudioLabel string
 	kugelaudioSID   string
-	// Same key, enabled for noise isolation (Clarity) only.
-	kugelaudioNoiseLabel string
-	kugelaudioNoiseSID   string
+	// Same key, enabled for noise isolation (Clarity) only: labelled, and
+	// unlabelled for the default lookup.
+	kugelaudioNoiseLabel      string
+	kugelaudioNoiseSID        string
+	kugelaudioDefaultNoiseSID string
 	// Samantha Ferris (en-US); KugelAudio voice ids are numeric.
 	kugelaudioVoice = "1071"
 
@@ -543,49 +545,50 @@ func teardownElevenlabsCredential() {
 	}
 }
 
-// provisionKugelaudioCredential creates a TTS-only KugelAudio credential,
-// labelled `it-kugelaudio-<runID>`, on the kugel-3 model, and a noise
-// isolation-only one, `it-kugelaudio-ni-<runID>`, with the same key.
-func provisionKugelaudioCredential() error {
-	kugelaudioLabel = "it-kugelaudio-" + provision.RunID()
+// provisionKugelaudioCredential creates, all with the same key: a TTS-only
+// credential labelled `it-kugelaudio-<runID>` on kugel-3, a noise isolation-only
+// one labelled `it-<runID>-kugelaudio-ni`, and an unlabelled noise isolation-only
+// one for the default lookup. A failed create removes the ones already made.
+func provisionKugelaudioCredential() (err error) {
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
-		Vendor:    "kugelaudio",
-		Label:     kugelaudioLabel,
-		APIKey:    cfg.KugelaudioAPIKey,
-		ModelID:   "kugel-3",
-		UseForTTS: true,
-	})
-	if err != nil {
+	defer func() {
+		if err != nil {
+			teardownKugelaudioCredential()
+		}
+	}()
+	create := func(sid *string, c provision.SpeechCredentialCreate) error {
+		c.Vendor, c.APIKey = "kugelaudio", cfg.KugelaudioAPIKey
+		var err error
+		*sid, err = client.CreateAccountSpeechCredential(ctx, suite.AccountSID, c)
 		return err
 	}
-	kugelaudioSID = sid
-
-	kugelaudioNoiseLabel = "it-kugelaudio-ni-" + provision.RunID()
-	sid, err = client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
-		Vendor:               "kugelaudio",
-		Label:                kugelaudioNoiseLabel,
-		APIKey:               cfg.KugelaudioAPIKey,
-		UseForNoiseIsolation: true,
-	})
-	if err != nil {
+	kugelaudioLabel = "it-kugelaudio-" + provision.RunID()
+	if err = create(&kugelaudioSID, provision.SpeechCredentialCreate{
+		Label: kugelaudioLabel, ModelID: "kugel-3", UseForTTS: true,
+	}); err != nil {
 		return err
 	}
-	kugelaudioNoiseSID = sid
-	return nil
+	kugelaudioNoiseLabel = provision.Name("kugelaudio-ni")
+	if err = create(&kugelaudioNoiseSID, provision.SpeechCredentialCreate{
+		Label: kugelaudioNoiseLabel, UseForNoiseIsolation: true,
+	}); err != nil {
+		return err
+	}
+	return create(&kugelaudioDefaultNoiseSID, provision.SpeechCredentialCreate{UseForNoiseIsolation: true})
 }
 
 func teardownKugelaudioCredential() {
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	for _, sid := range []string{kugelaudioSID, kugelaudioNoiseSID} {
-		if sid == "" {
+	for _, sid := range []*string{&kugelaudioSID, &kugelaudioNoiseSID, &kugelaudioDefaultNoiseSID} {
+		if *sid == "" {
 			continue
 		}
-		if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, sid); err != nil {
-			log.Printf("tests/verbs: cleanup: delete KugelAudio credential %s: %v", sid, err)
+		if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, *sid); err != nil {
+			log.Printf("tests/verbs: cleanup: delete KugelAudio credential %s: %v", *sid, err)
 		}
+		*sid = ""
 	}
 }
 
