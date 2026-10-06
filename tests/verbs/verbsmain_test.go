@@ -92,6 +92,9 @@ var (
 	// KugelAudio TTS credential, provisioned IF KUGELAUDIO_API_KEY is set.
 	kugelaudioLabel string
 	kugelaudioSID   string
+	// Same key, enabled for noise isolation (Clarity) only.
+	kugelaudioNoiseLabel string
+	kugelaudioNoiseSID   string
 	// Samantha Ferris (en-US); KugelAudio voice ids are numeric.
 	kugelaudioVoice = "1071"
 
@@ -269,7 +272,8 @@ func TestMain(m *testing.M) {
 		if err := provisionKugelaudioCredential(); err != nil {
 			log.Fatalf("tests/verbs: KugelAudio credential provisioning failed: %v", err)
 		}
-		log.Printf("tests/verbs: KugelAudio credential label=%s sid=%s", kugelaudioLabel, kugelaudioSID)
+		log.Printf("tests/verbs: KugelAudio credentials label=%s sid=%s, noise isolation label=%s sid=%s",
+			kugelaudioLabel, kugelaudioSID, kugelaudioNoiseLabel, kugelaudioNoiseSID)
 	} else {
 		log.Printf("tests/verbs: KUGELAUDIO_API_KEY not set — KugelAudio tests will skip")
 	}
@@ -540,7 +544,8 @@ func teardownElevenlabsCredential() {
 }
 
 // provisionKugelaudioCredential creates a TTS-only KugelAudio credential,
-// labelled `it-kugelaudio-<runID>`, on the kugel-3 model.
+// labelled `it-kugelaudio-<runID>`, on the kugel-3 model, and a noise
+// isolation-only one, `it-kugelaudio-ni-<runID>`, with the same key.
 func provisionKugelaudioCredential() error {
 	kugelaudioLabel = "it-kugelaudio-" + provision.RunID()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -556,17 +561,31 @@ func provisionKugelaudioCredential() error {
 		return err
 	}
 	kugelaudioSID = sid
+
+	kugelaudioNoiseLabel = "it-kugelaudio-ni-" + provision.RunID()
+	sid, err = client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:               "kugelaudio",
+		Label:                kugelaudioNoiseLabel,
+		APIKey:               cfg.KugelaudioAPIKey,
+		UseForNoiseIsolation: true,
+	})
+	if err != nil {
+		return err
+	}
+	kugelaudioNoiseSID = sid
 	return nil
 }
 
 func teardownKugelaudioCredential() {
-	if kugelaudioSID == "" {
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, kugelaudioSID); err != nil {
-		log.Printf("tests/verbs: cleanup: delete KugelAudio credential %s: %v", kugelaudioSID, err)
+	for _, sid := range []string{kugelaudioSID, kugelaudioNoiseSID} {
+		if sid == "" {
+			continue
+		}
+		if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, sid); err != nil {
+			log.Printf("tests/verbs: cleanup: delete KugelAudio credential %s: %v", sid, err)
+		}
 	}
 }
 

@@ -1,9 +1,10 @@
 // KugelAudio Clarity (clarity-1) noise isolation: vendor "kugelaudio" on the
-// noiseIsolation config/agent option. The key comes from the account's
-// kugelaudio speech credential. All tests skip without KUGELAUDIO_API_KEY.
+// noiseIsolation config/agent option. The key comes inline (auth) or from a
+// kugelaudio speech credential with use_for_noise_isolation. All tests skip
+// without KUGELAUDIO_API_KEY.
 //
 // The free plan allows two concurrent Clarity streams, which is exactly what
-// this file opens at peak (one per test).
+// this file opens at peak (the TTS-only test opens none).
 package verbs
 
 import (
@@ -33,7 +34,7 @@ const (
 // TestVerb_NoiseIsolation_Kugelaudio_Listen — the same noisy prompt (speech
 // over white noise, with noise-only lead and tail) is sent on two calls that
 // fork their inbound audio with `listen`: a control call, and one with
-// config.noiseIsolation vendor=kugelaudio and the credential's label. Noise
+// config.noiseIsolation vendor=kugelaudio and the noise isolation credential's label. Noise
 // isolation runs ahead of the fork, so the noise-only stretches must go quiet
 // in the filtered fork while the speech in it stays intelligible.
 //
@@ -60,7 +61,7 @@ func TestVerb_NoiseIsolation_Kugelaudio_Listen(t *testing.T) {
 
 	control := forkNoisyPrompt(t, ctx, "control", noisy, nil)
 	filtered := forkNoisyPrompt(t, ctx, "clarity", noisy, map[string]any{
-		"enable": true, "vendor": "kugelaudio", "label": kugelaudioLabel,
+		"enable": true, "vendor": "kugelaudio", "label": kugelaudioNoiseLabel,
 	})
 
 	s = Step(t, "assert-noise-removed")
@@ -86,6 +87,41 @@ func TestVerb_NoiseIsolation_Kugelaudio_Listen(t *testing.T) {
 		s.Fatalf("write fork audio: %v", err)
 	}
 	AssertTranscriptHasMost(s, ctx, pcmPath, krispMinKeywordHits, krispEchoKeywords...)
+	s.Done()
+}
+
+// TestVerb_NoiseIsolation_Kugelaudio_TtsOnlyCredentialIgnored — noise isolation
+// pointed at the TTS-only kugelaudio credential must not start: the same key,
+// but without use_for_noise_isolation. The forked caller audio keeps its noise.
+//
+// Steps:
+//  1. build-noisy-prompt
+//  2. tts-only:fork-noisy-prompt
+//  3. assert-noise-kept
+func TestVerb_NoiseIsolation_Kugelaudio_TtsOnlyCredentialIgnored(t *testing.T) {
+	requireKugelaudio(t)
+	requireWebhook(t)
+	t.Parallel()
+	ctx := WithTimeout(t, 90*time.Second)
+
+	s := Step(t, "build-noisy-prompt")
+	noisy := filepath.Join(t.TempDir(), "noisy-prompt.wav")
+	np, err := writeNoisyWAV(krispEnsurePromptWAV(ctx, s), noisy)
+	if err != nil {
+		s.Fatalf("noisy prompt: %v", err)
+	}
+	s.Done()
+
+	fork := forkNoisyPrompt(t, ctx, "tts-only", noisy, map[string]any{
+		"enable": true, "vendor": "kugelaudio", "label": kugelaudioLabel,
+	})
+
+	s = Step(t, "assert-noise-kept")
+	loud := loudFrames(fork, np.noiseRMS*loudFraction)
+	s.Logf("loud frames: sent %d, fork %d", np.frames, loud)
+	if loud < np.frames*9/10 {
+		s.Errorf("fork has only %d of %d loud frames: noise isolation ran on a TTS-only credential", loud, np.frames)
+	}
 	s.Done()
 }
 
@@ -157,9 +193,9 @@ func sendAndHangup(s *StepCtx, call *jsip.Call, wav string) {
 	_ = call.Hangup()
 }
 
-// TestVerb_Agent_NoiseIsolation_Kugelaudio — an agent with the shorthand
-// noiseIsolation:"kugelaudio" (no label, so jambonz must find the suite's
-// labelled credential) understands a prompt spoken over loud white noise and
+// TestVerb_Agent_NoiseIsolation_Kugelaudio — an agent with
+// noiseIsolation {mode:"kugelaudio", auth:{apiKey}} (inline key, no stored
+// credential) understands a prompt spoken over loud white noise and
 // echoes the four words back. A background `listen` fork of the caller audio
 // proves isolation actually ran: the noise-only stretches must go quiet in it.
 //
@@ -206,7 +242,9 @@ func TestVerb_Agent_NoiseIsolation_Kugelaudio(t *testing.T) {
 			"enable": true, "url": wssURL(webhookSrv.PublicURL(), "/ws/"+testID),
 			"mixType": "mono", "sampleRate": 8000,
 		}),
-		krispAgentVerb(sess, agentVerbOpts{}, map[string]any{"noiseIsolation": "kugelaudio"}),
+		krispAgentVerb(sess, agentVerbOpts{}, map[string]any{"noiseIsolation": map[string]any{
+			"mode": "kugelaudio", "auth": map[string]any{"apiKey": cfg.KugelaudioAPIKey},
+		}}),
 		V("hangup"),
 	}))
 	SessionAckEmpty(sess, "agent-complete", "agent-turn")
