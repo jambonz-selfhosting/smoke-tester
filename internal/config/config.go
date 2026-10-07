@@ -113,9 +113,8 @@ type Settings struct {
 	// Optional — Gemini Developer API key ("AIza..."), for the google s2s
 	// (Gemini Live) tests. NOT interchangeable with GeminiServiceKey: Google
 	// refuses service accounts on the Developer API ("Access to Gemini API is
-	// restricted with service accounts"), and the Live s2s models it serves —
-	// gemini-3.8-live and -extended-thinking — are not published on Vertex AI,
-	// where the service account would otherwise work. Hence a separate key.
+	// restricted with service accounts"), and Vertex refuses API keys. Hence a
+	// separate key; the Vertex s2s test uses GeminiServiceKey instead.
 	GeminiAPIKey string
 
 	// Optional — OpenAI GPT-Live API key, kept separate from OpenAIAPIKey so

@@ -1,16 +1,17 @@
 // Tests for the `llm` verb with LLM vendor "google" (Gemini Live, realtime
 // S2S) — app-declared tool/function calling end-to-end against Gemini 3.8
-// Live Extended Thinking.
+// Live, once per Google platform:
+//   - TestVerb_LLM_Google_ToolHook: Gemini Developer API (AI Studio), with a
+//     GEMINI_API_KEY ("AIza...") sent as ?key=, against the Extended Thinking
+//     variant.
+//   - TestVerb_LLM_Google_Vertex_ToolHook: Vertex AI, with an OAuth token
+//     minted from the GEMINI_KEYFILE service account (Vertex refuses API keys)
+//     and an app-supplied connectOptions host/path, since the verb's default
+//     endpoint is the Developer API.
 //
-// google is an OPTIONAL vendor (see config.HasGeminiS2S). When GEMINI_API_KEY
-// is unset the test passes immediately without exercising Gemini Live — a
-// plain `return` after a log, never t.Skip, never a failure, matching
-// xai_llm_s2s_test.go.
-//
-// The credential is a Gemini Developer API key ("AIza..."), NOT the service
-// account in GEMINI_KEYFILE: Google refuses service accounts on the Developer
-// API, and the 3.8 Live models are not published on Vertex AI where the
-// service account would work.
+// Both are OPTIONAL: with their credential unset they pass immediately without
+// exercising Gemini Live — a plain `return` after a log, never t.Skip, never a
+// failure, matching xai_llm_s2s_test.go.
 //
 // Gemini speaks its own BidiGenerateContent dialect, so the envelopes differ
 // from the OpenAI-Realtime vendors (xai/gptlive/voicelive):
@@ -51,10 +52,13 @@ package verbs
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
+
+	"golang.org/x/oauth2/google"
 
 	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
@@ -81,21 +85,136 @@ func TestVerb_LLM_Google_ToolHook(t *testing.T) {
 		t.Log("GEMINI_API_KEY not set — passing without exercising Gemini Live S2S tool calling")
 		return
 	}
-
-	// Deepgram is only needed for prompt-WAV generation + independent STT of
-	// the recorded reply — not for the Gemini session itself.
-	s := Step(t, "preflight-skips")
-	if !cfg.HasDeepgram() || deepgramLabel == "" {
-		s.Done()
-		t.Log("Deepgram not available — passing without exercising Gemini Live S2S tool calling")
+	if !geminiLiveDeepgramReady(t) {
 		return
+	}
+
+	ctx := WithTimeout(t, 180*time.Second)
+	runGeminiLiveToolHook(t, ctx, geminiLiveTarget{
+		model: geminiLiveModel,
+		auth:  map[string]any{"apiKey": cfg.GeminiAPIKey},
+		// Background reasoning. MINIMAL is not supported by this model; LOW
+		// keeps the turn latency test-friendly.
+		generationConfig: map[string]any{
+			"thinkingConfig": map[string]any{"thinkingLevel": "LOW"},
+		},
+	})
+}
+
+// Vertex AI target for the Gemini Live s2s test. Multi-region locations
+// (us, eu) need the aiplatform.<loc>.rep.googleapis.com host instead.
+const (
+	vertexLiveLocation = "us-central1"
+	vertexLiveHost     = "us-central1-aiplatform.googleapis.com"
+	vertexLivePath     = "/ws/google.cloud.aiplatform.v1.LlmBidiService/BidiGenerateContent"
+	// Plain 3.8 Live: it rejects thinkingConfig with close 1007.
+	vertexLiveModel = "gemini-3.8-live"
+)
+
+// TestVerb_LLM_Google_Vertex_ToolHook is TestVerb_LLM_Google_ToolHook over
+// Vertex AI: Bearer token auth, a regional host and the full publisher model
+// path. Everything after the session opens is identical.
+func TestVerb_LLM_Google_Vertex_ToolHook(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+
+	if cfg.GeminiServiceKey == "" {
+		t.Log("GEMINI_KEYFILE not set — passing without exercising Gemini Live S2S on Vertex AI")
+		return
+	}
+	if !geminiLiveDeepgramReady(t) {
+		return
+	}
+
+	ctx := WithTimeout(t, 180*time.Second)
+
+	s := Step(t, "mint-vertex-token")
+	token, project, err := vertexAccessToken(ctx, cfg.GeminiServiceKey)
+	if err != nil {
+		s.Fatalf("vertexAccessToken: %v", err)
 	}
 	s.Done()
 
-	ctx := WithTimeout(t, 180*time.Second)
+	runGeminiLiveToolHook(t, ctx, geminiLiveTarget{
+		model: fmt.Sprintf("projects/%s/locations/%s/publishers/google/models/%s",
+			project, vertexLiveLocation, vertexLiveModel),
+		auth: map[string]any{"apiKey": token},
+		connectOptions: map[string]any{
+			"host": vertexLiveHost,
+			"path": vertexLivePath,
+		},
+	})
+}
+
+// vertexAccessToken mints a short-lived OAuth token from a service-account
+// key. The llm verb takes no service account, so the app supplies the token.
+func vertexAccessToken(ctx context.Context, saJSON string) (token, project string, err error) {
+	creds, err := google.CredentialsFromJSON(ctx, []byte(saJSON),
+		"https://www.googleapis.com/auth/cloud-platform")
+	if err != nil {
+		return "", "", err
+	}
+	if creds.ProjectID == "" {
+		return "", "", fmt.Errorf("service account key has no project_id")
+	}
+	tok, err := creds.TokenSource.Token()
+	if err != nil {
+		return "", "", err
+	}
+	return tok.AccessToken, creds.ProjectID, nil
+}
+
+// geminiLiveDeepgramReady gates on Deepgram, which is only needed for
+// prompt-WAV generation + independent STT of the recorded reply.
+func geminiLiveDeepgramReady(t *testing.T) bool {
+	s := Step(t, "preflight-skips")
+	defer s.Done()
+	if !cfg.HasDeepgram() || deepgramLabel == "" {
+		t.Log("Deepgram not available — passing without exercising Gemini Live S2S tool calling")
+		return false
+	}
+	return true
+}
+
+// geminiWeatherTools declares get_weather in Gemini's functionDeclarations
+// shape, with Google's uppercase JSON-schema types.
+var geminiWeatherTools = []map[string]any{
+	{
+		"functionDeclarations": []map[string]any{
+			{
+				"name":        "get_weather",
+				"description": "Get the current weather conditions for a city. Call this whenever the user asks about weather.",
+				// Opt into 3.8's background/async tool execution: the model
+				// keeps talking while the call is outstanding.
+				"behavior": "NON_BLOCKING",
+				"parameters": map[string]any{
+					"type": "OBJECT",
+					"properties": map[string]any{
+						"location": map[string]any{
+							"type":        "STRING",
+							"description": "the city name",
+						},
+					},
+					"required": []string{"location"},
+				},
+			},
+		},
+	},
+}
+
+// geminiLiveTarget is what differs between the AI Studio and Vertex runs.
+type geminiLiveTarget struct {
+	model            string
+	auth             map[string]any
+	connectOptions   map[string]any // nil = the verb's Developer API default
+	generationConfig map[string]any
+}
+
+func runGeminiLiveToolHook(t *testing.T, ctx context.Context, tgt geminiLiveTarget) {
+	t.Helper()
 	uas := claimUAS(t, ctx)
 
-	s = Step(t, "ensure-prompt-wav")
+	s := Step(t, "ensure-prompt-wav")
 	promptWAV, err := tts.EnsureWAV(ctx, "testdata/llm", llmWeatherUserPrompt, tts.PromptOptions{
 		Model: "aura-asteria-en",
 	})
@@ -108,55 +227,33 @@ func TestVerb_LLM_Google_ToolHook(t *testing.T) {
 	_, sess := claimSession(t)
 
 	s = Step(t, "script-llm-verb")
-	llmVerb := V("llm",
-		"vendor", "google",
-		"model", geminiLiveModel,
-		"auth", map[string]any{
-			"apiKey": cfg.GeminiAPIKey,
+	setup := map[string]any{
+		"systemInstruction": map[string]any{
+			"parts": []map[string]any{{"text": llmWeatherSystemPrompt}},
 		},
-		"actionHook", webhookSrv.PublicURL()+"/action/llm",
+		"tools": geminiWeatherTools,
+	}
+	if tgt.generationConfig != nil {
+		setup["generationConfig"] = tgt.generationConfig
+	}
+	verbArgs := []any{
+		"vendor", "google",
+		"model", tgt.model,
+		"auth", tgt.auth,
+		"actionHook", webhookSrv.PublicURL() + "/action/llm",
 		// toolHook payloads carry no callInfo, so X-Test-Id MUST ride the
 		// query param for the webhook server's correlation layer.
 		"toolHook", SessionURL(sess, "llm-google-tool"),
 		"llmOptions", map[string]any{
 			// Passed through verbatim as BidiGenerateContentSetup. The verb
 			// injects model + forces generationConfig.responseModalities.
-			"setup": map[string]any{
-				"generationConfig": map[string]any{
-					// Background reasoning. MINIMAL is not supported by this
-					// model; LOW keeps the turn latency test-friendly.
-					"thinkingConfig": map[string]any{"thinkingLevel": "LOW"},
-				},
-				"systemInstruction": map[string]any{
-					"parts": []map[string]any{{"text": llmWeatherSystemPrompt}},
-				},
-				"tools": []map[string]any{
-					{
-						"functionDeclarations": []map[string]any{
-							{
-								"name":        "get_weather",
-								"description": "Get the current weather conditions for a city. Call this whenever the user asks about weather.",
-								// Opt into 3.8's background/async tool
-								// execution: the model keeps talking while
-								// the call is outstanding.
-								"behavior": "NON_BLOCKING",
-								"parameters": map[string]any{
-									"type": "OBJECT",
-									"properties": map[string]any{
-										"location": map[string]any{
-											"type":        "STRING",
-											"description": "the city name",
-										},
-									},
-									"required": []string{"location"},
-								},
-							},
-						},
-					},
-				},
-			},
+			"setup": setup,
 		},
-	)
+	}
+	if tgt.connectOptions != nil {
+		verbArgs = append(verbArgs, "connectOptions", tgt.connectOptions)
+	}
+	llmVerb := V("llm", verbArgs...)
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{
 		llmVerb,
 		V("hangup"),
