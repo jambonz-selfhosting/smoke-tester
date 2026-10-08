@@ -441,9 +441,9 @@ func teardownDeepgramCredential() {
 	}
 }
 
-// provisionDeepgramFluxCredential creates a Deepgram Flux TTS speech
-// credential under the suite account, labelled `it-deepgramflux-<runID>`.
-// TTS-only here (Flux STT has its own recognizer path); reuses the required
+// provisionDeepgramFluxCredential creates a Deepgram Flux speech credential
+// under the suite account, labelled `it-deepgramflux-<runID>`, for TTS and
+// STT (the agent early-generation tests run Flux STT); reuses the required
 // DEEPGRAM_API_KEY, so it is always provisioned.
 func provisionDeepgramFluxCredential() error {
 	deepgramFluxLabel = "it-deepgramflux-" + provision.RunID()
@@ -454,7 +454,7 @@ func provisionDeepgramFluxCredential() error {
 		Label:     deepgramFluxLabel,
 		APIKey:    cfg.DeepgramAPIKey,
 		UseForTTS: true,
-		UseForSTT: false,
+		UseForSTT: true,
 	})
 	if err != nil {
 		return err
