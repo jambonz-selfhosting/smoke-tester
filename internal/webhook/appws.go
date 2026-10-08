@@ -134,7 +134,7 @@ func (s *Server) handleAppWS(w http.ResponseWriter, r *http.Request) {
 		}
 
 		// Capture every inbound app message as a Callback for assertions.
-		s.captureCallback(sess, Callback{
+		cb := Callback{
 			Hook:      appHookLabel(msg.Type),
 			Transport: TransportWS,
 			Received:  time.Now(),
@@ -142,7 +142,19 @@ func (s *Server) handleAppWS(w http.ResponseWriter, r *http.Request) {
 			Body:      raw,
 			JSON:      decodeJSON(raw),
 			TestID:    testID,
-		})
+		}
+		// Agent payloads read like their HTTP twins: the body is `data`.
+		if msg.Type == "agent:event" || msg.Type == "agent:tool-call" {
+			cb.Body, cb.JSON = msg.Data, decodeJSON(msg.Data)
+		}
+		s.captureCallback(sess, cb)
+		if msg.Type == "agent:tool-call" {
+			if fn := sess.toolOutputFunc(); fn != nil {
+				if err := sess.SendToolOutput(cb.String("tool_call_id"), fn(cb)); err != nil {
+					s.logger.Warn("webhook: appWS tool output failed", "id", testID, "err", err)
+				}
+			}
+		}
 
 		// Reply where the protocol expects a verb script.
 		switch msg.Type {
@@ -268,6 +280,10 @@ func appHookLabel(msgType string) string {
 		return "call_status_hook"
 	case "verb:hook":
 		return "verb_hook"
+	case "agent:event":
+		return "agent_event"
+	case "agent:tool-call":
+		return "agent_tool_call"
 	default:
 		return msgType
 	}

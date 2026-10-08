@@ -117,6 +117,9 @@ type Session struct {
 	// forbids concurrent writes.
 	appConnMu sync.Mutex
 	appConn   *websocket.Conn
+
+	// toolOutput answers agent:tool-call frames on a WS app; nil leaves them unanswered.
+	toolOutput func(Callback) any
 }
 
 // BindAppConn records the application WebSocket for this session. Called by the
@@ -151,6 +154,41 @@ func (s *Session) SendCommand(command string, data any) error {
 		return fmt.Errorf("send command %s: %w", command, err)
 	}
 	return nil
+}
+
+// SendToolOutput answers a WS tool call the way the SDK's sendToolOutput does.
+func (s *Session) SendToolOutput(toolCallID string, data any) error {
+	s.appConnMu.Lock()
+	defer s.appConnMu.Unlock()
+	if s.appConn == nil {
+		return fmt.Errorf("session %s has no application WebSocket", s.id)
+	}
+	b, err := json.Marshal(map[string]any{
+		"type": "command", "command": "llm:tool-output", "tool_call_id": toolCallID, "data": data,
+	})
+	if err != nil {
+		return fmt.Errorf("marshal llm:tool-output: %w", err)
+	}
+	_ = s.appConn.SetWriteDeadline(time.Now().Add(5 * time.Second))
+	if err := s.appConn.WriteMessage(websocket.TextMessage, b); err != nil {
+		return fmt.Errorf("send llm:tool-output: %w", err)
+	}
+	return nil
+}
+
+// ScriptToolOutput sets the result returned for each agent:tool-call on a WS
+// app; fn gets the tool call (JSON = {tool_call_id, name, arguments}).
+func (s *Session) ScriptToolOutput(fn func(Callback) any) *Session {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.toolOutput = fn
+	return s
+}
+
+func (s *Session) toolOutputFunc() func(Callback) any {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return s.toolOutput
 }
 
 func (s *Session) ID() string { return s.id }
