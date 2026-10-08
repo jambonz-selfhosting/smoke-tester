@@ -114,72 +114,59 @@ type earlyGenUtterance struct {
 }
 
 type earlyGenScenario struct {
-	Name     string
 	Turns    []earlyGenUtterance
 	FollowUp string   // answers the agent's follow-up question, only if Expect has not all run yet
 	Expect   []string // each must run exactly once; every other tool must not run
 }
 
-var earlyGenScenarios = []earlyGenScenario{
-	{
-		Name: "A_AgreeTwoTurns",
+var (
+	earlyGenAgreeTwoTurns = earlyGenScenario{
 		Turns: []earlyGenUtterance{
 			{First: "Yes, that's me."},
 			{First: "Sure, go ahead."},
 		},
 		FollowUp: "Yes, please connect me.",
 		Expect:   []string{"record_lead", "transfer_to_specialist"},
-	},
-	{
-		Name: "B_AgreeAfterPause",
+	}
+	earlyGenAgreeAfterPause = earlyGenScenario{
 		Turns: []earlyGenUtterance{
 			{First: "Yes.", Pause: time.Second, Then: "I'd like to talk to someone."},
 		},
 		FollowUp: "Yes, please connect me.",
 		Expect:   []string{"record_lead", "transfer_to_specialist"},
-	},
-	{
-		// The eager guess on "Yes" is a transfer; the confirmed turn is not.
-		Name: "C_YesThenCallbackNoTransfer",
+	}
+	// The eager guess on "Yes" is a transfer; the confirmed turn is not.
+	earlyGenYesThenCallback = earlyGenScenario{
 		Turns: []earlyGenUtterance{
 			{First: "Yes.", Pause: 500 * time.Millisecond, Then: "Actually no, call me tomorrow at three."},
 		},
 		FollowUp: earlyGenDateAnswer,
 		Expect:   []string{"schedule_callback"},
-	},
-	{
-		Name: "D_Callback",
+	}
+	earlyGenCallback = earlyGenScenario{
 		Turns: []earlyGenUtterance{
 			{First: "Not now, call me tomorrow at ten."},
 		},
 		FollowUp: earlyGenDateAnswer,
 		Expect:   []string{"schedule_callback"},
-	},
-	{
-		Name: "E_NotInterested",
+	}
+	earlyGenNotInterested = earlyGenScenario{
 		Turns: []earlyGenUtterance{
 			{First: "No thanks, not interested."},
 		},
 		FollowUp: "No, I'm not interested.",
 		Expect:   []string{"mark_not_interested"},
-	},
-}
+	}
+)
 
 // earlyGenDateAnswer answers "what date?": schedule_callback requires one and
 // the prompt gives the model no calendar.
 var earlyGenDateAnswer = "Tomorrow is " + time.Now().AddDate(0, 0, 1).Format("Monday, January 2") + "."
 
-// earlyGenRuns is the runbook's schedule: twice at the default 0.7, once at 0.8.
-var earlyGenRuns = []struct {
-	EotThreshold float64
-	Run          int
-}{
-	{0.7, 1}, {0.7, 2}, {0.8, 1},
-}
-
 const earlyGenEagerEotThreshold = 0.5
 
-// TestVerb_Agent_EarlyGenerationTools — every scenario at every threshold.
+// One test per runbook call (A–E, twice at EOT 0.7, once at 0.8) so each can
+// be run or repeated on its own.
 //
 // Steps:
 //  1. preflight-skips
@@ -197,21 +184,75 @@ const earlyGenEagerEotThreshold = 0.5
 // 12. assert-no-tool-before-confirmed-turn
 // 13. assert-expected-tools
 // 14. assert-early-generation-ran
-func TestVerb_Agent_EarlyGenerationTools(t *testing.T) {
-	t.Parallel()
-	for _, sc := range earlyGenScenarios {
-		for _, r := range earlyGenRuns {
-			sc, r := sc, r
-			t.Run(fmt.Sprintf("%s/eot%.1f/run%d", sc.Name, r.EotThreshold, r.Run), func(t *testing.T) {
-				t.Parallel()
-				runEarlyGenTools(t, sc, r.EotThreshold)
-			})
-		}
-	}
+
+// A: "Yes, that's me." … "Sure, go ahead." → record_lead, transfer_to_specialist.
+func TestVerb_Agent_EarlyGenTools_A_AgreeTwoTurns_Eot07_Run1(t *testing.T) {
+	runEarlyGenTools(t, earlyGenAgreeTwoTurns, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_A_AgreeTwoTurns_Eot07_Run2(t *testing.T) {
+	runEarlyGenTools(t, earlyGenAgreeTwoTurns, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_A_AgreeTwoTurns_Eot08(t *testing.T) {
+	runEarlyGenTools(t, earlyGenAgreeTwoTurns, 0.8)
+}
+
+// B: "Yes… (1 s) …I'd like to talk to someone." → record_lead, transfer_to_specialist.
+func TestVerb_Agent_EarlyGenTools_B_AgreeAfterPause_Eot07_Run1(t *testing.T) {
+	runEarlyGenTools(t, earlyGenAgreeAfterPause, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_B_AgreeAfterPause_Eot07_Run2(t *testing.T) {
+	runEarlyGenTools(t, earlyGenAgreeAfterPause, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_B_AgreeAfterPause_Eot08(t *testing.T) {
+	runEarlyGenTools(t, earlyGenAgreeAfterPause, 0.8)
+}
+
+// C: "Yes… (½ s) …actually no, call me tomorrow at three." → schedule_callback only, no transfer.
+func TestVerb_Agent_EarlyGenTools_C_YesThenCallbackNoTransfer_Eot07_Run1(t *testing.T) {
+	runEarlyGenTools(t, earlyGenYesThenCallback, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_C_YesThenCallbackNoTransfer_Eot07_Run2(t *testing.T) {
+	runEarlyGenTools(t, earlyGenYesThenCallback, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_C_YesThenCallbackNoTransfer_Eot08(t *testing.T) {
+	runEarlyGenTools(t, earlyGenYesThenCallback, 0.8)
+}
+
+// D: "Not now, call me tomorrow at ten." → schedule_callback.
+func TestVerb_Agent_EarlyGenTools_D_Callback_Eot07_Run1(t *testing.T) {
+	runEarlyGenTools(t, earlyGenCallback, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_D_Callback_Eot07_Run2(t *testing.T) {
+	runEarlyGenTools(t, earlyGenCallback, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_D_Callback_Eot08(t *testing.T) {
+	runEarlyGenTools(t, earlyGenCallback, 0.8)
+}
+
+// E: "No thanks, not interested." → mark_not_interested.
+func TestVerb_Agent_EarlyGenTools_E_NotInterested_Eot07_Run1(t *testing.T) {
+	runEarlyGenTools(t, earlyGenNotInterested, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_E_NotInterested_Eot07_Run2(t *testing.T) {
+	runEarlyGenTools(t, earlyGenNotInterested, 0.7)
+}
+
+func TestVerb_Agent_EarlyGenTools_E_NotInterested_Eot08(t *testing.T) {
+	runEarlyGenTools(t, earlyGenNotInterested, 0.8)
 }
 
 func runEarlyGenTools(t *testing.T, sc earlyGenScenario, eotThreshold float64) {
 	t.Helper()
+	t.Parallel()
 	requireWebhook(t)
 
 	s := Step(t, "preflight-skips")
