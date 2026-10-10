@@ -13,8 +13,11 @@ import (
 
 func requireGiggy(t *testing.T) {
 	t.Helper()
-	if !cfg.HasGiggy() || giggyLabel == "" {
+	if !cfg.HasGiggy() {
 		t.Skip("Giggy tests need GIGGY_API_KEY (credential missing — skipping, not a failure)")
+	}
+	if giggySID == "" {
+		t.Fatal("Giggy credential provisioning failed (see the TestMain log)")
 	}
 }
 
@@ -70,8 +73,8 @@ func TestVerb_Say_Giggy(t *testing.T) {
 	})
 }
 
-// TestVerb_Say_Giggy_CachedReplay — the same prompt twice on one call:
-// the second say plays the cache file the first one wrote (raw 24 kHz PCM).
+// TestVerb_Say_Giggy_CachedReplay — the same prompt twice on one call; both
+// must be heard. The harness can't see whether the second came from cache.
 //
 // Steps:
 //  1. script-say
@@ -90,8 +93,9 @@ func TestVerb_Say_Giggy_CachedReplay(t *testing.T) {
 		V("say", "text", text, "synthesizer", synth))
 }
 
-// TestVerb_Say_Giggy_Options — speed and seed reach the API (an out-of-range
-// or malformed value would fail the request: no audio).
+// TestVerb_Say_Giggy_Options — speed reaches the API: at 2.0 this text is
+// 4.9s of speech (9.8s at 1.0, measured), so normal speed overruns maxDur.
+// seed rides along but has no observable effect.
 //
 // Steps:
 //  1. place-call
@@ -104,10 +108,11 @@ func TestVerb_Say_Giggy_Options(t *testing.T) {
 	runSay(t, sayOpts{
 		ctxTimeout: 30 * time.Second,
 		tag:        "say-giggy-options",
-		minDur:     1 * time.Second,
-		maxDur:     10 * time.Second,
-		verb: V("say", "text", "Your order number is 42 and it ships today.",
-			"synthesizer", giggySynth(map[string]any{"speed": 1.2, "seed": 42})),
+		minDur:     4 * time.Second,
+		maxDur:     9500 * time.Millisecond,
+		verb: V("say", "text", "Your order number is forty two. It ships today from our warehouse, "+
+			"and the courier will text you a delivery window tomorrow morning.",
+			"synthesizer", giggySynth(map[string]any{"speed": 2.0, "seed": 42})),
 		wantWords: []string{"order number", "ships today"},
 	})
 }
