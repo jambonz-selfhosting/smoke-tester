@@ -290,12 +290,10 @@ func TestMain(m *testing.M) {
 
 	// 3b5. Giggy TTS speech credential — optional.
 	if cfg.HasGiggy() {
-		// not fatal: os.Exit here would skip teardown of everything provisioned above
 		if err := provisionGiggyCredential(); err != nil {
-			log.Printf("tests/verbs: Giggy credential provisioning failed — Giggy tests will fail: %v", err)
-		} else {
-			log.Printf("tests/verbs: Giggy credential label=%s sid=%s", giggyLabel, giggySID)
+			log.Fatalf("tests/verbs: Giggy credential provisioning failed: %v", err)
 		}
+		log.Printf("tests/verbs: Giggy credential label=%s sid=%s", giggyLabel, giggySID)
 	} else {
 		log.Printf("tests/verbs: GIGGY_API_KEY not set — Giggy tests will skip")
 	}
