@@ -9,6 +9,7 @@ import (
 	"time"
 
 	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
+	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
 func requireGiggy(t *testing.T) {
@@ -84,7 +85,7 @@ func TestVerb_Say_Giggy_CachedReplay(t *testing.T) {
 	t.Parallel()
 	synth := giggySynth(nil)
 	text := "Your table for four is confirmed for tonight."
-	runSpeechifyScript(t, "say-giggy-cache", 2*time.Second, 16*time.Second,
+	runGiggyScript(t, "say-giggy-cache", 2*time.Second, 16*time.Second,
 		[]string{"confirmed", "confirmed"},
 		V("say", "text", text, "synthesizer", synth),
 		V("say", "text", text, "synthesizer", synth))
@@ -142,7 +143,7 @@ func TestVerb_Say_Stream_Giggy_TwoTurns(t *testing.T) {
 	requireGiggy(t)
 	t.Parallel()
 	synth := giggySynth(nil)
-	runSpeechifyScript(t, "say-stream-giggy-2turns", 1*time.Second, 15*time.Second,
+	runGiggyScript(t, "say-stream-giggy-2turns", 1*time.Second, 15*time.Second,
 		[]string{"weather", "garden"},
 		V("say", "text", "The first sentence is about the weather.", "stream", true, "synthesizer", synth),
 		V("say", "text", "The second sentence is about the garden.", "stream", true, "synthesizer", synth))
@@ -160,7 +161,7 @@ func TestVerb_Say_Stream_Giggy_TwoTurns(t *testing.T) {
 func TestVerb_Say_Stream_Giggy_MultiSentence(t *testing.T) {
 	requireGiggy(t)
 	t.Parallel()
-	runSpeechifyScript(t, "say-stream-giggy-multi", 3*time.Second, 20*time.Second,
+	runGiggyScript(t, "say-stream-giggy-multi", 3*time.Second, 20*time.Second,
 		[]string{"monday", "wednesday", "friday"},
 		V("say", "text", "We open at nine on Monday. On Wednesday we close early. "+
 			"Friday is our late night, until ten.",
@@ -267,4 +268,39 @@ func TestVerb_Agent_Giggy_BargeIn(t *testing.T) {
 	s.Done()
 
 	HangupAndWaitEnded(t, ctx, call)
+}
+
+// runGiggyScript runs the says then hangs up; wantOrdered, when set,
+// must appear in the transcript in order.
+func runGiggyScript(t *testing.T, tag string, minDur, maxDur time.Duration, wantOrdered []string, says ...map[string]any) {
+	t.Helper()
+	ctx := WithTimeout(t, 45*time.Second)
+	uas := claimUAS(t, ctx)
+	_, sess := claimSession(t)
+
+	s := Step(t, "script-say")
+	script := webhook.Script{}
+	for _, v := range says {
+		script = append(script, v)
+	}
+	sess.ScriptCallHook(WithWarmupScript(append(script, V("hangup"))))
+	s.Done()
+
+	s = Step(t, "place-ws-call")
+	call := placeWSCallTo(ctx, t, uas, sess, withTimeLimit(45))
+	s.Done()
+
+	s = Step(t, "answer-record-and-wait-end")
+	wav := AnswerRecordAndWaitEnded(s, ctx, call, WithRecord(tag), WithSilence())
+	s.Done()
+
+	s = Step(t, "assert-audio-duration")
+	AssertAudioDuration(s, call, minDur, maxDur, tag)
+	s.Done()
+
+	if wav != "" && len(wantOrdered) > 0 {
+		s = Step(t, "assert-transcript-ordered")
+		AssertTranscriptContainsInOrder(s, ctx, wav, wantOrdered...)
+		s.Done()
+	}
 }
