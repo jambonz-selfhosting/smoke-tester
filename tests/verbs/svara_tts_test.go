@@ -67,7 +67,7 @@ func TestVerb_Say_Svara(t *testing.T) {
 		minDur:     1 * time.Second,
 		maxDur:     9 * time.Second,
 		verb: V("say", "text", "This voice test is working correctly.",
-			"synthesizer", svaraSynth(cfg.SvaraVoiceID, "en-US", nil)),
+			"synthesizer", svaraSynth(cfg.SvaraVoiceID, "en", nil)),
 		wantWords: []string{"voice test", "working correctly"},
 	})
 }
@@ -84,7 +84,7 @@ func TestVerb_Say_Svara(t *testing.T) {
 func TestVerb_Say_Svara_CachedReplay(t *testing.T) {
 	requireSvara(t)
 	t.Parallel()
-	synth := svaraSynth(cfg.SvaraVoiceID, "en-US", nil)
+	synth := svaraSynth(cfg.SvaraVoiceID, "en", nil)
 	text := "Your table for four is confirmed for tonight."
 	runSvaraScript(t, "say-svara-cache", 2*time.Second, 16*time.Second,
 		[]string{"confirmed", "confirmed"},
@@ -111,7 +111,7 @@ func TestVerb_Say_Svara_Options(t *testing.T) {
 		maxDur:     12 * time.Second,
 		verb: V("say", "text", "Your order number is forty two. It ships today from our warehouse, "+
 			"and the courier will text you a delivery window tomorrow morning.",
-			"synthesizer", svaraSynth(cfg.SvaraVoiceID, "en-US", map[string]any{"speed": 1.5})),
+			"synthesizer", svaraSynth(cfg.SvaraVoiceID, "en", map[string]any{"speed": 1.5})),
 		wantWords: []string{"warehouse", "delivery window"},
 	})
 }
@@ -147,7 +147,7 @@ func TestVerb_Say_Svara_Hindi(t *testing.T) {
 func TestVerb_Say_Stream_Svara(t *testing.T) {
 	requireSvara(t)
 	t.Parallel()
-	runStreamingSay(t, "say-stream-svara", svaraSynth(cfg.SvaraVoiceID, "en-US", nil))
+	runStreamingSay(t, "say-stream-svara", svaraSynth(cfg.SvaraVoiceID, "en", nil))
 }
 
 // TestVerb_Say_Stream_Svara_TwoTurns — two streaming says on one call. The
@@ -163,7 +163,7 @@ func TestVerb_Say_Stream_Svara(t *testing.T) {
 func TestVerb_Say_Stream_Svara_TwoTurns(t *testing.T) {
 	requireSvara(t)
 	t.Parallel()
-	synth := svaraSynth(cfg.SvaraVoiceID, "en-US", nil)
+	synth := svaraSynth(cfg.SvaraVoiceID, "en", nil)
 	runSvaraScript(t, "say-stream-svara-2turns", 1*time.Second, 15*time.Second,
 		[]string{"weather", "garden"},
 		V("say", "text", "The first sentence is about the weather.", "stream", true, "synthesizer", synth),
@@ -186,7 +186,7 @@ func TestVerb_Say_Stream_Svara_MultiSentence(t *testing.T) {
 		[]string{"monday", "wednesday", "friday"},
 		V("say", "text", "We open at nine on Monday. On Wednesday we close early. "+
 			"Friday is our late night, until ten.",
-			"stream", true, "synthesizer", svaraSynth(cfg.SvaraVoiceID, "en-US", nil)))
+			"stream", true, "synthesizer", svaraSynth(cfg.SvaraVoiceID, "en", nil)))
 }
 
 // TestVerb_Say_Stream_Svara_Hindi — Hindi over the socket: "hi" must reach
@@ -207,7 +207,8 @@ func TestVerb_Say_Stream_Svara_Hindi(t *testing.T) {
 
 // TestVerb_Agent_Svara_BargeIn — a live agent on svara: the caller barges
 // into the greeting (the socket is dropped and redialed) and the reply to the
-// barge-in must be heard on the new socket.
+// barge-in must be heard on the new socket. A turn after 30s with no tokens
+// proves the idle socket is still usable.
 //
 // Steps:
 //  1. preflight-skips
@@ -220,7 +221,11 @@ func TestVerb_Say_Stream_Svara_Hindi(t *testing.T) {
 //  8. assert-barge-in-reply
 //  9. assert-user-interruption
 //
-// 10. hangup-and-wait-ended
+// 10. idle-no-tokens
+// 11. idle-turn-record-and-speak
+// 12. assert-idle-turn-reply
+// 13. assert-idle-turn-end
+// 14. hangup-and-wait-ended
 func TestVerb_Agent_Svara_BargeIn(t *testing.T) {
 	requireSvara(t)
 	t.Parallel()
@@ -232,11 +237,16 @@ func TestVerb_Agent_Svara_BargeIn(t *testing.T) {
 	}
 	s.Done()
 
-	ctx := WithTimeout(t, 120*time.Second)
+	ctx := WithTimeout(t, 180*time.Second)
 	uas := claimUAS(t, ctx)
 
-	s = Step(t, "ensure-prompt-wav")
+	s = Step(t, "ensure-prompt-wavs")
 	bargeWAV, err := tts.EnsureWAV(ctx, "testdata/agent", agentEchoPrompt, tts.PromptOptions{Model: "aura-asteria-en"})
+	if err != nil {
+		s.Fatalf("EnsureWAV: %v", err)
+	}
+	idlePrompt := agentEchoTurns[1].prompt
+	idleWAV, err := tts.EnsureWAV(ctx, "testdata/agent", idlePrompt, tts.PromptOptions{Model: "aura-asteria-en"})
 	if err != nil {
 		s.Fatalf("EnsureWAV: %v", err)
 	}
@@ -254,12 +264,12 @@ func TestVerb_Agent_Svara_BargeIn(t *testing.T) {
 		Greeting:          true,
 		BargeIn:           true,
 		NoResponseTimeout: &noReprompt,
-		TTS:               svaraSynth(cfg.SvaraVoiceID, "en-US", nil),
+		TTS:               svaraSynth(cfg.SvaraVoiceID, "en", nil),
 	})
 	s.Done()
 
 	s = Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(150))
 	s.Done()
 
 	s = Step(t, "answer-and-silence")
@@ -301,6 +311,37 @@ func TestVerb_Agent_Svara_BargeIn(t *testing.T) {
 		if lat, ok := te.JSON["latency"].(map[string]any); ok {
 			s.Logf("svara turn_end tts_ms=%v", lat["tts_ms"])
 		}
+	}
+	s.Done()
+
+	WaitFor(t, "idle-no-tokens", 30*time.Second)
+
+	s = Step(t, "idle-turn-record-and-speak")
+	idleRec := filepath.Join(t.TempDir(), "svara-idle-reply.pcm")
+	if err := call.StartRecording(idleRec); err != nil {
+		s.Fatalf("StartRecording: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	if err := call.SendWAV(idleWAV); err != nil {
+		s.Fatalf("SendWAV: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	time.Sleep(LLMReplyWindow)
+	call.StopRecording()
+	s.Done()
+
+	s = Step(t, "assert-idle-turn-reply")
+	AssertTranscriptHasMost(s, ctx, idleRec, 2, contentWords(idlePrompt)...)
+	s.Done()
+
+	s = Step(t, "assert-idle-turn-end")
+	idleCbs := DrainCallbacks(sess, 2*time.Second)
+	if n := len(findAgentEvents(idleCbs, "turn_end")); n != 1 {
+		s.Errorf("idle turn produced %d turn_end events, want 1: %s", n, summarizeEventTypes(idleCbs))
 	}
 	s.Done()
 
