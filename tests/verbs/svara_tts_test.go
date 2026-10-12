@@ -1,12 +1,5 @@
-// Svara TTS. Two legs, both covered:
-//   - HTTP (one-shot say): mediajam POSTs /v1/audio/speech with stream:true
-//     and pcm. TestVerb_SpeechCredential_Svara and TestVerb_Say_Svara*.
-//   - WebSocket (streaming say + agent): mediajam's native
-//     /v1/audio/speech/stream-input socket, {"text"} then {"flush":true} until
-//     "flushed"; barge-in drops and redials the socket.
-//     TestVerb_Say_Stream_Svara* and TestVerb_Agent_Svara_BargeIn.
-//
-// Not an alignment vendor. All tests skip without SVARA_API_KEY.
+// Svara TTS: TestVerb_Say_Svara* cover the HTTP leg, TestVerb_Say_Stream_Svara*
+// and the agent test the websocket leg. All skip without SVARA_API_KEY.
 package verbs
 
 import (
