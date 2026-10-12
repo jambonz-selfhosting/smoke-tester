@@ -88,6 +88,12 @@ type Settings struct {
 	// Optional — Speechify TTS API key. Unset = the speechify tests skip.
 	SpeechifyAPIKey string
 
+	// Optional — Svara TTS API key. Unset = the svara tests skip.
+	SvaraAPIKey string
+	// Svara voice ids; default to an American English and a Hindi library voice.
+	SvaraVoiceID      string
+	SvaraHindiVoiceID string
+
 	// Optional — xAI STT API key. When set, TestMain provisions an xai
 	// SpeechCredential under the ephemeral account and the xai gather/
 	// transcribe tests exercise it. When unset those tests pass without
@@ -249,6 +255,9 @@ func (s *Settings) HasKugelaudio() bool { return s.KugelaudioAPIKey != "" }
 // HasSpeechify reports whether the Speechify TTS tests can run.
 func (s *Settings) HasSpeechify() bool { return s.SpeechifyAPIKey != "" }
 
+// HasSvara reports whether the Svara TTS tests can run.
+func (s *Settings) HasSvara() bool { return s.SvaraAPIKey != "" }
+
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
@@ -374,6 +383,9 @@ func parse() (*Settings, error) {
 		ElevenlabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
 		KugelaudioAPIKey:         os.Getenv("KUGELAUDIO_API_KEY"),
 		SpeechifyAPIKey:          os.Getenv("SPEECHIFY_API_KEY"),
+		SvaraAPIKey:              os.Getenv("SVARA_API_KEY"),
+		SvaraVoiceID:             firstNonEmpty(os.Getenv("SVARA_VOICE_ID"), "sv_a5thzx8v"),
+		SvaraHindiVoiceID:        firstNonEmpty(os.Getenv("SVARA_HINDI_VOICE_ID"), "sv_fhn6tfve"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
 		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
 		GradiumAPIKey:            os.Getenv("GRADIUM_API_KEY"),
