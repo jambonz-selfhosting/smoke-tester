@@ -27,6 +27,7 @@ import (
 	"time"
 
 	"github.com/jambonz-selfhosting/smoke-tester/internal/provision"
+	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
@@ -45,17 +46,17 @@ const (
 // forwards a user_message.
 //
 // Steps:
-//  1. create-agent — ElevenLabs agent with dtmf_input_settings, deleted on cleanup
+//  1. create-agent — ElevenLabs agent without dtmf_input_settings, deleted on cleanup
 //  2. script-and-call — llm vendor elevenlabs + llmOptions.dtmf + eventHook, WS transport
 //  3. answer-and-silence
 //  4. wait-for-greeting — conversation_initiation_metadata + first agent_response
-//  5. dtmf-finish-on-key — send "1234#"; one user turn "1234", reply reads 1234
-//  6. dtmf-inter-digit-timeout — send "567", no "#"; one user turn "567" after the timeout
+//  5. dtmf-finish-on-key — send "1234#"; one user turn "1234" within 1.5s, reply reads 1234
+//  6. dtmf-inter-digit-timeout — send "567", no "#"; one user turn "567" about 2s later
 //  7. llm-update-user-message — llm:update user_message; reply reads 2468
 //  8. hangup-and-wait-ended
 //  9. assert-vendor-transcript — ElevenLabs' stored transcript has exactly the
 //     dtmf user turns ["1234", "567"]
-//  10. assert-contract — every eventHook payload matches its schema
+//  10. assert-contract — every eventHook and action/llm payload matches its schema
 func TestVerb_LLM_ElevenLabs_DTMF(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -74,7 +75,9 @@ func TestVerb_LLM_ElevenLabs_DTMF(t *testing.T) {
 		s.Fatalf("create ElevenLabs agent: %v", err)
 	}
 	t.Cleanup(func() {
-		if err := elevenlabsAPI(context.Background(), http.MethodDelete, "/v1/convai/agents/"+agentID, nil, nil); err != nil {
+		cctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+		defer cancel()
+		if err := elevenlabsAPI(cctx, http.MethodDelete, "/v1/convai/agents/"+agentID, nil, nil); err != nil {
 			t.Logf("delete ElevenLabs agent %s: %v", agentID, err)
 		}
 	})
@@ -127,21 +130,27 @@ func TestVerb_LLM_ElevenLabs_DTMF(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "dtmf-finish-on-key")
-	if err := call.SendDTMF("1234#"); err != nil {
-		s.Fatalf("SendDTMF: %v", err)
-	}
+	sent := elevenlabsSendDTMF(s, call, "1234#")
 	turn = elevenlabsWaitTurn(sess, 20*time.Second, true)
 	drained = append(drained, turn.events...)
 	elevenlabsAssertTurn(s, turn, "1234")
+	// "#" must end the entry at once, not the 2s inter-digit timeout
+	if d := turn.firstUserAt.Sub(sent); !turn.firstUserAt.IsZero() && d > 1500*time.Millisecond {
+		s.Errorf("entry reached the agent %v after the last key; finishOnKey should end it at once", d)
+	}
+	s.Logf("entry reached the agent %v after the last key", turn.firstUserAt.Sub(sent))
 	s.Done()
 
 	s = Step(t, "dtmf-inter-digit-timeout")
-	if err := call.SendDTMF("567"); err != nil {
-		s.Fatalf("SendDTMF: %v", err)
-	}
+	sent = elevenlabsSendDTMF(s, call, "567")
 	turn = elevenlabsWaitTurn(sess, 20*time.Second, true)
 	drained = append(drained, turn.events...)
 	elevenlabsAssertTurn(s, turn, "567")
+	// interDigitTimeout is 2s: not sooner, and not the 15s overall timeout
+	if d := turn.firstUserAt.Sub(sent); !turn.firstUserAt.IsZero() && (d < 1500*time.Millisecond || d > 5*time.Second) {
+		s.Errorf("entry reached the agent %v after the last key, want about 2s (interDigitTimeout)", d)
+	}
+	s.Logf("entry reached the agent %v after the last key", turn.firstUserAt.Sub(sent))
 	s.Done()
 
 	s = Step(t, "llm-update-user-message")
@@ -175,18 +184,25 @@ func TestVerb_LLM_ElevenLabs_DTMF(t *testing.T) {
 	s.Done()
 
 	s = Step(t, "assert-contract")
-	n := 0
+	n, actions := 0, 0
 	for _, cb := range drained {
-		if cb.Hook != elevenlabsEventHook {
+		rel := ""
+		switch cb.Hook {
+		case elevenlabsEventHook:
+			rel = "callbacks/llm-elevenlabs-event.schema.json"
+		case "action/llm":
+			rel = "callbacks/llm.schema.json"
+			actions++
+		default:
 			continue
 		}
 		n++
-		if err := webhookSrv.Validator.ValidateResponse("callbacks/llm-elevenlabs-event.schema.json", cb.Body); err != nil {
+		if err := webhookSrv.Validator.ValidateResponse(rel, cb.Body); err != nil {
 			s.Errorf("%s payload violates its contract: %v; body=%s", cb.Hook, err, cb.Body)
 		}
 	}
-	if n == 0 {
-		s.Errorf("no elevenlabs eventHook callbacks to validate")
+	if actions == 0 {
+		s.Errorf("no action/llm callback after hangup")
 	}
 	s.Logf("validated %d elevenlabs callbacks", n)
 	s.Done()
@@ -194,9 +210,10 @@ func TestVerb_LLM_ElevenLabs_DTMF(t *testing.T) {
 
 // elevenlabsTurn is one exchange read off the eventHook stream.
 type elevenlabsTurn struct {
-	events    []webhook.Callback
-	userTurns []string // user_transcript texts, in order
-	reply     string   // first substantive agent_response after them
+	events      []webhook.Callback
+	userTurns   []string  // user_transcript texts, in order
+	firstUserAt time.Time // when the first user_transcript reached the webhook
+	reply       string    // first substantive agent_response after them
 }
 
 // elevenlabsWaitTurn drains eventHook traffic until the agent answers. With
@@ -208,13 +225,19 @@ func elevenlabsWaitTurn(sess *webhook.Session, within time.Duration, needUser bo
 		batch := DrainCallbacks(sess, 500*time.Millisecond)
 		turn.events = append(turn.events, batch...)
 		for _, cb := range batch {
-			if cb.Hook != elevenlabsEventHook || turn.reply != "" {
+			if cb.Hook != elevenlabsEventHook {
 				continue
 			}
 			switch cb.String("type") {
 			case "user_transcript":
+				if turn.firstUserAt.IsZero() {
+					turn.firstUserAt = cb.Received
+				}
 				turn.userTurns = append(turn.userTurns, cb.NestedString("user_transcription_event.user_transcript"))
 			case "agent_response":
+				if turn.reply != "" {
+					continue
+				}
 				// "..." is the placeholder ElevenLabs emits for an interrupted response
 				r := cb.NestedString("agent_response_event.agent_response")
 				if strings.Trim(r, ". ") != "" && (!needUser || len(turn.userTurns) > 0) {
@@ -229,6 +252,19 @@ func elevenlabsWaitTurn(sess *webhook.Session, within time.Duration, needUser bo
 		turn.userTurns = append(turn.userTurns, cb.NestedString("user_transcription_event.user_transcript"))
 	}
 	return turn
+}
+
+// elevenlabsSendDTMF sends the keys, restarts outbound RTP (SendDTMF stops the
+// silence loop) and returns when the last key went out.
+func elevenlabsSendDTMF(s *StepCtx, call *jsip.Call, digits string) time.Time {
+	if err := call.SendDTMF(digits); err != nil {
+		s.Fatalf("SendDTMF(%q): %v", digits, err)
+	}
+	sent := time.Now()
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	return sent
 }
 
 // elevenlabsAssertTurn checks the digits arrived as ONE user turn and the
@@ -335,9 +371,7 @@ func elevenlabsCreateAgent(ctx context.Context, name string) (string, error) {
 				"language":      "en",
 				"prompt":        map[string]any{"prompt": elevenlabsDTMFPrompt},
 			},
-			"conversation": map[string]any{
-				"dtmf_input_settings": map[string]any{"dtmf_input_timeout": 2, "hash_terminator": true},
-			},
+			// no dtmf_input_settings: only jambonz may combine the digits
 		},
 	}, &res)
 	if err == nil && res.AgentID == "" {
@@ -357,14 +391,21 @@ func elevenlabsDTMFTurns(ctx context.Context, convID string) ([]string, error) {
 			SourceMedium string `json:"source_medium"`
 		} `json:"transcript"`
 	}
-	for deadline := time.Now().Add(30 * time.Second); ; {
+	for deadline := time.Now().Add(60 * time.Second); conv.Status != "done"; {
 		if err := elevenlabsAPI(ctx, http.MethodGet, "/v1/convai/conversations/"+convID, nil, &conv); err != nil {
 			return nil, err
 		}
-		if conv.Status == "done" || conv.Status == "failed" || time.Now().After(deadline) {
-			break
+		if conv.Status == "failed" {
+			return nil, fmt.Errorf("conversation status failed")
 		}
-		time.Sleep(2 * time.Second)
+		if conv.Status != "done" && time.Now().After(deadline) {
+			return nil, fmt.Errorf("conversation still %q after 60s", conv.Status)
+		}
+		select {
+		case <-ctx.Done():
+			return nil, ctx.Err()
+		case <-time.After(2 * time.Second):
+		}
 	}
 	var out []string
 	for _, m := range conv.Transcript {

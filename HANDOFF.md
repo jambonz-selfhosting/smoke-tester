@@ -456,6 +456,7 @@ None.
 - **Why buffered:** over the agent WebSocket ElevenLabs makes every `user_message` its own turn; the agent's `dtmf_input_settings` do not apply there. Per-digit `1234#` gave 5 turns and "Are you still there?"; one message gave one turn `1234`.
 - **Gotcha:** a text `user_message` (llm:update) produces no `user_transcript` event, only the agent's reply.
 - **Result:** 2/2 green on hoan.jambonz.io (feature-server file overlaid on the box's branch; original at `/home/jambonz/elevenlabs_s2s.js.pre-dtmf`).
+- **Mutation check:** the test fails on the adapter without DTMF, on per-digit sending (`["1","2","3","4","#"]`), and on a disabled inter-digit timeout (7.9s instead of ~2s). The test agent has no `dtmf_input_settings`, so only jambonz can combine the digits.
 
 ### 2026-10-05 — `TestVerb_Dial_SimultaneousAnswer`: dial leaked a leg when two targets answered at once
 
