@@ -77,3 +77,39 @@ func TestLLMGptLiveEventSchema(t *testing.T) {
 		}
 	}
 }
+
+func TestLLMElevenlabsEventSchema(t *testing.T) {
+	root, err := ResolveSchemasRoot()
+	if err != nil {
+		t.Fatal(err)
+	}
+	v, err := New(root)
+	if err != nil {
+		t.Fatal(err)
+	}
+	const rel = "callbacks/llm-elevenlabs-event.schema.json"
+	valid := []string{
+		`{"type":"conversation_initiation_metadata","conversation_initiation_metadata_event":{"conversation_id":"conv_1","agent_output_audio_format":"pcm_16000"}}`,
+		`{"type":"user_transcript","user_transcription_event":{"user_transcript":"1234","event_id":2}}`,
+		`{"type":"agent_response","agent_response_event":{"agent_response":"You entered one two three four.","event_id":2}}`,
+		`{"type":"client_tool_call","client_tool_call":{"tool_name":"get_weather","tool_call_id":"t1","parameters":{}}}`,
+		`{"type":"some_future_event"}`,
+	}
+	for _, body := range valid {
+		if err := v.ValidateResponse(rel, []byte(body)); err != nil {
+			t.Errorf("valid payload rejected: %s: %v", body, err)
+		}
+	}
+	invalid := []string{
+		`{"user_transcription_event":{"user_transcript":"1"}}`,
+		`{"type":"conversation_initiation_metadata","conversation_initiation_metadata_event":{}}`,
+		`{"type":"user_transcript","user_transcription_event":{"user_transcript":1234}}`,
+		`{"type":"agent_response"}`,
+		`{"type":"client_tool_call","client_tool_call":{"tool_name":"x"}}`,
+	}
+	for _, body := range invalid {
+		if err := v.ValidateResponse(rel, []byte(body)); err == nil {
+			t.Errorf("invalid payload accepted: %s", body)
+		}
+	}
+}

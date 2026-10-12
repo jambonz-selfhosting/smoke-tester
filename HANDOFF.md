@@ -450,6 +450,13 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-10-12 — `TestVerb_LLM_ElevenLabs_DTMF`: caller DTMF to an ElevenLabs agent
+
+- **Feature:** feature-server `feat/elevenlabs-dtmf` buffers caller digits behind `llmOptions.dtmf` and sends each entry as one `user_message` with `source_medium: "dtmf"`; `llm:update` now forwards `user_message`/`user_activity`/`contextual_update`.
+- **Why buffered:** over the agent WebSocket ElevenLabs makes every `user_message` its own turn; the agent's `dtmf_input_settings` do not apply there. Per-digit `1234#` gave 5 turns and "Are you still there?"; one message gave one turn `1234`.
+- **Gotcha:** a text `user_message` (llm:update) produces no `user_transcript` event, only the agent's reply.
+- **Result:** 2/2 green on hoan.jambonz.io (feature-server file overlaid on the box's branch; original at `/home/jambonz/elevenlabs_s2s.js.pre-dtmf`).
+
 ### 2026-10-05 — `TestVerb_Dial_SimultaneousAnswer`: dial leaked a leg when two targets answered at once
 
 - **Symptom:** multi-target `dial`, two callees answer within milliseconds; one callee never gets a BYE, even after the caller hangs up. The SBC call count stays +1 per leak.
