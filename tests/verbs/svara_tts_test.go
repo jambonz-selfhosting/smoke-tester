@@ -116,6 +116,33 @@ func TestVerb_Say_Svara_Options(t *testing.T) {
 	})
 }
 
+// TestVerb_Say_Svara_AllSayOptions — every option the HTTP leg passes on
+// (sampling, normalize, token budget and chunking) at in-range values. Svara
+// rejects an out-of-range value on this leg, so a rejected option means silence.
+//
+// Steps:
+//  1. place-call
+//  2. answer-record-and-wait-end
+//  3. assert-audio-duration
+//  4. assert-transcript
+func TestVerb_Say_Svara_AllSayOptions(t *testing.T) {
+	requireSvara(t)
+	t.Parallel()
+	runSay(t, sayOpts{
+		ctxTimeout: 30 * time.Second,
+		tag:        "say-svara-all-options",
+		minDur:     1 * time.Second,
+		maxDur:     12 * time.Second,
+		verb: V("say", "text", "Your order ships today from our warehouse.",
+			"synthesizer", svaraSynth(cfg.SvaraVoiceID, "en", map[string]any{
+				"normalize": true, "temperature": 0.7, "top_p": 0.9, "top_k": 40, "min_p": 0.05,
+				"repetition_penalty": 1.1, "presence_penalty": 0.2, "max_tokens": 1000,
+				"chunk_size": 200, "buffer_ms": 100, "chunk_codes": 10,
+			})),
+		wantWords: []string{"warehouse"},
+	})
+}
+
 // TestVerb_Say_Svara_Hindi — one-shot Hindi say with the Hindi voice and
 // language "hi". Duration only: the offline STT is English-only.
 //
@@ -148,6 +175,25 @@ func TestVerb_Say_Stream_Svara(t *testing.T) {
 	requireSvara(t)
 	t.Parallel()
 	runStreamingSay(t, "say-stream-svara", svaraSynth(cfg.SvaraVoiceID, "en", nil))
+}
+
+// TestVerb_Say_Stream_Svara_Eager — streaming say in eager mode with the
+// sampling knobs set, over the WebSocket leg.
+//
+// Steps:
+//  1. script-streaming-say
+//  2. place-ws-call
+//  3. answer-record-and-wait-end
+//  4. assert-audio-duration
+//  5. assert-transcript
+func TestVerb_Say_Stream_Svara_Eager(t *testing.T) {
+	requireSvara(t)
+	t.Parallel()
+	runStreamingSay(t, "say-stream-svara-eager", svaraSynth(cfg.SvaraVoiceID, "en", map[string]any{
+		"mode": "eager", "chunk_words": 4, "peek_words": 2, "max_chunk_words": 20,
+		"temperature": 0.7, "top_p": 0.9, "top_k": 40, "min_p": 0.05,
+		"repetition_penalty": 1.1, "presence_penalty": 0.2,
+	}))
 }
 
 // TestVerb_Say_Stream_Svara_TwoTurns — two streaming says on one call. The
