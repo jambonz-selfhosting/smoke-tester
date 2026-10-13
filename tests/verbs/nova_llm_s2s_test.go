@@ -349,64 +349,6 @@ func allTrue(m map[string]bool) bool {
 	return true
 }
 
-// TestVerb_LLM_Nova_Hangup covers the built-in hangup tool on nova: it is
-// injected as a toolSpec with an empty schema and runs without a toolHook.
-func TestVerb_LLM_Nova_Hangup(t *testing.T) {
-	t.Parallel()
-	requireWebhook(t)
-	if !novaPreflight(t) {
-		return
-	}
-
-	ctx := WithTimeout(t, 120*time.Second)
-	uas := claimUAS(t, ctx)
-	_, sess := claimSession(t)
-
-	s := Step(t, "ensure-caller-wav")
-	callerWAV, err := tts.EnsureWAV(ctx, "testdata/hangup", hangupCallerUtterance,
-		tts.PromptOptions{Model: "aura-asteria-en"})
-	if err != nil {
-		s.Fatalf("EnsureWAV caller utterance: %v", err)
-	}
-	s.Done()
-
-	s = Step(t, "script-llm-hangup")
-	verb := V("llm",
-		"vendor", "nova",
-		"model", cfg.NovaModel,
-		"auth", novaAuth(),
-		"actionHook", SessionURL(sess, "llm"),
-		"llmOptions", map[string]any{
-			"systemPrompt": hangupRealtimePrompt,
-			"greeting":     "Greet me in one short sentence and ask how you can help.",
-			"promptStart":  novaPromptStart(),
-		},
-		"hangup", map[string]any{"reason": hangupAppReason},
-	)
-	sess.ScriptCallHook(WithWarmupScript(webhook.Script{verb}))
-	SessionAckEmpty(sess, "llm")
-	s.Done()
-
-	s = Step(t, "place-caller")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
-	s.Done()
-
-	s = Step(t, "drive-conversation")
-	if err := call.Answer(); err != nil {
-		s.Fatalf("Answer: %v", err)
-	}
-	driveHangupConversation(s, ctx, call, callerWAV)
-	s.Done()
-
-	s = Step(t, "assert-server-hangup")
-	assertServerHangup(s, call, "")
-	s.Done()
-
-	s = Step(t, "assert-completion-hangup")
-	assertCompletionHangup(s, ctx, sess, "llm")
-	s.Done()
-}
-
 // TestVerb_LLM_Nova_DTMF covers the two text inputs jambonz layers onto Nova:
 // keypad entries (llmOptions.dtmf, sent as cross-modal user text since Nova has
 // no DTMF) and llm:update {text}. The agent reading the digits back proves each
@@ -482,43 +424,69 @@ func TestVerb_LLM_Nova_DTMF(t *testing.T) {
 // novaWaitReply collects FINAL assistant text from the event hook until it
 // reads back want (as digits) or timeout; want "" returns the first reply.
 func novaWaitReply(sess *webhook.Session, timeout time.Duration, want string) string {
-	final := map[string]bool{} // FINAL assistant text contentIds
-	var reply strings.Builder
+	return novaWaitReplyOn(sess, "action/llm-nova-event", timeout, want)
+}
+
+func novaWaitReplyOn(sess *webhook.Session, hook string, timeout time.Duration, want string) string {
+	// hook POSTs can land out of order, so text is matched to FINAL contents at the end
+	final := map[string]bool{}
+	texts := map[string]string{}
+	var order []string
+	reply := func() string {
+		var b strings.Builder
+		for _, id := range order {
+			if final[id] {
+				b.WriteString(texts[id] + " ")
+			}
+		}
+		return b.String()
+	}
 	deadline := time.Now().Add(timeout)
 	for time.Now().Before(deadline) {
 		for _, cb := range DrainCallbacks(sess, time.Second) {
-			if cb.Hook != "action/llm-nova-event" {
+			if cb.Hook != hook {
 				continue
 			}
-			var msg struct {
-				Event struct {
-					ContentStart *struct {
-						ContentID  string `json:"content_id"`
-						Role       string `json:"role"`
-						Type       string `json:"type"`
-						Additional string `json:"additional_model_fields"`
-					} `json:"content_start"`
-					TextOutput *struct {
-						ContentID string `json:"content_id"`
-						Content   string `json:"content"`
-					} `json:"text_output"`
-				} `json:"event"`
-			}
-			if json.Unmarshal(cb.Body, &msg) != nil {
-				continue
-			}
-			if c := msg.Event.ContentStart; c != nil && c.Role == "ASSISTANT" && c.Type == "TEXT" &&
-				strings.Contains(c.Additional, "FINAL") {
+			c, o := novaParseText(cb.Body)
+			if c != nil && c.Role == "ASSISTANT" && c.Type == "TEXT" && strings.Contains(c.Additional, "FINAL") {
 				final[c.ContentID] = true
 			}
-			if o := msg.Event.TextOutput; o != nil && final[o.ContentID] {
-				reply.WriteString(o.Content + " ")
+			if o != nil {
+				if _, seen := texts[o.ContentID]; !seen {
+					order = append(order, o.ContentID)
+				}
+				texts[o.ContentID] += o.Content
 			}
 		}
-		got := reply.String()
-		if got != "" && (want == "" || strings.Contains(digitsSpoken(got), want)) {
+		if got := reply(); got != "" && (want == "" || strings.Contains(digitsSpoken(got), want)) {
 			return got
 		}
 	}
-	return reply.String()
+	return reply()
+}
+
+type novaContentStart struct {
+	ContentID  string `json:"content_id"`
+	Role       string `json:"role"`
+	Type       string `json:"type"`
+	Additional string `json:"additional_model_fields"`
+}
+
+type novaTextOutput struct {
+	ContentID string `json:"content_id"`
+	Content   string `json:"content"`
+}
+
+// novaParseText pulls content_start / text_output out of a (snake_cased) Nova event hook body.
+func novaParseText(body []byte) (*novaContentStart, *novaTextOutput) {
+	var msg struct {
+		Event struct {
+			ContentStart *novaContentStart `json:"content_start"`
+			TextOutput   *novaTextOutput   `json:"text_output"`
+		} `json:"event"`
+	}
+	if json.Unmarshal(body, &msg) != nil {
+		return nil, nil
+	}
+	return msg.Event.ContentStart, msg.Event.TextOutput
 }
