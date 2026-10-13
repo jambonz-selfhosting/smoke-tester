@@ -142,6 +142,16 @@ type Settings struct {
 	VoiceLiveModel  string
 	VoiceLiveVoice  string
 
+	// Optional — Amazon Nova Sonic on Bedrock. Static IAM credentials (a
+	// session token too for STS creds) — see HasNova. NovaRegion must be a
+	// region serving Nova Sonic.
+	NovaAccessKeyID     string
+	NovaSecretAccessKey string
+	NovaSessionToken    string
+	NovaRegion          string
+	NovaModel           string
+	NovaVoice           string
+
 	// Optional — Speechmatics STT API key. When set, TestMain provisions a
 	// speechmatics SpeechCredential under the ephemeral account and the
 	// speechmatics gather/transcribe tests exercise it (model selection +
@@ -280,6 +290,10 @@ func (s *Settings) HasGeminiS2S() bool { return s.GeminiAPIKey != "" }
 // is resource-specific, so there is no host to fall back on.
 func (s *Settings) HasVoiceLive() bool { return s.VoiceLiveAPIKey != "" && s.VoiceLiveHost != "" }
 
+// HasNova reports whether the Amazon Nova Sonic S2S tests can run.
+// Optional: when the IAM keys are unset those tests pass without exercising nova.
+func (s *Settings) HasNova() bool { return s.NovaAccessKeyID != "" && s.NovaSecretAccessKey != "" }
+
 // HasGptLive reports whether the OpenAI GPT-Live S2S tests can run.
 // Optional: when the key is unset those tests pass without exercising gptlive.
 func (s *Settings) HasGptLive() bool { return s.GptLiveAPIKey != "" }
@@ -387,6 +401,12 @@ func parse() (*Settings, error) {
 		VoiceLiveHost:            os.Getenv("VOICELIVE_HOST"),
 		VoiceLiveModel:           firstNonEmpty(os.Getenv("VOICELIVE_MODEL"), "gpt-realtime"),
 		VoiceLiveVoice:           firstNonEmpty(os.Getenv("VOICELIVE_VOICE"), "en-US-AvaNeural"),
+		NovaAccessKeyID:          os.Getenv("NOVA_ACCESS_KEY_ID"),
+		NovaSecretAccessKey:      os.Getenv("NOVA_SECRET_ACCESS_KEY"),
+		NovaSessionToken:         os.Getenv("NOVA_SESSION_TOKEN"),
+		NovaRegion:               firstNonEmpty(os.Getenv("NOVA_REGION"), "us-east-1"),
+		NovaModel:                firstNonEmpty(os.Getenv("NOVA_MODEL"), "amazon.nova-2-5-sonic"),
+		NovaVoice:                firstNonEmpty(os.Getenv("NOVA_VOICE"), "tiffany"),
 		SpeechmaticsAPIKey:       os.Getenv("SPEECHMATICS_API_KEY"),
 		SpeechmaticsSTTURI:       firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
 		SpeechmaticsAgentAPIKey:  os.Getenv("SPEECHMATICS_AGENT_API_KEY"),
