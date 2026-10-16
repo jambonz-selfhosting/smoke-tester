@@ -156,7 +156,7 @@ All variants of `PUT /Accounts/{sid}/Calls/{CallSid}`. Body shape contract-valid
 |---|---|---|---|---|---|---|
 | 6.1 | Redirect mid-call | `call_hook` | ☐ | ☐ | fern (calls.yaml) | |
 | 6.2 | Whisper | `whisper` (verb array) | ☐ | ☐ | fern + verb schemas | |
-| 6.3 | Mute / unmute | `mute_status` | ☐ | ☐ | fern | |
+| 6.3 | Mute / unmute | `mute_status` | ◐ | ☐ | fern | `TestMute_{ParentLeg,ChildLeg}_Directional` (`rtpengine_directional_block_test.go`): caller INVITEs a `dial` app, `mute_status` on the parent (sbc-inbound) or child (sbc-outbound) leg must block only callee→caller audio and DTMF while caller→callee keeps flowing, and `unmute` must restore it (windowed RMS on both recordings, polled since the 202 returns before the INFO lands). Guards the rtpengine 12.4+ regression where `block media` without the `directional` flag silenced the whole call. Feature ◐: conference mute untested. Contract ☐: the 202 body is not schema-validated. |
 | 6.4 | Listen status (pause/silence/resume) | `listen_status` | ☐ | ☐ | fern | |
 | 6.5 | Conference mute/hold | `conf_mute_status`, `conf_hold_status` | ☐ | ☐ | fern | |
 | 6.6 | Conference participant ops (tag/coach/mute/hold) | `conferenceParticipantAction` | ☐ | ☐ | fern | |
