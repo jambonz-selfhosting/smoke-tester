@@ -136,8 +136,9 @@ func provisionWSInboundApp(t *testing.T, ctx context.Context, suffix, testID str
 // Steps:
 //  1. script-and-provision — WS app, play tone_stream earlyMedia (customer's verb)
 //  2. invite — INVITE in the background
-//  3. redirect-decline — after 1s, redirect to sip:decline 603
-//  4. wait-final-response — log how long until the INVITE gets a final response
+//  3. redirect-decline — after 1s, redirect to sip:decline 486
+//  4. wait-final-response — the INVITE gets 486 (480 for REPRO_REDIRECT=say) and a
+//     matching failed status
 func TestRepro_MediaServerStall_WS(t *testing.T) {
 	if os.Getenv("REPRO_MEDIA_STALL") == "" {
 		t.Skip("manual repro: freeze the media server, then set REPRO_MEDIA_STALL=1")
@@ -181,9 +182,10 @@ func TestRepro_MediaServerStall_WS(t *testing.T) {
 	s = Step(t, "redirect-decline")
 	time.Sleep(time.Second)
 	// REPRO_REDIRECT=say stands in for the customer's llm: a verb that needs media again
-	next := map[string]any{"verb": "sip:decline", "status": 603}
+	// the app's own decline must win; a media verb can't run, so jambonz rejects with 480
+	next, wantCode := map[string]any{"verb": "sip:decline", "status": 486}, 486
 	if os.Getenv("REPRO_REDIRECT") == "say" {
-		next = map[string]any{"verb": "say", "text": "hello", "earlyMedia": true}
+		next, wantCode = map[string]any{"verb": "say", "text": "hello", "earlyMedia": true}, 480
 	}
 	if err := sess.SendCommand("redirect", []any{next}); err != nil {
 		s.Errorf("SendCommand redirect: %v", err)
@@ -202,6 +204,11 @@ func TestRepro_MediaServerStall_WS(t *testing.T) {
 	s.Logf("call_status events: %v", seen)
 	if r.err != nil {
 		s.Errorf("no final response to the INVITE: %v", r.err)
+	} else if r.code != wantCode {
+		s.Errorf("INVITE final response: got %d want %d", r.code, wantCode)
+	}
+	if want := fmt.Sprintf("failed/%d", wantCode); len(seen) == 0 || seen[len(seen)-1] != want {
+		s.Errorf("want call_status to end with %s; saw %v", want, seen)
 	}
 	s.Done()
 }
