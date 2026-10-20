@@ -1,9 +1,9 @@
 // Repro: an inbound call that jambonz ends while still in early media (never
 // answered) must still produce a terminal call_status event.
 //
-// Customer report (Jun 2026): only the initial "trying" status arrived; no final
-// status ever came. Reading the code, InboundCallSession._onTasksDone rejects the
-// INVITE (603) when the app ends before answering, but sends no status event.
+// sip:decline is the verb for rejecting an unanswered call (hangup is a BYE, for
+// answered calls). When the verb list runs out instead, _onTasksDone rejects the
+// INVITE with 603 and must also send the status.
 //
 // Phase-2 tests; skipped without NGROK_AUTHTOKEN.
 package verbs
@@ -23,11 +23,11 @@ import (
 
 const earlyMediaSayText = "This call is still in early media and the app will end it."
 
-// TestEarlyMedia_HangupVerb_FinalStatus — say(earlyMedia) then hangup.
-func TestEarlyMedia_HangupVerb_FinalStatus(t *testing.T) {
-	runEarlyMediaFinalStatus(t, "em-hangup", false, webhook.Script{
+// TestEarlyMedia_SIPDecline_FinalStatus — say(earlyMedia) then sip:decline.
+func TestEarlyMedia_SIPDecline_FinalStatus(t *testing.T) {
+	runEarlyMediaFinalStatus(t, "em-decline", false, webhook.Script{
 		V("say", "text", earlyMediaSayText, "earlyMedia", true),
-		V("hangup"),
+		V("sip:decline", "status", 603),
 	})
 }
 
@@ -38,12 +38,12 @@ func TestEarlyMedia_TasksDone_FinalStatus(t *testing.T) {
 	})
 }
 
-// TestEarlyMedia_HangupVerb_WS_FinalStatus — same as the hangup case over a
+// TestEarlyMedia_SIPDecline_WS_FinalStatus — same as the sip:decline case over a
 // WebSocket app, where call_status rides the app socket (the customer's setup).
-func TestEarlyMedia_HangupVerb_WS_FinalStatus(t *testing.T) {
-	runEarlyMediaFinalStatus(t, "em-hangup-ws", true, webhook.Script{
+func TestEarlyMedia_SIPDecline_WS_FinalStatus(t *testing.T) {
+	runEarlyMediaFinalStatus(t, "em-decline-ws", true, webhook.Script{
 		V("say", "text", earlyMediaSayText, "earlyMedia", true),
-		V("hangup"),
+		V("sip:decline", "status", 603),
 	})
 }
 
