@@ -2,8 +2,7 @@
 // S2S) — app-declared tool/function calling end-to-end against Gemini 3.8
 // Live, once per Google platform:
 //   - TestVerb_LLM_Google_ToolHook: Gemini Developer API (AI Studio), with a
-//     GEMINI_API_KEY ("AIza...") sent as ?key=, against the Extended Thinking
-//     variant.
+//     GEMINI_API_KEY ("AIza...") sent as ?key=.
 //   - TestVerb_LLM_Google_Vertex_ToolHook: Vertex AI, with an OAuth token
 //     minted from the GEMINI_KEYFILE service account (Vertex refuses API keys)
 //     and an app-supplied connectOptions host/path, since the verb's default
@@ -66,9 +65,9 @@ import (
 
 // geminiLiveModel is the Gemini Live s2s model. The "models/" prefix is
 // Gemini's own addressing scheme and is required on the Developer API.
-// -extended-thinking is the reasoning variant; it emits interactionStatus
-// IN_PROGRESS while it reasons in the background, then IDLE.
-const geminiLiveModel = "models/gemini-3.8-live-extended-thinking"
+// Not -extended-thinking: it reasons in the background before calling the tool,
+// and on 2026-10-20 that took 15s to over 75s, then often never spoke the result.
+const geminiLiveModel = "models/gemini-3.8-live"
 
 // TestVerb_LLM_Google_ToolHook proves the `llm` verb's google (Gemini Live)
 // path supports app-declared tool/function calling end-to-end: the model calls
@@ -93,11 +92,6 @@ func TestVerb_LLM_Google_ToolHook(t *testing.T) {
 	runGeminiLiveToolHook(t, ctx, geminiLiveTarget{
 		model: geminiLiveModel,
 		auth:  map[string]any{"apiKey": cfg.GeminiAPIKey},
-		// Background reasoning. MINIMAL is not supported by this model; LOW
-		// keeps the turn latency test-friendly.
-		generationConfig: map[string]any{
-			"thinkingConfig": map[string]any{"thinkingLevel": "LOW"},
-		},
 	})
 }
 

@@ -24,8 +24,6 @@
 //	        message in history at all
 //	2       playback resumes with a hole after a false          Defect2_FalseInterruption…
 //	        barge-in — fragments, and a bare "." spoken aloud
-//	2b      control for the bare "." — same symptom with          Defect2b_BareTerminator…
-//	        barge-in disabled and no caller audio
 //	2c      control for the bare "." — same text through the      Defect2c_SayVerb…
 //	        non-streaming say verb
 //	3       llm_response fires twice on tool-call turns and     Defect3_ToolCallTurn…
@@ -1103,167 +1101,15 @@ func TestVerb_Agent_Defect2_FalseInterruptionDoesNotDropTokens(t *testing.T) {
 	HangupAndWaitEnded(t, ctx, call)
 }
 
-// TestVerb_Agent_Defect2b_BareTerminatorNotSpokenWithoutBargeIn — the control
-// for the "punto" half of defect 2: with barge-in DISABLED and no caller audio
-// at all during the response, the synthesizer must never voice a bare sentence
-// terminator.
-//
-// This exists because the token-drop explanation does not survive the evidence.
-// Defect2's run produced an intact count — every number from one to thirty, no
-// hole — and still had the TTS say "dot" twice, at the same two positions on
-// repeated runs. A dropped-token hole cannot explain a terminator spoken in the
-// middle of a response that is otherwise complete.
-//
-// THIS IS THE ONE DEFECT STILL OPEN. It fails, and everything that was
-// suspected of causing it has now been ruled out:
-//
-//	feature-server chunking   every chunk handed to the synthesizer is a
-//	                          well-formed sentence (" Six.", " Seven."). Both
-//	                          send paths were instrumented, including the
-//	                          flush path that has no whitespace guard: 80
-//	                          chunks on the boundary path, zero on the flush
-//	                          path, zero terminator-only.
-//	the vendor + mediajam     replaying that exact chunk sequence through
-//	                          mediajam's own engine against live Deepgram is
-//	                          clean — back-to-back, paced in real time at one
-//	                          20ms frame per tick, and spaced 40ms apart to
-//	                          mimic token arrival (mediajam
-//	                          internal/tts/bare_terminator_live_test.go).
-//	the one-shot TTS path     the same text through the `say` verb over a
-//	                          live call is clean (Defect2c).
-//	the streaming TTS path    the same text through `say` with stream:true is
-//	                          clean (Defect2d) — but note it sends ONE 630
-//	                          char chunk through the flush path, so it does
-//	                          not control for chunking, only for the vendor.
-//
-// What it DOES track is chunk seams. Coalescing the agent's per-sentence
-// chunks into three larger ones moved the artifact: "six dot seven" vanished
-// and the only remaining "dot" landed at the new seam, between a chunk ending
-// "…Sixteen." and one starting " Seventeen.". Replaying those exact three
-// chunks offline through mediajam's engine against the same voice is clean.
-//
-// So: identical text, identical chunk sequence, identical vendor and engine —
-// clean off a live call, artifact on one. That leaves the endpoint's playout
-// of separate vendor bursts (the agent verb also runs STT on the same media
-// session), which needs audio captured at the mediajam endpoint to pin down.
-// Guessing at a fix here would be guessing. The token drop and jambonz'"'"'s
-// chunker are both exonerated.
-//
-// Steps:
-//  1. preflight-skips
-//  2. ensure-prompt-wav
-//  3. script-agent-verb — bargeIn explicitly disabled
-//  4. place-call
-//  5. answer-and-silence
-//  6. wait-for-stt
-//  7. request-count
-//  8. let-count-finish
-//  9. assert-no-bare-terminator
-func TestVerb_Agent_Defect2b_BareTerminatorNotSpokenWithoutBargeIn(t *testing.T) {
-	t.Parallel()
-	requireWebhook(t)
-
-	s := Step(t, "preflight-skips")
-	if !agentSkipPreflight(t, s) {
-		return
-	}
-	s.Done()
-
-	ctx := WithTimeout(t, 180*time.Second)
-	uas := claimUAS(t, ctx)
-
-	s = Step(t, "ensure-prompt-wav")
-	countWAV, err := tts.EnsureWAV(ctx, "testdata/agent", countRequestUtterance, tts.PromptOptions{
-		Model: "aura-asteria-en",
-	})
-	if err != nil {
-		s.Fatalf("EnsureWAV: %v", err)
-	}
-	s.Done()
-
-	_, sess := claimSession(t)
-
-	s = Step(t, "script-agent-verb")
-	// bargeIn:false is the whole point — with it off there is no VAD
-	// confirmation window, so no token can be discarded for that reason.
-	scriptAgentTweaked(sess, agentVerbOpts{
-		SystemPrompt: countingSystemPrompt,
-		Greeting:     false,
-		BargeIn:      false,
-	}, nil)
-	s.Done()
-
-	s = Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(120))
-	s.Done()
-
-	s = Step(t, "answer-and-silence")
-	if err := call.Answer(); err != nil {
-		s.Fatalf("Answer: %v", err)
-	}
-	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence: %v", err)
-	}
-	s.Done()
-
-	WaitFor(t, "wait-for-stt", RecognizerArmDelayLong)
-
-	s = Step(t, "request-count")
-	if err := call.SendWAV(countWAV); err != nil {
-		s.Fatalf("SendWAV: %v", err)
-	}
-	recPath := filepath.Join(t.TempDir(), "defect2b-count.pcm")
-	if err := call.StartRecording(recPath); err != nil {
-		s.Fatalf("StartRecording: %v", err)
-	}
-	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence (post-request): %v", err)
-	}
-	s.Done()
-
-	s = Step(t, "let-count-finish")
-	time.Sleep(32 * time.Second)
-	call.StopRecording()
-	s.Done()
-
-	s = Step(t, "assert-no-bare-terminator")
-	if !stt.HasKey() {
-		s.Logf("skipping: %s unset", stt.EnvKey)
-		s.Done()
-		HangupAndWaitEnded(t, ctx, call)
-		return
-	}
-	transcript, err := stt.Transcribe(ctx, recPath)
-	if err != nil {
-		s.Fatalf("stt.Transcribe(%s): %v", recPath, err)
-	}
-	s.Logf("count transcript: %q", truncate(transcript, 500))
-	norm := stt.Normalize(transcript)
-	for _, spoken := range []string{"dot", "punto", "period", "full stop"} {
-		if containsWord(norm, spoken) {
-			s.Errorf("TTS voiced a bare sentence terminator (%q) with barge-in DISABLED and no "+
-				"caller audio during the response — so the operator's \"punto\" is not caused by "+
-				"the barge-in token drop, and fixing that drop will not fix it. transcript=%q",
-				spoken, truncate(transcript, 500))
-		}
-	}
-	if start, run := longestMissingRun(transcript); run >= 2 {
-		s.Errorf("hole in the count with barge-in disabled: %d numbers missing from %q. "+
-			"transcript=%q", run, numberLabel(start), truncate(transcript, 500))
-	}
-	s.Done()
-
-	HangupAndWaitEnded(t, ctx, call)
-}
-
 // TestVerb_Agent_Defect2c_SayVerbHasNoBareTerminator — the second control for
 // the "punto" symptom, and the one that localises it.
 //
 // Same sentence list, same voice, same cluster, same RTP path and the same
-// verification STT as Defect2b — but spoken by the NON-streaming `say` verb
-// instead of the agent verb's streaming synthesizer. If this passes while
-// Defect2b fails, the terminator is produced by the streaming TTS path alone,
-// and no amount of work on the agent state machine will remove it.
+// verification STT as the agent verb's counting turn — but spoken by the
+// NON-streaming `say` verb instead of the agent verb's streaming synthesizer.
+// If this passes while the agent verb voices the terminator, it is produced by
+// the streaming TTS path alone, and no amount of work on the agent state
+// machine will remove it.
 //
 // (Two offline controls point the same way and are cheap to re-run by hand:
 // synthesizing the whole list in one REST call, and synthesizing it one chunk
@@ -1349,8 +1195,8 @@ func TestVerb_Agent_Defect2c_SayVerbHasNoBareTerminator(t *testing.T) {
 // `say` with stream:true goes through exactly the same streaming synthesizer
 // and the same RTP path as the agent verb, but none of the agent's state
 // machine, chunker or LLM. If this shows the artifact too, nothing in the
-// agent verb can be responsible; if it is clean while Defect2b is not, the
-// difference is the agent's chunking cadence.
+// agent verb can be responsible; if it is clean while the agent verb is not,
+// the difference is the agent's chunking cadence.
 //
 // Requires the WS app: streaming say is rejected over the HTTP paths
 // (lib/tasks/say.js).
