@@ -127,6 +127,10 @@ var (
 	gradiumLabel string
 	gradiumSID   string
 
+	// mistral (Voxtral) STT+TTS speech credential, provisioned only when MISTRAL_API_KEY is set.
+	mistralLabel string
+	mistralSID   string
+
 	// Default xai TTS voice.
 	xaiVoice    = "eve"
 	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
@@ -348,6 +352,15 @@ func TestMain(m *testing.M) {
 	} else {
 		log.Printf("tests/verbs: GRADIUM_API_KEY not set — gradium STT tests will pass without exercising gradium")
 	}
+	// 3c'''. mistral STT+TTS speech credential — optional, same pattern as gradium.
+	if cfg.HasMistral() {
+		if err := provisionMistralCredential(); err != nil {
+			log.Fatalf("tests/verbs: mistral credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: mistral credential label=%s sid=%s", mistralLabel, mistralSID)
+	} else {
+		log.Printf("tests/verbs: MISTRAL_API_KEY not set — mistral tests will pass without exercising mistral")
+	}
 
 	// 3d. speechmatics STT speech credential — optional. Only provisioned
 	// when SPEECHMATICS_API_KEY is set; otherwise the speechmatics gather/
@@ -429,6 +442,7 @@ func TestMain(m *testing.M) {
 	teardownXaiCredential()
 	teardownZoomCredential()
 	teardownGradiumCredential()
+	teardownMistralCredential()
 	teardownSpeechmaticsCredential()
 	teardownSpeechmaticsAgentCredential()
 	teardownOpenaiCredential()
@@ -834,6 +848,40 @@ func teardownGradiumCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, gradiumSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete gradium credential %s: %v", gradiumSID, err)
+	}
+}
+
+// provisionMistralCredential creates a mistral speech credential for both STT
+// and TTS under the suite account, labelled `it-<runID>-mistral`. Called only
+// when MISTRAL_API_KEY is set.
+func provisionMistralCredential() error {
+	mistralLabel = provision.Name("mistral")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "mistral",
+		Label:      mistralLabel,
+		APIKey:     cfg.MistralAPIKey,
+		ModelID:    mistralTTSModel,
+		STTModelID: mistralSTTModel,
+		UseForTTS:  true,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	mistralSID = sid
+	return nil
+}
+
+func teardownMistralCredential() {
+	if mistralSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, mistralSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete mistral credential %s: %v", mistralSID, err)
 	}
 }
 
