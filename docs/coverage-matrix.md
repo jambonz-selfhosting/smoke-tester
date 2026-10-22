@@ -156,7 +156,7 @@ All variants of `PUT /Accounts/{sid}/Calls/{CallSid}`. Body shape contract-valid
 |---|---|---|---|---|---|---|
 | 6.1 | Redirect mid-call | `call_hook` | ☐ | ☐ | fern (calls.yaml) | |
 | 6.2 | Whisper | `whisper` (verb array) | ☐ | ☐ | fern + verb schemas | |
-| 6.3 | Mute / unmute | `mute_status` | ☐ | ☐ | fern | |
+| 6.3 | Mute / unmute | `mute_status` | ◐ | ☐ | fern | `TestMute_{ParentLeg,ChildLeg}_Directional`: `mute_status` on the parent (sbc-inbound) or dial child (sbc-outbound) leg must silence that leg (its audio and DTMF stop reaching the other party) while it still hears the other party, and `unmute` must restore it (windowed RMS, polled since the 202 returns before the INFO lands). Feature ◐: conference mute untested. Contract ☐: the 202 body is not schema-validated. |
 | 6.4 | Listen status (pause/silence/resume) | `listen_status` | ☐ | ☐ | fern | |
 | 6.5 | Conference mute/hold | `conf_mute_status`, `conf_hold_status` | ☐ | ☐ | fern | |
 | 6.6 | Conference participant ops (tag/coach/mute/hold) | `conferenceParticipantAction` | ☐ | ☐ | fern | |

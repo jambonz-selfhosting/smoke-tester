@@ -163,7 +163,7 @@ func runFive9ListenTest(t *testing.T, sdpMode string) {
 }
 
 // TestMute_ParentLeg_Directional — mute_status on the parent (caller) leg is
-// handled by sbc-inbound and must block only what the caller hears.
+// handled by sbc-inbound: the caller must go unheard while still hearing the callee.
 //
 // Steps:
 //   - script-dial-to-callee
@@ -172,8 +172,8 @@ func runFive9ListenTest(t *testing.T, sdpMode string) {
 //   - resolve-call-sids
 //   - baseline-audio-both-ways
 //   - mute
-//   - assert-callee-to-caller-blocked
-//   - assert-caller-to-callee-flows
+//   - assert-muted-leg-silenced
+//   - assert-muted-leg-still-hears
 //   - assert-dtmf-directional
 //   - unmute
 //   - assert-unmute-restores-audio
@@ -183,7 +183,7 @@ func TestMute_ParentLeg_Directional(t *testing.T) {
 }
 
 // TestMute_ChildLeg_Directional — mute_status on the dial child leg is
-// handled by sbc-outbound; it must block the same direction.
+// handled by sbc-outbound: the callee must go unheard while still hearing the caller.
 //
 // Steps:
 //   - script-dial-to-callee
@@ -192,8 +192,8 @@ func TestMute_ParentLeg_Directional(t *testing.T) {
 //   - resolve-call-sids
 //   - baseline-audio-both-ways
 //   - mute
-//   - assert-callee-to-caller-blocked
-//   - assert-caller-to-callee-flows
+//   - assert-muted-leg-silenced
+//   - assert-muted-leg-still-hears
 //   - assert-dtmf-directional
 //   - unmute
 //   - assert-unmute-restores-audio
@@ -295,13 +295,19 @@ func runMuteDirectionalTest(t *testing.T, muteChild bool) {
 	time.Sleep(BridgeSettleDelay)
 	s.Done()
 
+	// the muted leg must go unheard; the other leg is what it still hears
+	muted, other, mutedName := caller, callee, "caller"
+	if muteChild {
+		muted, other, mutedName = callee, caller, "callee"
+	}
+
 	s = Step(t, "baseline-audio-both-ways")
-	baseToCaller := speakRMS(s, callee, caller, wavPath)
-	baseToCallee := speakRMS(s, caller, callee, wavPath)
-	s.Logf("baseline RMS: callee->caller=%.0f caller->callee=%.0f", baseToCaller, baseToCallee)
-	if baseToCaller < minSpeechRMS || baseToCallee < minSpeechRMS {
-		s.Fatalf("speech did not cross the bridge before mute: callee->caller RMS %.0f, "+
-			"caller->callee RMS %.0f (want >= %d)", baseToCaller, baseToCallee, minSpeechRMS)
+	baseFromMuted := speakRMS(s, muted, other, wavPath)
+	baseToMuted := speakRMS(s, other, muted, wavPath)
+	s.Logf("baseline RMS: from %s=%.0f to %s=%.0f", mutedName, baseFromMuted, mutedName, baseToMuted)
+	if baseFromMuted < minSpeechRMS || baseToMuted < minSpeechRMS {
+		s.Fatalf("speech did not cross the bridge before mute: from %s RMS %.0f, to %s RMS %.0f (want >= %d)",
+			mutedName, baseFromMuted, mutedName, baseToMuted, minSpeechRMS)
 	}
 	s.Done()
 
@@ -311,38 +317,39 @@ func runMuteDirectionalTest(t *testing.T, muteChild bool) {
 	}
 	s.Done()
 
-	s = Step(t, "assert-callee-to-caller-blocked")
+	s = Step(t, "assert-muted-leg-silenced")
 	// the 202 returns before the INFO reaches the SBC, so poll for the block
-	muted := pollRMS(s, callee, caller, wavPath, func(rms float64) bool { return rms <= baseToCaller/10 })
-	if muted > baseToCaller/10 {
-		s.Fatalf("mute did not block callee -> caller: RMS %.0f vs baseline %.0f", muted, baseToCaller)
+	silenced := pollRMS(s, muted, other, wavPath, func(rms float64) bool { return rms <= baseFromMuted/10 })
+	if silenced > baseFromMuted/10 {
+		s.Fatalf("mute did not silence the %s: RMS %.0f vs baseline %.0f — wrong from-tag?",
+			mutedName, silenced, baseFromMuted)
 	}
 	s.Done()
 
-	s = Step(t, "assert-caller-to-callee-flows")
-	flowing := speakRMS(s, caller, callee, wavPath)
-	s.Logf("muted caller->callee RMS=%.0f (baseline %.0f)", flowing, baseToCallee)
-	if flowing < baseToCallee/3 {
-		s.Errorf("REPRODUCED: mute also blocked caller -> callee (RMS %.0f vs baseline %.0f) — "+
+	s = Step(t, "assert-muted-leg-still-hears")
+	heard := speakRMS(s, other, muted, wavPath)
+	s.Logf("muted %s still hears RMS=%.0f (baseline %.0f)", mutedName, heard, baseToMuted)
+	if heard < baseToMuted/3 {
+		s.Errorf("REPRODUCED: the muted %s can no longer hear the other party (RMS %.0f vs baseline %.0f) — "+
 			"the SBC blocked the entire call (rtpengine block media without 'directional')",
-			flowing, baseToCallee)
+			mutedName, heard, baseToMuted)
 	}
 	s.Done()
 
 	s = Step(t, "assert-dtmf-directional")
-	if err := caller.SendDTMF("1"); err != nil {
-		s.Fatalf("caller SendDTMF: %v", err)
+	if err := muted.SendDTMF("1"); err != nil {
+		s.Fatalf("muted SendDTMF: %v", err)
 	}
-	if err := callee.SendDTMF("2"); err != nil {
-		s.Fatalf("callee SendDTMF: %v", err)
+	if err := other.SendDTMF("2"); err != nil {
+		s.Fatalf("other SendDTMF: %v", err)
 	}
 	time.Sleep(time.Second)
-	if !hasDTMF(callee, "1") {
-		s.Errorf("REPRODUCED: muted caller's DTMF did not reach the callee — the SBC blocked " +
-			"DTMF for the entire call (rtpengine block DTMF without 'directional')")
+	if hasDTMF(other, "1") {
+		s.Errorf("the muted %s's DTMF still reached the other party; the DTMF block was not applied", mutedName)
 	}
-	if hasDTMF(caller, "2") {
-		s.Errorf("callee's DTMF reached the muted caller; the DTMF block was not applied")
+	if !hasDTMF(muted, "2") {
+		s.Errorf("REPRODUCED: DTMF no longer reaches the muted %s — the SBC blocked DTMF for the "+
+			"entire call (rtpengine block DTMF without 'directional')", mutedName)
 	}
 	s.Done()
 
@@ -353,9 +360,9 @@ func runMuteDirectionalTest(t *testing.T, muteChild bool) {
 	s.Done()
 
 	s = Step(t, "assert-unmute-restores-audio")
-	restored := pollRMS(s, callee, caller, wavPath, func(rms float64) bool { return rms >= baseToCaller/3 })
-	if restored < baseToCaller/3 {
-		s.Errorf("call stuck muted after unmute: RMS %.0f vs baseline %.0f", restored, baseToCaller)
+	restored := pollRMS(s, muted, other, wavPath, func(rms float64) bool { return rms >= baseFromMuted/3 })
+	if restored < baseFromMuted/3 {
+		s.Errorf("%s stuck muted after unmute: RMS %.0f vs baseline %.0f", mutedName, restored, baseFromMuted)
 	}
 	s.Done()
 }
