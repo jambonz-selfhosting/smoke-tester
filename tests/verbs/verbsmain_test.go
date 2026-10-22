@@ -105,6 +105,10 @@ var (
 	svaraLabel string
 	svaraSID   string
 
+	// Giggy TTS credential, provisioned IF GIGGY_API_KEY is set.
+	giggyLabel string
+	giggySID   string
+
 	// xai speech credential (dual-use STT+TTS) provisioned at TestMain IF
 	// XAI_API_KEY is set (optional vendor). When unset, xaiLabel stays "" and
 	// the xai gather/transcribe/say tests pass without exercising xai.
@@ -298,6 +302,16 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: SVARA_API_KEY not set — Svara tests will skip")
 	}
 
+	// 3b6. Giggy TTS speech credential — optional.
+	if cfg.HasGiggy() {
+		if err := provisionGiggyCredential(); err != nil {
+			log.Fatalf("tests/verbs: Giggy credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: Giggy credential label=%s sid=%s", giggyLabel, giggySID)
+	} else {
+		log.Printf("tests/verbs: GIGGY_API_KEY not set — Giggy tests will skip")
+	}
+
 	// 3c. xai STT speech credential — optional. Only provisioned when
 	// XAI_API_KEY is set; otherwise the xai gather/transcribe tests pass
 	// without exercising xai STT.
@@ -405,6 +419,7 @@ func TestMain(m *testing.M) {
 	teardownKugelaudioCredential()
 	teardownSpeechifyCredential()
 	teardownSvaraCredential()
+	teardownGiggyCredential()
 	teardownXaiCredential()
 	teardownZoomCredential()
 	teardownGradiumCredential()
@@ -643,6 +658,37 @@ func teardownSvaraCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, svaraSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete Svara credential %s: %v", svaraSID, err)
+	}
+}
+
+// provisionGiggyCredential creates a TTS-only Giggy credential, labelled
+// `it-giggy-<runID>`.
+func provisionGiggyCredential() error {
+	giggyLabel = "it-giggy-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "giggy",
+		Label:     giggyLabel,
+		APIKey:    cfg.GiggyAPIKey,
+		ModelID:   "giggyspeech",
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	giggySID = sid
+	return nil
+}
+
+func teardownGiggyCredential() {
+	if giggySID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, giggySID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete Giggy credential %s: %v", giggySID, err)
 	}
 }
 

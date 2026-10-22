@@ -155,7 +155,13 @@ func TestVerb_LLM_VoiceLive_ToolHook(t *testing.T) {
 					},
 				},
 			},
-			"response_create": map[string]any{},
+			// Voice Live requires an opening response, which runs before the caller
+			// speaks; with tools allowed the model sometimes invented a get_weather
+			// call there (e.g. Paris) ahead of the real question.
+			"response_create": map[string]any{
+				"tool_choice":  "none",
+				"instructions": "Greet the caller in one short sentence and ask which city they want the weather for.",
+			},
 		},
 	)
 	sess.ScriptCallHook(WithWarmupScript(webhook.Script{

@@ -94,6 +94,11 @@ type Settings struct {
 	SvaraVoiceID      string
 	SvaraHindiVoiceID string
 
+	// Optional — Giggy TTS API key. Unset = the giggy tests skip.
+	GiggyAPIKey string
+	// Giggy voice UUID; defaults to an English (US General) public voice.
+	GiggyVoiceID string
+
 	// Optional — xAI STT API key. When set, TestMain provisions an xai
 	// SpeechCredential under the ephemeral account and the xai gather/
 	// transcribe tests exercise it. When unset those tests pass without
@@ -258,6 +263,9 @@ func (s *Settings) HasSpeechify() bool { return s.SpeechifyAPIKey != "" }
 // HasSvara reports whether the Svara TTS tests can run.
 func (s *Settings) HasSvara() bool { return s.SvaraAPIKey != "" }
 
+// HasGiggy reports whether the Giggy TTS tests can run.
+func (s *Settings) HasGiggy() bool { return s.GiggyAPIKey != "" }
+
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
@@ -386,6 +394,8 @@ func parse() (*Settings, error) {
 		SvaraAPIKey:              os.Getenv("SVARA_API_KEY"),
 		SvaraVoiceID:             firstNonEmpty(os.Getenv("SVARA_VOICE_ID"), "sv_a5thzx8v"),
 		SvaraHindiVoiceID:        firstNonEmpty(os.Getenv("SVARA_HINDI_VOICE_ID"), "sv_fhn6tfve"),
+		GiggyAPIKey:              os.Getenv("GIGGY_API_KEY"),
+		GiggyVoiceID:             firstNonEmpty(os.Getenv("GIGGY_VOICE_ID"), "8f5aee7d-dd96-41c4-b04f-19bff046b02a"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
 		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
 		GradiumAPIKey:            os.Getenv("GRADIUM_API_KEY"),
