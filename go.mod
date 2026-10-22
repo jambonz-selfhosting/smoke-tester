@@ -9,9 +9,11 @@ require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/santhosh-tekuri/jsonschema/v5 v5.3.1
 	golang.ngrok.com/ngrok v1.13.0
+	golang.org/x/oauth2 v0.37.0
 )
 
 require (
+	cloud.google.com/go/compute/metadata v0.3.0 // indirect
 	github.com/dvonthenen/websocket v1.5.1-dyv.2 // indirect
 	github.com/emiago/dtls/v3 v3.0.0-20260122183559-8b8d23e359c0 // indirect
 	github.com/fatih/color v1.15.0 // indirect

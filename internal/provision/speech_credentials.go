@@ -21,12 +21,14 @@ import (
 // For deepgram, only `api_key` is required (deepgram_stt_uri / deepgram_tts_uri
 // can be set if pointing at an on-prem cluster; we don't).
 type SpeechCredentialCreate struct {
-	Vendor     string `json:"vendor"`
-	Label      string `json:"label,omitempty"`
-	UseForTTS  bool   `json:"use_for_tts"`
-	UseForSTT  bool   `json:"use_for_stt"`
-	APIKey     string `json:"api_key,omitempty"`
-	ServiceKey string `json:"service_key,omitempty"`
+	Vendor    string `json:"vendor"`
+	Label     string `json:"label,omitempty"`
+	UseForTTS bool   `json:"use_for_tts"`
+	UseForSTT bool   `json:"use_for_stt"`
+	// UseForNoiseIsolation lets the noiseIsolation verb use it (kugelaudio).
+	UseForNoiseIsolation bool   `json:"use_for_noise_isolation,omitempty"`
+	APIKey               string `json:"api_key,omitempty"`
+	ServiceKey           string `json:"service_key,omitempty"`
 	// SpeechmaticsSTTURI is required by the API when vendor is
 	// "speechmatics" — the realtime host, e.g. "eu2.rt.speechmatics.com".
 	SpeechmaticsSTTURI string `json:"speechmatics_stt_uri,omitempty"`
@@ -38,6 +40,9 @@ type SpeechCredentialCreate struct {
 	// API: a gemini-* model routes recognition to the Gemini Live API
 	// instead of Cloud Speech-to-Text.
 	STTModelID string `json:"stt_model_id,omitempty"`
+	// APIURI is the vendor's API base URL where it has regional hosts
+	// (gradium: https://eu.api.gradium.ai).
+	APIURI string `json:"api_uri,omitempty"`
 }
 
 // CreateAccountSpeechCredential POSTs a credential under an account. Returns
@@ -64,24 +69,32 @@ func (c *Client) CreateAccountSpeechCredential(ctx context.Context, accountSID s
 // credential whose stt_tested_ok is false, so provisioning one is not enough
 // — it has to pass this first.
 func (c *Client) TestAccountSpeechCredential(ctx context.Context, accountSID, sid string) (string, error) {
+	return c.testSpeechCredential(ctx, accountSID, sid, "stt")
+}
+
+// TestAccountSpeechCredentialTTS is TestAccountSpeechCredential for the tts result.
+func (c *Client) TestAccountSpeechCredentialTTS(ctx context.Context, accountSID, sid string) (string, error) {
+	return c.testSpeechCredential(ctx, accountSID, sid, "tts")
+}
+
+func (c *Client) testSpeechCredential(ctx context.Context, accountSID, sid, service string) (string, error) {
 	path := fmt.Sprintf("/Accounts/%s/SpeechCredentials/%s/test", accountSID, sid)
 	raw, err := c.Request(ctx, http.MethodGet, path, nil, "", http.StatusOK)
 	if err != nil {
 		return "", err
 	}
-	var res struct {
-		STT struct {
-			Status string `json:"status"`
-			Reason string `json:"reason"`
-		} `json:"stt"`
+	var res map[string]struct {
+		Status string `json:"status"`
+		Reason string `json:"reason"`
 	}
 	if err := json.Unmarshal(raw, &res); err != nil {
 		return "", fmt.Errorf("decode credential test: %w", err)
 	}
-	if res.STT.Status != "ok" {
-		return res.STT.Status, fmt.Errorf("stt credential test failed: %s", res.STT.Reason)
+	r := res[service]
+	if r.Status != "ok" {
+		return r.Status, fmt.Errorf("%s credential test failed: %s", service, r.Reason)
 	}
-	return res.STT.Status, nil
+	return r.Status, nil
 }
 
 // DeleteAccountSpeechCredential removes a credential. Cleanup is idempotent:

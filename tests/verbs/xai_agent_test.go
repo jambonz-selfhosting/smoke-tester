@@ -18,12 +18,14 @@
 package verbs
 
 import (
+	"context"
 	"path/filepath"
 	"strings"
 	"testing"
 	"time"
 
 	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
+	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
 // TestVerb_Agent_Xai — eventHook fires user_transcript, llm_response and
@@ -48,6 +50,9 @@ import (
 // 12. assert-llm-response-xai — find an llm_response event with non-empty body
 // 13. assert-turn-end-xai — find a turn_end with transcript + response + latency
 // 14. hangup
+// xaiAgentTurnWait bounds the wait for the agent's turn to end.
+const xaiAgentTurnWait = 25 * time.Second
+
 func TestVerb_Agent_Xai(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
@@ -139,7 +144,13 @@ func TestVerb_Agent_Xai(t *testing.T) {
 	// no `_anon` contention). Each event type fires at a different
 	// moment (user_transcript ~when STT finalizes, llm_response ~when
 	// LLM stream completes, turn_end ~when TTS empties).
-	cbs := DrainCallbacks(sess, LLMReplyWindow)
+	// turn_end is the last event of the turn, so return as soon as it lands;
+	// grok's first token can take over 10s, well past LLMReplyWindow.
+	waitCtx, cancel := context.WithTimeout(ctx, xaiAgentTurnWait)
+	cbs := WaitCallbacksUntil(waitCtx, sess, func(c []webhook.Callback) bool {
+		return len(findAgentEvents(c, "turn_end")) > 0
+	})
+	cancel()
 	call.StopRecording()
 	s.Logf("captured %d agent events", len(cbs))
 	s.Done()
