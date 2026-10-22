@@ -101,6 +101,10 @@ var (
 	speechifySID   string
 	speechifyVoice = "geffen_32"
 
+	// Svara TTS credential, provisioned IF SVARA_API_KEY is set.
+	svaraLabel string
+	svaraSID   string
+
 	// Giggy TTS credential, provisioned IF GIGGY_API_KEY is set.
 	giggyLabel string
 	giggySID   string
@@ -288,7 +292,17 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: SPEECHIFY_API_KEY not set — Speechify tests will skip")
 	}
 
-	// 3b5. Giggy TTS speech credential — optional.
+	// 3b5. Svara TTS speech credential — optional.
+	if cfg.HasSvara() {
+		if err := provisionSvaraCredential(); err != nil {
+			log.Fatalf("tests/verbs: Svara credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: Svara credential label=%s sid=%s", svaraLabel, svaraSID)
+	} else {
+		log.Printf("tests/verbs: SVARA_API_KEY not set — Svara tests will skip")
+	}
+
+	// 3b6. Giggy TTS speech credential — optional.
 	if cfg.HasGiggy() {
 		if err := provisionGiggyCredential(); err != nil {
 			log.Fatalf("tests/verbs: Giggy credential provisioning failed: %v", err)
@@ -404,6 +418,7 @@ func TestMain(m *testing.M) {
 	teardownElevenlabsCredential()
 	teardownKugelaudioCredential()
 	teardownSpeechifyCredential()
+	teardownSvaraCredential()
 	teardownGiggyCredential()
 	teardownXaiCredential()
 	teardownZoomCredential()
@@ -612,6 +627,37 @@ func teardownSpeechifyCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, speechifySID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete Speechify credential %s: %v", speechifySID, err)
+	}
+}
+
+// provisionSvaraCredential creates a TTS-only Svara credential, labelled
+// `it-svara-<runID>`.
+func provisionSvaraCredential() error {
+	svaraLabel = "it-svara-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "svara",
+		Label:     svaraLabel,
+		APIKey:    cfg.SvaraAPIKey,
+		ModelID:   "svara-tts-turbo",
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	svaraSID = sid
+	return nil
+}
+
+func teardownSvaraCredential() {
+	if svaraSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, svaraSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete Svara credential %s: %v", svaraSID, err)
 	}
 }
 
