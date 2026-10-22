@@ -7,6 +7,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jambonz-selfhosting/smoke-tester/internal/wav"
 )
 
 // dtmfRow/dtmfCol are the standard DTMF tone pairs.
@@ -44,26 +46,8 @@ func SynthesizeDTMFWAV(t *testing.T, digits string, toneMS, gapMS int) string {
 	}
 	pcm = append(pcm, pad...)
 
-	body := make([]byte, len(pcm)*2)
-	for i, v := range pcm {
-		binary.LittleEndian.PutUint16(body[i*2:], uint16(v))
-	}
-	var hdr []byte
-	hdr = append(hdr, []byte("RIFF")...)
-	hdr = binary.LittleEndian.AppendUint32(hdr, uint32(36+len(body)))
-	hdr = append(hdr, []byte("WAVEfmt ")...)
-	hdr = binary.LittleEndian.AppendUint32(hdr, 16)
-	hdr = binary.LittleEndian.AppendUint16(hdr, 1)
-	hdr = binary.LittleEndian.AppendUint16(hdr, 1)
-	hdr = binary.LittleEndian.AppendUint32(hdr, rate)
-	hdr = binary.LittleEndian.AppendUint32(hdr, rate*2)
-	hdr = binary.LittleEndian.AppendUint16(hdr, 2)
-	hdr = binary.LittleEndian.AppendUint16(hdr, 16)
-	hdr = append(hdr, []byte("data")...)
-	hdr = binary.LittleEndian.AppendUint32(hdr, uint32(len(body)))
-
 	path := filepath.Join(t.TempDir(), "dtmf-inband.wav")
-	if err := os.WriteFile(path, append(hdr, body...), 0o644); err != nil {
+	if err := wav.WriteSamples(path, pcm); err != nil {
 		t.Fatalf("SynthesizeDTMFWAV: %v", err)
 	}
 	return path

@@ -458,6 +458,14 @@ None.
 - **Result:** 2/2 green on hoan.jambonz.io (feature-server file overlaid on the box's branch; original at `/home/jambonz/elevenlabs_s2s.js.pre-dtmf`).
 - **Mutation check:** the test fails on the adapter without DTMF, on per-digit sending (`["1","2","3","4","#"]`), and on a disabled inter-digit timeout (7.9s instead of ~2s). The test agent has no `dtmf_input_settings`, so only jambonz can combine the digits.
 
+### 2026-10-05 — KugelAudio Clarity (clarity-1) noise isolation
+
+- **Feature:** noiseIsolation vendor `kugelaudio` (Clarity cloud speech enhancement, not TTS/STT). Branch `feat/kugelaudio_clarity` in mediajam (vendor), mrf (channel vars on `noise.start`), feature-server (credential lookup), schema (enum, `label`, inline `auth`), api-server + webapp (`use_for_noise_isolation` credential flag, kugelaudio only), smoke-tester. The key comes from a speech credential with `use_for_noise_isolation`, picked by `label` or the default (account, then SP, unlabelled) lookup, or inline `auth.apiKey`.
+- **Tests** (`tests/verbs/kugelaudio_clarity_test.go`): `_Listen` (label; control and Clarity calls run concurrently, forked with `listen`), `_Agent_` (shorthand, default lookup, background `config.listen` fork), `_TtsOnlyCredentialIgnored` (serial; the TTS-only credential must not start Clarity). The noise check places each forked frame on the wall clock and measures only the noise-only lead of the prompt: Clarity must leave <= 50% of it above half the noise RMS, the control >= 90%. Energy ratios can't separate denoising from a gain drop, and whole-fork frame counts let missing frames pass as silenced.
+- **Suite credentials:** TTS-only `it-kugelaudio-<runID>`, noise-only `it-<runID>-kugelaudio-ni`, and an unlabelled noise-only one; all removed by `teardownKugelaudioCredential`, also when provisioning fails halfway.
+- **Release order:** publish schema and mrf, bump them in feature-server; run the 11.1.7 DB migration (two columns) before the new api-server serves the webapp. Until schema ships, the agent verb rejects `label`/`auth`. The box carries hand-copied `node_modules` files.
+- **Free plan:** two concurrent Clarity streams, exactly what these tests open at peak.
+
 ### 2026-10-05 — `TestVerb_Dial_SimultaneousAnswer`: dial leaked a leg when two targets answered at once
 
 - **Symptom:** multi-target `dial`, two callees answer within milliseconds; one callee never gets a BYE, even after the caller hangs up. The SBC call count stays +1 per leak.

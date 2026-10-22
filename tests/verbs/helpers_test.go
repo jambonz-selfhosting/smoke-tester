@@ -641,6 +641,9 @@ type AudioRoundtripOpts struct {
 	// LLMReplyWindow. Set shorter for tests that don't need a full LLM
 	// round-trip (e.g. transcribe, gather_speech).
 	ReplyWait time.Duration
+	// PromptStarted, when set, receives the wall-clock time the prompt WAV
+	// started streaming.
+	PromptStarted *time.Time
 }
 
 // RunAudioRoundtrip performs the answer/record/prompt/wait sequence. Returns
@@ -674,6 +677,9 @@ func RunAudioRoundtrip(t *testing.T, ctx context.Context, call *jsip.Call, opts 
 	WaitFor(t, "wait-for-stt", RecognizerArmDelay)
 
 	s = Step(t, "send-prompt-wav")
+	if opts.PromptStarted != nil {
+		*opts.PromptStarted = time.Now()
+	}
 	if err := call.SendWAV(opts.PromptWAV); err != nil {
 		s.Fatalf("SendWAV(%s): %v", opts.PromptWAV, err)
 	}

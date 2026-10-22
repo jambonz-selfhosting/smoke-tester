@@ -16,7 +16,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/sha1"
-	"encoding/binary"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -27,6 +26,8 @@ import (
 	"os"
 	"path/filepath"
 	"time"
+
+	"github.com/jambonz-selfhosting/smoke-tester/internal/wav"
 )
 
 const EnvKey = "DEEPGRAM_API_KEY"
@@ -86,7 +87,7 @@ func EnsureWAV(ctx context.Context, cacheDir, text string, opts PromptOptions) (
 		return "", err
 	}
 
-	if err := writeTelephonyWAV(out, pcm); err != nil {
+	if err := wav.Write(out, pcm); err != nil {
 		return "", err
 	}
 	return out, nil
@@ -136,34 +137,3 @@ func fetchLPCM(ctx context.Context, apiKey, text string, opts PromptOptions) ([]
 	return pcm, nil
 }
 
-// writeTelephonyWAV wraps raw 8 kHz / mono / 16-bit LPCM in a RIFF/WAVE
-// header that internal/sip/Call.SendWAV's readTelephonyWAV() accepts.
-func writeTelephonyWAV(path string, pcm []byte) error {
-	const (
-		sampleRate    = 8000
-		numChannels   = 1
-		bitsPerSample = 16
-	)
-	byteRate := uint32(sampleRate * numChannels * bitsPerSample / 8)
-	blockAlign := uint16(numChannels * bitsPerSample / 8)
-
-	var buf bytes.Buffer
-	buf.WriteString("RIFF")
-	binary.Write(&buf, binary.LittleEndian, uint32(36+len(pcm)))
-	buf.WriteString("WAVE")
-	// fmt chunk
-	buf.WriteString("fmt ")
-	binary.Write(&buf, binary.LittleEndian, uint32(16))                // chunk size
-	binary.Write(&buf, binary.LittleEndian, uint16(1))                 // PCM
-	binary.Write(&buf, binary.LittleEndian, uint16(numChannels))       //
-	binary.Write(&buf, binary.LittleEndian, uint32(sampleRate))        //
-	binary.Write(&buf, binary.LittleEndian, byteRate)                  //
-	binary.Write(&buf, binary.LittleEndian, blockAlign)                //
-	binary.Write(&buf, binary.LittleEndian, uint16(bitsPerSample))     //
-	// data chunk
-	buf.WriteString("data")
-	binary.Write(&buf, binary.LittleEndian, uint32(len(pcm)))
-	buf.Write(pcm)
-
-	return os.WriteFile(path, buf.Bytes(), 0o644)
-}

@@ -21,12 +21,14 @@ import (
 // For deepgram, only `api_key` is required (deepgram_stt_uri / deepgram_tts_uri
 // can be set if pointing at an on-prem cluster; we don't).
 type SpeechCredentialCreate struct {
-	Vendor     string `json:"vendor"`
-	Label      string `json:"label,omitempty"`
-	UseForTTS  bool   `json:"use_for_tts"`
-	UseForSTT  bool   `json:"use_for_stt"`
-	APIKey     string `json:"api_key,omitempty"`
-	ServiceKey string `json:"service_key,omitempty"`
+	Vendor    string `json:"vendor"`
+	Label     string `json:"label,omitempty"`
+	UseForTTS bool   `json:"use_for_tts"`
+	UseForSTT bool   `json:"use_for_stt"`
+	// UseForNoiseIsolation lets the noiseIsolation verb use it (kugelaudio).
+	UseForNoiseIsolation bool   `json:"use_for_noise_isolation,omitempty"`
+	APIKey               string `json:"api_key,omitempty"`
+	ServiceKey           string `json:"service_key,omitempty"`
 	// SpeechmaticsSTTURI is required by the API when vendor is
 	// "speechmatics" — the realtime host, e.g. "eu2.rt.speechmatics.com".
 	SpeechmaticsSTTURI string `json:"speechmatics_stt_uri,omitempty"`
