@@ -151,7 +151,11 @@ RELEASE_GATE_VERBS := \
 	TestSDP_Sendonly_InitialOffer \
 	TestSDP_Sendonly_ReinviteLoop \
 	TestSDP_Sendonly_HoldResume \
-	TestSDP_OfferMode_EarlyAnswerDirectionChange
+	TestSDP_OfferMode_EarlyAnswerDirectionChange \
+	TestFive9_Voicestream_ListenGetsAudio \
+	TestFive9_Voicestream_ReverseBlocked \
+	TestMute_ParentLeg_Directional \
+	TestMute_ChildLeg_Directional
 
 # Report-only: run and show the result, but never fail the release on it.
 #
