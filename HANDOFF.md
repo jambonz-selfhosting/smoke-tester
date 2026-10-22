@@ -450,6 +450,14 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-10-12 — `TestVerb_LLM_ElevenLabs_DTMF`: caller DTMF to an ElevenLabs agent
+
+- **Feature:** feature-server `feat/elevenlabs-dtmf` buffers caller digits behind `llmOptions.dtmf` and sends each entry as one `user_message` with `source_medium: "dtmf"`; `llm:update` now forwards `user_message`/`user_activity`/`contextual_update`.
+- **Why buffered:** over the agent WebSocket ElevenLabs makes every `user_message` its own turn; the agent's `dtmf_input_settings` do not apply there. Per-digit `1234#` gave 5 turns and "Are you still there?"; one message gave one turn `1234`.
+- **Gotcha:** a text `user_message` (llm:update) produces no `user_transcript` event, only the agent's reply.
+- **Result:** 2/2 green on hoan.jambonz.io (feature-server file overlaid on the box's branch; original at `/home/jambonz/elevenlabs_s2s.js.pre-dtmf`).
+- **Mutation check:** the test fails on the adapter without DTMF, on per-digit sending (`["1","2","3","4","#"]`), and on a disabled inter-digit timeout (7.9s instead of ~2s). The test agent has no `dtmf_input_settings`, so only jambonz can combine the digits.
+
 ### 2026-10-05 — KugelAudio Clarity (clarity-1) noise isolation
 
 - **Feature:** noiseIsolation vendor `kugelaudio` (Clarity cloud speech enhancement, not TTS/STT). Branch `feat/kugelaudio_clarity` in mediajam (vendor), mrf (channel vars on `noise.start`), feature-server (credential lookup), schema (enum, `label`, inline `auth`), api-server + webapp (`use_for_noise_isolation` credential flag, kugelaudio only), smoke-tester. The key comes from a speech credential with `use_for_noise_isolation`, picked by `label` or the default (account, then SP, unlabelled) lookup, or inline `auth.apiKey`.

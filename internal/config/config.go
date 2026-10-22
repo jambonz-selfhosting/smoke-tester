@@ -88,6 +88,17 @@ type Settings struct {
 	// Optional — Speechify TTS API key. Unset = the speechify tests skip.
 	SpeechifyAPIKey string
 
+	// Optional — Svara TTS API key. Unset = the svara tests skip.
+	SvaraAPIKey string
+	// Svara voice ids; default to an American English and a Hindi library voice.
+	SvaraVoiceID      string
+	SvaraHindiVoiceID string
+
+	// Optional — Giggy TTS API key. Unset = the giggy tests skip.
+	GiggyAPIKey string
+	// Giggy voice UUID; defaults to an English (US General) public voice.
+	GiggyVoiceID string
+
 	// Optional — xAI STT API key. When set, TestMain provisions an xai
 	// SpeechCredential under the ephemeral account and the xai gather/
 	// transcribe tests exercise it. When unset those tests pass without
@@ -113,9 +124,8 @@ type Settings struct {
 	// Optional — Gemini Developer API key ("AIza..."), for the google s2s
 	// (Gemini Live) tests. NOT interchangeable with GeminiServiceKey: Google
 	// refuses service accounts on the Developer API ("Access to Gemini API is
-	// restricted with service accounts"), and the Live s2s models it serves —
-	// gemini-3.8-live and -extended-thinking — are not published on Vertex AI,
-	// where the service account would otherwise work. Hence a separate key.
+	// restricted with service accounts"), and Vertex refuses API keys. Hence a
+	// separate key; the Vertex s2s test uses GeminiServiceKey instead.
 	GeminiAPIKey string
 
 	// Optional — OpenAI GPT-Live API key, kept separate from OpenAIAPIKey so
@@ -250,6 +260,12 @@ func (s *Settings) HasKugelaudio() bool { return s.KugelaudioAPIKey != "" }
 // HasSpeechify reports whether the Speechify TTS tests can run.
 func (s *Settings) HasSpeechify() bool { return s.SpeechifyAPIKey != "" }
 
+// HasSvara reports whether the Svara TTS tests can run.
+func (s *Settings) HasSvara() bool { return s.SvaraAPIKey != "" }
+
+// HasGiggy reports whether the Giggy TTS tests can run.
+func (s *Settings) HasGiggy() bool { return s.GiggyAPIKey != "" }
+
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
@@ -375,6 +391,11 @@ func parse() (*Settings, error) {
 		ElevenlabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
 		KugelaudioAPIKey:         os.Getenv("KUGELAUDIO_API_KEY"),
 		SpeechifyAPIKey:          os.Getenv("SPEECHIFY_API_KEY"),
+		SvaraAPIKey:              os.Getenv("SVARA_API_KEY"),
+		SvaraVoiceID:             firstNonEmpty(os.Getenv("SVARA_VOICE_ID"), "sv_a5thzx8v"),
+		SvaraHindiVoiceID:        firstNonEmpty(os.Getenv("SVARA_HINDI_VOICE_ID"), "sv_fhn6tfve"),
+		GiggyAPIKey:              os.Getenv("GIGGY_API_KEY"),
+		GiggyVoiceID:             firstNonEmpty(os.Getenv("GIGGY_VOICE_ID"), "8f5aee7d-dd96-41c4-b04f-19bff046b02a"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
 		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
 		GradiumAPIKey:            os.Getenv("GRADIUM_API_KEY"),
