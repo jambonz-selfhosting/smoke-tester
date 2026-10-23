@@ -541,7 +541,7 @@ func TestVerb_Say_Mistral_Options(t *testing.T) {
 		maxDur:     12 * time.Second,
 		verb: V("say", "text", "[emotion=happy]Your order shipped this morning and arrives on Thursday.",
 			"synthesizer", mistralSynth(mistralVoice, "en-US", map[string]any{
-				"model_id":       "voxtral-mini-tts-realtime-3-0",
+				"model_id":       "voxtral-mini-tts-3",
 				"expressiveness": 3,
 			})),
 		wantWords: []string{"shipped", "thursday"},
