@@ -137,9 +137,18 @@ func mistralGather(t *testing.T, recognizer map[string]any, wavPath string) stri
 	s = Step(t, "wait-action-gather-callback")
 	waitCtx, wcancel := context.WithTimeout(ctx, 45*time.Second)
 	defer wcancel()
-	cb, err := sess.WaitCallbackFor(waitCtx, "action/gather")
-	if err != nil {
-		s.Fatalf("WaitCallbackFor action/gather: %v", err)
+	// an eager end posts an early, non-final speechDetected action first (as
+	// deepgramflux's EagerEndOfTurn does); the gather's result is the final one
+	var cb webhook.Callback
+	for {
+		var err error
+		if cb, err = sess.WaitCallbackFor(waitCtx, "action/gather"); err != nil {
+			s.Fatalf("WaitCallbackFor action/gather: %v", err)
+		}
+		if speech, _ := cb.JSON["speech"].(map[string]any); speech == nil || speech["is_final"] != false {
+			break
+		}
+		s.Logf("early action/gather (eager end): %s", string(cb.Body))
 	}
 	s.Logf("action/gather body: %s", string(cb.Body))
 	s.Done()
