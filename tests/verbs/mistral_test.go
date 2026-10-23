@@ -9,6 +9,7 @@ package verbs
 import (
 	"context"
 	"path/filepath"
+	"slices"
 	"strings"
 	"testing"
 	"time"
@@ -498,6 +499,102 @@ func runMistralAgentEcho(t *testing.T, synth map[string]any) {
 	HangupAndWaitEnded(t, ctx, call)
 }
 
+// TestVerb_Agent_Mistral_EarlyGeneration — Voxtral's eager end drives
+// preflight. The eager end is held until the sentence closes, so the
+// preflight text equals the final's and the speculative reply is used.
+//
+// Steps:
+//   - preflight-skips
+//   - ensure-prompt-wav
+//   - script-agent-verb-mistral
+//   - place-call
+//   - answer-and-silence
+//   - wait-for-stt
+//   - turn-N-speak-and-drain
+//   - assert-preflight-hit
+func TestVerb_Agent_Mistral_EarlyGeneration(t *testing.T) {
+	if !requireMistral(t) {
+		return
+	}
+	requireWebhook(t)
+
+	s := Step(t, "preflight-skips")
+	if !agentSkipPreflight(t, s) {
+		return
+	}
+	s.Done()
+
+	ctx := WithTimeout(t, 180*time.Second)
+	uas := claimUAS(t, ctx)
+
+	wavs := make([]string, len(agentEchoTurns))
+	for i, turn := range agentEchoTurns {
+		s = Step(t, "ensure-prompt-wav")
+		path, err := tts.EnsureWAV(ctx, "testdata/agent", turn.prompt, tts.PromptOptions{
+			Model: "aura-asteria-en",
+		})
+		if err != nil {
+			s.Fatalf("EnsureWAV turn %d: %v", i+1, err)
+		}
+		wavs[i] = path
+		s.Done()
+	}
+
+	_, sess := claimSession(t)
+
+	s = Step(t, "script-agent-verb-mistral")
+	ScriptAgent(sess, agentVerbOpts{
+		SystemPrompt:    agentEchoSystemPrompt,
+		STT:             mistralRecognizer("en-US", nil),
+		EarlyGeneration: true,
+	})
+	s.Done()
+
+	s = Step(t, "place-call")
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(120))
+	s.Done()
+
+	s = Step(t, "answer-and-silence")
+	if err := call.Answer(); err != nil {
+		s.Fatalf("Answer: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	WaitFor(t, "wait-for-stt", RecognizerArmDelayLong)
+
+	var cbs []webhook.Callback
+	for i := range agentEchoTurns {
+		s = Step(t, formatAgentTurnStep(i+1, "speak-and-drain"))
+		if err := call.SendWAV(wavs[i]); err != nil {
+			s.Fatalf("SendWAV turn %d: %v", i+1, err)
+		}
+		if err := call.SendSilence(); err != nil {
+			s.Fatalf("SendSilence: %v", err)
+		}
+		cbs = append(cbs, DrainCallbacks(sess, LLMReplyWindow)...)
+		s.Done()
+	}
+
+	s = Step(t, "assert-preflight-hit")
+	var results []string
+	for _, te := range findAgentEvents(cbs, "turn_end") {
+		lat, _ := te.JSON["latency"].(map[string]any)
+		pf, _ := lat["preflight"].(map[string]any)
+		r, _ := pf["result"].(string)
+		results = append(results, r)
+	}
+	s.Logf("preflight results per turn: %v", results)
+	if !slices.Contains(results, "hit") {
+		s.Errorf("no turn used its preflight (results %v)", results)
+	}
+	s.Done()
+
+	HangupAndWaitEnded(t, ctx, call)
+}
+
 // TestVerb_Say_Mistral — one-shot say on the default model.
 //
 // Steps:
@@ -521,7 +618,7 @@ func TestVerb_Say_Mistral(t *testing.T) {
 	})
 }
 
-// TestVerb_Say_Mistral_Options — the realtime model and expressiveness reach
+// TestVerb_Say_Mistral_Options — a model override and expressiveness reach
 // the API (a rejected field fails the say), and an emotion tag is not read aloud.
 //
 // Steps:
