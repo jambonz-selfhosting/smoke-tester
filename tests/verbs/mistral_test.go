@@ -177,8 +177,9 @@ func TestVerb_Gather_Speech_Mistral(t *testing.T) {
 }
 
 // TestVerb_Gather_Speech_Mistral_Options — every turn and latency option
-// reaches Voxtral and still yields the phrase: streaming delay, context bias,
-// and the turn_detection thresholds (a rejected session.update fails the gather).
+// reaches Voxtral and still yields the phrase: recognizer model and hints
+// (context_bias), streaming delay, and the turn_detection thresholds (a
+// rejected session.update fails the gather).
 //
 // Steps:
 //   - script-gather-speech-mistral
@@ -192,9 +193,8 @@ func TestVerb_Gather_Speech_Mistral_Options(t *testing.T) {
 	if !requireMistral(t) {
 		return
 	}
-	transcript := mistralGather(t, mistralRecognizer("en-US", map[string]any{
+	r := mistralRecognizer("en-US", map[string]any{
 		"streamingDelayMs": 240,
-		"contextBias":      []string{"sun", "shining"},
 		"turnDetection": map[string]any{
 			"startThreshold":    0.5,
 			"eagerEndThreshold": 0.4,
@@ -202,7 +202,10 @@ func TestVerb_Gather_Speech_Mistral_Options(t *testing.T) {
 			"minSilenceMs":      300,
 			"endTimeoutMs":      2500,
 		},
-	}), resolveFixture(t, speechWAV))
+	})
+	r["model"] = mistralSTTModel
+	r["hints"] = []string{"sun", "shining"}
+	transcript := mistralGather(t, r, resolveFixture(t, speechWAV))
 	assertHits(t, transcript, 1, "sun", "shining")
 }
 
@@ -365,8 +368,8 @@ func TestVerb_Transcribe_Mistral(t *testing.T) {
 	s.Done()
 }
 
-// TestVerb_Transcribe_Mistral_Diarize — diarize replaces turn detection with
-// Voxtral's speaker segments; each segment still reaches transcriptionHook.
+// TestVerb_Transcribe_Mistral_Diarize — recognizer.diarization replaces turn
+// detection with Voxtral's speaker segments; each still reaches transcriptionHook.
 //
 // Steps:
 //   - script-transcribe-pause-hangup-mistral
@@ -380,7 +383,9 @@ func TestVerb_Transcribe_Mistral_Diarize(t *testing.T) {
 	if !requireMistral(t) {
 		return
 	}
-	transcript, _ := mistralTranscribe(t, mistralRecognizer("en-US", map[string]any{"diarize": true}))
+	r := mistralRecognizer("en-US", nil)
+	r["diarization"] = true
+	transcript, _ := mistralTranscribe(t, r)
 
 	s := Step(t, "assert-transcript")
 	if transcript == "" {
