@@ -115,6 +115,11 @@ type Settings struct {
 	// exercise it; unset, they pass without exercising gradium — see HasGradium.
 	GradiumAPIKey string
 
+	// Optional — Mistral API key (Voxtral 3 realtime STT and TTS). When set,
+	// TestMain provisions a mistral SpeechCredential for both; unset, the
+	// mistral tests pass without exercising it — see HasMistral.
+	MistralAPIKey string
+
 	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the gemini
 	// live transcription models, which authenticate as a service account on
 	// Vertex AI. Needs roles/aiplatform.user, which the dialogflow key does not
@@ -288,6 +293,10 @@ func (s *Settings) HasZoom() bool { return s.ZoomAPIKey != "" }
 // Optional: when the key is unset those tests pass without exercising gradium.
 func (s *Settings) HasGradium() bool { return s.GradiumAPIKey != "" }
 
+// HasMistral reports whether the mistral (Voxtral) STT and TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising mistral.
+func (s *Settings) HasMistral() bool { return s.MistralAPIKey != "" }
+
 // HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
 // can run. Optional: when the key is unset those tests pass without
 // exercising gemini.
@@ -413,6 +422,7 @@ func parse() (*Settings, error) {
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
 		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
 		GradiumAPIKey:            os.Getenv("GRADIUM_API_KEY"),
+		MistralAPIKey:            os.Getenv("MISTRAL_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
 		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
 		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
