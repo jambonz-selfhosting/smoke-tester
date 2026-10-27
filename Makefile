@@ -1,4 +1,4 @@
-.PHONY: help build test test-rest test-sip test-verbs test-release-gate test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio lint clean deps
+.PHONY: help build test test-rest test-sip test-verbs test-release-gate test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio test-failover lint clean deps
 
 # Parallelism: default to min(NumCPU, 4). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
@@ -283,6 +283,12 @@ test-drachtio-uac-keepalive:
 
 test-drachtio-none:
 	go test -tags drachtio -count=1 -timeout 360s -parallel 2 -v -run "TestDrachtio_SessionTimer_NoneNoTimer" ./tests/drachtio/
+
+# Feature-server failover tests (tests/failover). They break the target box on
+# purpose over ssh, so they need FAILOVER_SSH / FAILOVER_SSH_KEY / FAILOVER_DEAD_FS
+# and are kept out of `make test` by the `failover` build tag.
+test-failover:
+	go test -tags failover -count=1 -timeout 600s -v -run "$(RUN)" ./tests/failover/
 
 # List every available drachtio test name (requires -tags drachtio, same
 # reason as above: without it the package is empty). Use this to discover
