@@ -110,7 +110,7 @@ var (
 	svaraLabel string
 	svaraSID   string
 
-	// Giggy TTS credential, provisioned IF GIGGY_API_KEY is set.
+	// Giggy TTS + STT credential, provisioned IF GIGGY_API_KEY is set.
 	giggyLabel string
 	giggySID   string
 
@@ -697,8 +697,8 @@ func teardownSvaraCredential() {
 	}
 }
 
-// provisionGiggyCredential creates a TTS-only Giggy credential, labelled
-// `it-giggy-<runID>`.
+// provisionGiggyCredential creates a dual-use (TTS + STT) Giggy credential,
+// labelled `it-giggy-<runID>`.
 func provisionGiggyCredential() error {
 	giggyLabel = "it-giggy-" + provision.RunID()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
@@ -709,6 +709,7 @@ func provisionGiggyCredential() error {
 		APIKey:    cfg.GiggyAPIKey,
 		ModelID:   "giggyspeech",
 		UseForTTS: true,
+		UseForSTT: true,
 	})
 	if err != nil {
 		return err

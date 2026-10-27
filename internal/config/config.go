@@ -94,7 +94,7 @@ type Settings struct {
 	SvaraVoiceID      string
 	SvaraHindiVoiceID string
 
-	// Optional — Giggy TTS API key. Unset = the giggy tests skip.
+	// Optional — Giggy API key (TTS + STT). Unset = the giggy tests skip.
 	GiggyAPIKey string
 	// Giggy voice UUID; defaults to an English (US General) public voice.
 	GiggyVoiceID string
@@ -278,7 +278,7 @@ func (s *Settings) HasSpeechify() bool { return s.SpeechifyAPIKey != "" }
 // HasSvara reports whether the Svara TTS tests can run.
 func (s *Settings) HasSvara() bool { return s.SvaraAPIKey != "" }
 
-// HasGiggy reports whether the Giggy TTS tests can run.
+// HasGiggy reports whether the Giggy TTS and STT tests can run.
 func (s *Settings) HasGiggy() bool { return s.GiggyAPIKey != "" }
 
 // HasXai reports whether the xai STT gather/transcribe tests can run.
