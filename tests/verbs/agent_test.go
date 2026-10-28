@@ -109,6 +109,10 @@ type agentVerbOpts struct {
 	LLMApiKey         string         // default cfg.DeepseekAPIKey when empty
 	STT               map[string]any // default deepgram when nil
 	TTS               map[string]any // default deepgram when nil
+	LLMNoAuth         bool           // omit llm.auth so feature-server looks up stored credentials
+	LLMLabel          string
+	LLMFallback       []map[string]any
+	FallbackTimeoutMs *int
 }
 
 // buildAgentVerb builds the verb-map jambonz will run. Centralised here so
@@ -137,19 +141,32 @@ func buildAgentVerb(opts agentVerbOpts) map[string]any {
 			"voice":  deepgramVoice,
 		}
 	}
+	llm := map[string]any{
+		"vendor": firstNonEmpty(opts.LLMVendor, "deepseek"),
+		"model":  firstNonEmpty(opts.LLMModel, "deepseek-chat"),
+		// Inline auth — feature-server skips the DB credential lookup
+		// when auth is set on the verb (lib/tasks/agent/index.js:446).
+		"auth": map[string]any{
+			"apiKey": firstNonEmpty(opts.LLMApiKey, cfg.DeepseekAPIKey),
+		},
+		"llmOptions": llmOptions,
+	}
+	if opts.LLMNoAuth {
+		delete(llm, "auth")
+	}
+	if opts.LLMLabel != "" {
+		llm["label"] = opts.LLMLabel
+	}
+	if len(opts.LLMFallback) > 0 {
+		llm["fallback"] = opts.LLMFallback
+	}
+	if opts.FallbackTimeoutMs != nil {
+		llm["fallbackTimeoutMs"] = *opts.FallbackTimeoutMs
+	}
 	verb := V("agent",
 		"stt", stt,
 		"tts", ttsCfg,
-		"llm", map[string]any{
-			"vendor": firstNonEmpty(opts.LLMVendor, "deepseek"),
-			"model":  firstNonEmpty(opts.LLMModel, "deepseek-chat"),
-			// Inline auth — feature-server skips the DB credential lookup
-			// when auth is set on the verb (lib/tasks/agent/index.js:446).
-			"auth": map[string]any{
-				"apiKey": firstNonEmpty(opts.LLMApiKey, cfg.DeepseekAPIKey),
-			},
-			"llmOptions": llmOptions,
-		},
+		"llm", llm,
 		"greeting", opts.Greeting,
 		"turnDetection", firstNonEmpty(opts.TurnDetection, "stt"),
 		"bargeIn", map[string]any{
