@@ -8,6 +8,8 @@
 // the scriptable fake OpenAI server on the webhook tunnel, for failures a
 // real vendor won't produce on demand: an error mid-call after a tool turn,
 // a persistent 429, and a stream cut after the caller heard part of a reply.
+// The App* tests add the application's fallback LLM (portal setting), which
+// joins the end of the chain behind the verb's own fallbacks.
 package verbs
 
 import (
@@ -18,6 +20,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/jambonz-selfhosting/smoke-tester/internal/provision"
 	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
@@ -38,15 +41,19 @@ func deepseekFallback() []map[string]any {
 func TestVerb_Agent_LLMFallback_BadKey(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
-	runLLMFallbackCall(t, func(*webhook.Session) agentVerbOpts {
-		return agentVerbOpts{
-			SystemPrompt: agentEchoSystemPrompt,
-			LLMVendor:    "openai",
-			LLMModel:     "gpt-4o-mini",
-			LLMApiKey:    "sk-it-invalid-smoke-key",
-			LLMFallback:  deepseekFallback(),
-		}
-	}, "openai", "deepseek", regexp.MustCompile(`(?i)401|api key|incorrect|auth`))
+	runLLMFallbackCall(t, fallbackCase{
+		build: func(*webhook.Session) agentVerbOpts {
+			return agentVerbOpts{
+				SystemPrompt: agentEchoSystemPrompt,
+				LLMVendor:    "openai",
+				LLMModel:     "gpt-4o-mini",
+				LLMApiKey:    "sk-it-invalid-smoke-key",
+				LLMFallback:  deepseekFallback(),
+			}
+		},
+		hops:   [][2]string{{"openai", "deepseek"}},
+		reason: regexp.MustCompile(`(?i)401|api key|incorrect|auth`),
+	})
 }
 
 // TestVerb_Agent_LLMFallback_Timeout — primary deepseek with a working key
@@ -62,15 +69,19 @@ func TestVerb_Agent_LLMFallback_Timeout(t *testing.T) {
 		return
 	}
 	timeout := 1
-	runLLMFallbackCall(t, func(*webhook.Session) agentVerbOpts {
-		return agentVerbOpts{
-			SystemPrompt:      agentEchoSystemPrompt,
-			FallbackTimeoutMs: &timeout,
-			LLMFallback: []map[string]any{
-				{"vendor": "openai", "model": "gpt-4o-mini", "auth": map[string]any{"apiKey": cfg.OpenAIAPIKey}},
-			},
-		}
-	}, "deepseek", "openai", regexp.MustCompile(`no response within 1ms`))
+	runLLMFallbackCall(t, fallbackCase{
+		build: func(*webhook.Session) agentVerbOpts {
+			return agentVerbOpts{
+				SystemPrompt:      agentEchoSystemPrompt,
+				FallbackTimeoutMs: &timeout,
+				LLMFallback: []map[string]any{
+					{"vendor": "openai", "model": "gpt-4o-mini", "auth": map[string]any{"apiKey": cfg.OpenAIAPIKey}},
+				},
+			}
+		},
+		hops:   [][2]string{{"deepseek", "openai"}},
+		reason: regexp.MustCompile(`no response within 1ms`),
+	})
 }
 
 // TestVerb_Agent_LLMFallback_NoCredentials — primary anthropic with no
@@ -81,16 +92,20 @@ func TestVerb_Agent_LLMFallback_Timeout(t *testing.T) {
 func TestVerb_Agent_LLMFallback_NoCredentials(t *testing.T) {
 	t.Parallel()
 	requireWebhook(t)
-	runLLMFallbackCall(t, func(*webhook.Session) agentVerbOpts {
-		return agentVerbOpts{
-			SystemPrompt: agentEchoSystemPrompt,
-			LLMVendor:    "anthropic",
-			LLMModel:     "claude-sonnet-4-5",
-			LLMNoAuth:    true,
-			LLMLabel:     "it-no-such-credential",
-			LLMFallback:  deepseekFallback(),
-		}
-	}, "anthropic", "deepseek", regexp.MustCompile(`No LLM credentials found for anthropic, label:it-no-such-credential`))
+	runLLMFallbackCall(t, fallbackCase{
+		build: func(*webhook.Session) agentVerbOpts {
+			return agentVerbOpts{
+				SystemPrompt: agentEchoSystemPrompt,
+				LLMVendor:    "anthropic",
+				LLMModel:     "claude-sonnet-4-5",
+				LLMNoAuth:    true,
+				LLMLabel:     "it-no-such-credential",
+				LLMFallback:  deepseekFallback(),
+			}
+		},
+		hops:   [][2]string{{"anthropic", "deepseek"}},
+		reason: regexp.MustCompile(`No LLM credentials found for anthropic, label:it-no-such-credential`),
+	})
 }
 
 // TestVerb_Agent_LLMFallback_RateLimit — the fake answers 429 with
@@ -106,11 +121,15 @@ func TestVerb_Agent_LLMFallback_RateLimit(t *testing.T) {
 	requireWebhook(t)
 	limited := webhook.LLMReply{Status: 429, RetryAfter: "20", ErrorCode: "rate_limit_exceeded"}
 	var sess *webhook.Session
-	cbs := runLLMFallbackCall(t, func(s *webhook.Session) agentVerbOpts {
-		sess = s
-		s.ScriptLLM(limited, limited)
-		return fakeOpenAIPrimary(s, agentVerbOpts{SystemPrompt: agentEchoSystemPrompt})
-	}, "openai", "deepseek", regexp.MustCompile(`429`))
+	cbs := runLLMFallbackCall(t, fallbackCase{
+		build: func(s *webhook.Session) agentVerbOpts {
+			sess = s
+			s.ScriptLLM(limited, limited)
+			return fakeOpenAIPrimary(s, agentVerbOpts{SystemPrompt: agentEchoSystemPrompt})
+		},
+		hops:   [][2]string{{"openai", "deepseek"}},
+		reason: regexp.MustCompile(`429`),
+	})
 	if cbs == nil {
 		return
 	}
@@ -132,11 +151,24 @@ func TestVerb_Agent_LLMFallback_RateLimit(t *testing.T) {
 	s.Done()
 }
 
-// runLLMFallbackCall places one agent call with the opts build returns,
+// fallbackCase is one runLLMFallbackCall scenario.
+type fallbackCase struct {
+	build  func(*webhook.Session) agentVerbOpts
+	app    *appFallback   // nil: the suite's shared application
+	hops   [][2]string    // the llm_fallback switches expected, {from, to} vendors in order
+	reason *regexp.Regexp // matches the last switch's reason
+}
+
+// appFallback configures the per-test application's fallback LLM: a stored
+// deepseek credential, with the portal flag on or off.
+type appFallback struct {
+	enabled bool
+}
+
+// runLLMFallbackCall places one agent call with the opts c.build returns,
 // speaks the echo prompt, and asserts the reply came through and the
-// actionHook reports exactly one switch from wantFrom to wantTo with a
-// reason matching reasonRe. Returns every callback seen, or nil if the
-// test passed without running.
+// actionHook reports exactly the switches in c.hops. Returns every callback
+// seen, or nil if the test passed without running.
 //
 // Steps:
 //  1. preflight-skips
@@ -151,8 +183,7 @@ func TestVerb_Agent_LLMFallback_RateLimit(t *testing.T) {
 //
 // 10. wait-action-agent-complete
 // 11. assert-llm-fallback — llm_fallback in the actionHook payload
-func runLLMFallbackCall(t *testing.T, build func(*webhook.Session) agentVerbOpts,
-	wantFrom, wantTo string, reasonRe *regexp.Regexp) []webhook.Callback {
+func runLLMFallbackCall(t *testing.T, c fallbackCase) []webhook.Callback {
 	t.Helper()
 	s := Step(t, "preflight-skips")
 	if !agentSkipPreflight(t, s) {
@@ -164,12 +195,13 @@ func runLLMFallbackCall(t *testing.T, build func(*webhook.Session) agentVerbOpts
 	uas := claimUAS(t, ctx)
 	wavs := ensurePromptWAVs(ctx, t, agentEchoPrompt)
 	_, sess := claimSession(t)
+	appSID := provisionAppFallback(ctx, t, c.app)
 
 	s = Step(t, "script-agent-verb-fallback")
-	ScriptAgent(sess, build(sess))
+	ScriptAgent(sess, c.build(sess))
 	s.Done()
 
-	call := startAgentCall(ctx, t, uas, sess)
+	call := startAgentCall(ctx, t, uas, sess, appSID)
 	all := speakAndWait(ctx, t, call, sess, "send-prompt", wavs[0], nil, func(c []webhook.Callback) bool {
 		return len(findAgentEvents(c, "turn_end")) > 0
 	})
@@ -190,7 +222,7 @@ func runLLMFallbackCall(t *testing.T, build func(*webhook.Session) agentVerbOpts
 	s.Done()
 
 	actionCB := awaitAgentComplete(ctx, t, sess, all)
-	assertOneFallback(t, actionCB, wantFrom, wantTo, reasonRe)
+	assertFallbacks(t, actionCB, c.hops, c.reason)
 	return all
 }
 
@@ -250,7 +282,7 @@ func TestVerb_Agent_LLMFallback_MidCallToolHistory(t *testing.T) {
 	sess.ScriptActionHookBody("agent-tool", []byte(`{"word":"`+secretWord+`"}`))
 	s.Done()
 
-	call := startAgentCall(ctx, t, uas, sess)
+	call := startAgentCall(ctx, t, uas, sess, "")
 	all := speakAndWait(ctx, t, call, sess, "turn-1-ask-for-tool", wavs[0], nil, func(c []webhook.Callback) bool {
 		return agentTurnEndNamesTool(c, "get_secret_word")
 	})
@@ -285,27 +317,100 @@ func TestVerb_Agent_LLMFallback_MidCallToolHistory(t *testing.T) {
 	s.Done()
 
 	actionCB := awaitAgentComplete(ctx, t, sess, all)
-	assertOneFallback(t, actionCB, "openai", "deepseek", regexp.MustCompile(`402|quota`))
+	assertFallbacks(t, actionCB, [][2]string{{"openai", "deepseek"}}, regexp.MustCompile(`402|quota`))
 }
 
 // TestVerb_Agent_LLMFallback_MidStreamNoFallback — the fake streams part of
 // a reply and cuts the connection. The caller already heard that text, so
-// the agent must not replay the turn anywhere: one fake request, no
-// llm_fallback, and the verb ends with completion_reason llm_failure.
+// the agent must not replay the turn anywhere.
+//
+// Steps: see runNoFallbackCall.
+func TestVerb_Agent_LLMFallback_MidStreamNoFallback(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+	runNoFallbackCall(t, webhook.LLMReply{Text: "Alpha, bravo,", DropAfterText: true}, nil,
+		func(s *webhook.Session) agentVerbOpts {
+			return fakeOpenAIPrimary(s, agentVerbOpts{SystemPrompt: agentEchoSystemPrompt})
+		})
+}
+
+// TestVerb_Agent_LLMFallback_App — the verb names only a primary (fake
+// openai, 402); the application's fallback LLM (stored deepseek credential)
+// takes over.
+//
+// Steps: see runLLMFallbackCall.
+func TestVerb_Agent_LLMFallback_App(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+	runLLMFallbackCall(t, fallbackCase{
+		build: func(s *webhook.Session) agentVerbOpts {
+			s.ScriptLLM(webhook.LLMReply{Status: 402, ErrorCode: "insufficient_quota"})
+			return fakePrimaryOnly(s, nil)
+		},
+		app:    &appFallback{enabled: true},
+		hops:   [][2]string{{"openai", "deepseek"}},
+		reason: regexp.MustCompile(`402`),
+	})
+}
+
+// TestVerb_Agent_LLMFallback_VerbThenApp — the verb's own fallback (openai
+// with a bad key) fails too; the application's fallback is the last link.
+//
+// Steps: see runLLMFallbackCall.
+func TestVerb_Agent_LLMFallback_VerbThenApp(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+	runLLMFallbackCall(t, fallbackCase{
+		build: func(s *webhook.Session) agentVerbOpts {
+			s.ScriptLLM(webhook.LLMReply{Status: 402, ErrorCode: "insufficient_quota"})
+			return fakePrimaryOnly(s, []map[string]any{
+				{"vendor": "openai", "model": "gpt-4o-mini", "auth": map[string]any{"apiKey": "sk-it-invalid-smoke-key"}},
+			})
+		},
+		app:    &appFallback{enabled: true},
+		hops:   [][2]string{{"openai", "openai"}, {"openai", "deepseek"}},
+		reason: regexp.MustCompile(`(?i)401|api key|incorrect`),
+	})
+}
+
+// TestVerb_Agent_LLMFallback_AppOptOut — `fallback: []` on the verb turns
+// the application's fallback off.
+//
+// Steps: see runNoFallbackCall.
+func TestVerb_Agent_LLMFallback_AppOptOut(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+	runNoFallbackCall(t, webhook.LLMReply{Status: 402, ErrorCode: "insufficient_quota"}, &appFallback{enabled: true},
+		func(s *webhook.Session) agentVerbOpts { return fakePrimaryOnly(s, []map[string]any{}) })
+}
+
+// TestVerb_Agent_LLMFallback_AppFlagOff — the application names a fallback
+// LLM but its "use a fallback LLM" flag is off: no fallback.
+//
+// Steps: see runNoFallbackCall.
+func TestVerb_Agent_LLMFallback_AppFlagOff(t *testing.T) {
+	t.Parallel()
+	requireWebhook(t)
+	runNoFallbackCall(t, webhook.LLMReply{Status: 402, ErrorCode: "insufficient_quota"}, &appFallback{enabled: false},
+		func(s *webhook.Session) agentVerbOpts { return fakePrimaryOnly(s, nil) })
+}
+
+// runNoFallbackCall scripts the fake primary with fail, speaks the echo
+// prompt and asserts the agent ends itself without switching LLMs: one fake
+// request, no llm_fallback, completion_reason llm_failure.
 //
 // Steps:
 //  1. preflight-skips
 //  2. ensure-prompt-wav
-//  3. script-agent-verb-fake-primary (fake: text then drop)
+//  3. script-agent-verb-fake-primary
 //  4. place-call
 //  5. answer-and-silence
 //  6. wait-for-stt
 //  7. send-prompt — until the agent ends itself
 //  8. wait-action-agent-complete
 //  9. assert-no-fallback
-func TestVerb_Agent_LLMFallback_MidStreamNoFallback(t *testing.T) {
-	t.Parallel()
-	requireWebhook(t)
+func runNoFallbackCall(t *testing.T, fail webhook.LLMReply, app *appFallback, build func(*webhook.Session) agentVerbOpts) {
+	t.Helper()
 	s := Step(t, "preflight-skips")
 	if !agentSkipPreflight(t, s) {
 		return
@@ -316,13 +421,14 @@ func TestVerb_Agent_LLMFallback_MidStreamNoFallback(t *testing.T) {
 	uas := claimUAS(t, ctx)
 	wavs := ensurePromptWAVs(ctx, t, agentEchoPrompt)
 	_, sess := claimSession(t)
+	appSID := provisionAppFallback(ctx, t, app)
 
 	s = Step(t, "script-agent-verb-fake-primary")
-	sess.ScriptLLM(webhook.LLMReply{Text: "Alpha, bravo,", DropAfterText: true})
-	ScriptAgent(sess, fakeOpenAIPrimary(sess, agentVerbOpts{SystemPrompt: agentEchoSystemPrompt}))
+	sess.ScriptLLM(fail)
+	ScriptAgent(sess, build(sess))
 	s.Done()
 
-	call := startAgentCall(ctx, t, uas, sess)
+	call := startAgentCall(ctx, t, uas, sess, appSID)
 	all := speakAndWait(ctx, t, call, sess, "send-prompt", wavs[0], nil, func(c []webhook.Callback) bool {
 		return findHook(c, "action/agent-complete") != nil
 	})
@@ -330,13 +436,13 @@ func TestVerb_Agent_LLMFallback_MidStreamNoFallback(t *testing.T) {
 
 	s = Step(t, "assert-no-fallback")
 	if fb := llmFallbackEntries(actionCB); len(fb) != 0 {
-		s.Errorf("fell back after the caller heard part of the reply: %v", fb)
+		s.Errorf("switched LLMs, want none: %v", fb)
 	}
 	if got := actionCB.String("completion_reason"); got != "llm_failure" {
 		s.Errorf("completion_reason=%q, want llm_failure", got)
 	}
 	if n := len(sess.LLMRequests()); n != 1 {
-		s.Errorf("fake LLM got %d requests, want 1: the cut turn was replayed", n)
+		s.Errorf("fake LLM got %d requests, want 1", n)
 	}
 	s.Done()
 	_ = call.Hangup()
@@ -358,6 +464,36 @@ func fakeOpenAIPrimary(sess *webhook.Session, opts agentVerbOpts) agentVerbOpts 
 	return opts
 }
 
+// fakePrimaryOnly is fakeOpenAIPrimary with the verb's own fallback list
+// set to fallback (nil: none; empty: opts out of the application's).
+func fakePrimaryOnly(sess *webhook.Session, fallback []map[string]any) agentVerbOpts {
+	opts := fakeOpenAIPrimary(sess, agentVerbOpts{SystemPrompt: agentEchoSystemPrompt})
+	opts.LLMFallback = fallback
+	return opts
+}
+
+// provisionAppFallback creates an application whose fallback LLM is deepseek
+// on a stored credential, returning its SID ("" when app is nil).
+func provisionAppFallback(ctx context.Context, t *testing.T, app *appFallback) string {
+	t.Helper()
+	if app == nil {
+		return ""
+	}
+	s := Step(t, "provision-app-fallback")
+	defer s.Done()
+	suffix := "llmfb-" + strings.ToLower(strings.TrimPrefix(t.Name(), "TestVerb_Agent_LLMFallback_"))
+	label := provision.Name(suffix)
+	client.ManagedAccountLlmCredential(t, ctx, suite.AccountSID, provision.LlmCredentialCreate{
+		Vendor: "deepseek", Label: label, APIKey: cfg.DeepseekAPIKey,
+	})
+	return provisionWebhookApp(t, ctx, suffix, func(a *provision.ApplicationCreate) {
+		if app.enabled {
+			a.UseForFallbackLlm = 1
+		}
+		a.FallbackLlmVendor, a.FallbackLlmModel, a.FallbackLlmLabel = "deepseek", "deepseek-chat", label
+	})
+}
+
 func ensurePromptWAVs(ctx context.Context, t *testing.T, prompts ...string) []string {
 	t.Helper()
 	s := Step(t, "ensure-prompt-wav")
@@ -373,11 +509,16 @@ func ensurePromptWAVs(ctx context.Context, t *testing.T, prompts ...string) []st
 	return wavs
 }
 
-// startAgentCall places the call, answers with silence and waits for STT to arm.
-func startAgentCall(ctx context.Context, t *testing.T, uas *UAS, sess *webhook.Session) *jsip.Call {
+// startAgentCall places the call (on appSID, or the suite's application when
+// empty), answers with silence and waits for STT to arm.
+func startAgentCall(ctx context.Context, t *testing.T, uas *UAS, sess *webhook.Session, appSID string) *jsip.Call {
 	t.Helper()
 	s := Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(120))
+	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(120), func(c *provision.CallCreate) {
+		if appSID != "" {
+			c.ApplicationSID = appSID
+		}
+	})
 	s.Done()
 
 	s = Step(t, "answer-and-silence")
@@ -435,27 +576,32 @@ func awaitAgentComplete(ctx context.Context, t *testing.T, sess *webhook.Session
 	return &cb
 }
 
-func assertOneFallback(t *testing.T, actionCB *webhook.Callback, wantFrom, wantTo string, reasonRe *regexp.Regexp) {
+// assertFallbacks checks the actionHook's llm_fallback lists exactly hops,
+// with the last reason matching reasonRe.
+func assertFallbacks(t *testing.T, actionCB *webhook.Callback, hops [][2]string, reasonRe *regexp.Regexp) {
 	t.Helper()
 	s := Step(t, "assert-llm-fallback")
 	defer s.Done()
 	fb := llmFallbackEntries(actionCB)
-	if len(fb) != 1 {
-		s.Fatalf("want exactly 1 llm_fallback entry, got %d: %s", len(fb), string(actionCB.Body))
+	if len(fb) != len(hops) {
+		s.Fatalf("want %d llm_fallback entries, got %d: %s", len(hops), len(fb), string(actionCB.Body))
 	}
-	from, _ := fb[0]["from"].(map[string]any)
-	to, _ := fb[0]["to"].(map[string]any)
-	reason, _ := fb[0]["reason"].(string)
-	if from["vendor"] != wantFrom || to["vendor"] != wantTo {
-		s.Errorf("llm_fallback %v -> %v, want %s -> %s", from["vendor"], to["vendor"], wantFrom, wantTo)
+	var reason string
+	for i, hop := range hops {
+		from, _ := fb[i]["from"].(map[string]any)
+		to, _ := fb[i]["to"].(map[string]any)
+		reason, _ = fb[i]["reason"].(string)
+		if from["vendor"] != hop[0] || to["vendor"] != hop[1] {
+			s.Errorf("llm_fallback[%d] %v -> %v, want %s -> %s", i, from["vendor"], to["vendor"], hop[0], hop[1])
+		}
+		s.Logf("llm_fallback[%d]: %s -> %s (%s)", i, from["vendor"], to["vendor"], reason)
 	}
 	if !reasonRe.MatchString(reason) {
-		s.Errorf("llm_fallback reason %q does not match %s", reason, reasonRe)
+		s.Errorf("last llm_fallback reason %q does not match %s", reason, reasonRe)
 	}
 	if got := actionCB.String("completion_reason"); got == "llm_failure" {
 		s.Errorf("completion_reason=llm_failure: the fallback should have kept the agent alive")
 	}
-	s.Logf("llm_fallback: %s -> %s (%s)", from["vendor"], to["vendor"], reason)
 }
 
 func llmFallbackEntries(cb *webhook.Callback) []map[string]any {

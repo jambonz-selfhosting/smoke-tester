@@ -38,6 +38,13 @@ type ApplicationCreate struct {
 	SpeechRecognizerLabel    string         `json:"speech_recognizer_label,omitempty"`
 	SpeechRecognizerLanguage string         `json:"speech_recognizer_language,omitempty"`
 	EnvVars                  map[string]any `json:"env_vars,omitempty"`
+	LlmVendor                string         `json:"llm_vendor,omitempty"`
+	LlmModel                 string         `json:"llm_model,omitempty"`
+	LlmLabel                 string         `json:"llm_label,omitempty"`
+	UseForFallbackLlm        int            `json:"use_for_fallback_llm,omitempty"`
+	FallbackLlmVendor        string         `json:"fallback_llm_vendor,omitempty"`
+	FallbackLlmModel         string         `json:"fallback_llm_model,omitempty"`
+	FallbackLlmLabel         string         `json:"fallback_llm_label,omitempty"`
 }
 
 // Application is the server-returned shape (matches the swagger Application

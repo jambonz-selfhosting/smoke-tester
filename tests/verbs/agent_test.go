@@ -160,7 +160,7 @@ func buildAgentVerb(opts agentVerbOpts) map[string]any {
 	if opts.LLMLabel != "" {
 		llm["label"] = opts.LLMLabel
 	}
-	if len(opts.LLMFallback) > 0 {
+	if opts.LLMFallback != nil { // an empty list is sent: it opts out of the app's fallback
 		llm["fallback"] = opts.LLMFallback
 	}
 	if opts.FallbackTimeoutMs != nil {
