@@ -120,6 +120,11 @@ type Settings struct {
 	// mistral tests pass without exercising it — see HasMistral.
 	MistralAPIKey string
 
+	// Optional — Paxa Labs API key (TTS and realtime STT). When set, TestMain
+	// provisions a paxa SpeechCredential for both; unset, the paxa tests pass
+	// without exercising it — see HasPaxa.
+	PaxaAPIKey string
+
 	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the gemini
 	// live transcription models, which authenticate as a service account on
 	// Vertex AI. Needs roles/aiplatform.user, which the dialogflow key does not
@@ -297,6 +302,10 @@ func (s *Settings) HasGradium() bool { return s.GradiumAPIKey != "" }
 // Optional: when the key is unset those tests pass without exercising mistral.
 func (s *Settings) HasMistral() bool { return s.MistralAPIKey != "" }
 
+// HasPaxa reports whether the paxa STT and TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising paxa.
+func (s *Settings) HasPaxa() bool { return s.PaxaAPIKey != "" }
+
 // HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
 // can run. Optional: when the key is unset those tests pass without
 // exercising gemini.
@@ -423,6 +432,7 @@ func parse() (*Settings, error) {
 		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
 		GradiumAPIKey:            os.Getenv("GRADIUM_API_KEY"),
 		MistralAPIKey:            os.Getenv("MISTRAL_API_KEY"),
+		PaxaAPIKey:               os.Getenv("PAXA_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
 		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
 		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
