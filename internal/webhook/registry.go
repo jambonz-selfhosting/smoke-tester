@@ -106,6 +106,7 @@ type Session struct {
 	pending     chan Callback          // incoming callbacks queued for WaitCallback
 	errs        []error
 	ws          *wsSession // populated when jambonz opens a WS to /ws/<id>
+	llm         fakeLLM    // scripted replies of the fake LLM at /llm/<id>/v1
 
 	// appConn is the jambonz application WebSocket (the wss:// call_hook of a
 	// WS-transport app), captured so a test can send COMMANDS back — the thing
