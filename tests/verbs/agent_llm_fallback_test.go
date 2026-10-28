@@ -173,16 +173,17 @@ type appFallback struct {
 // Steps:
 //  1. preflight-skips
 //  2. ensure-prompt-wav
-//  3. script-agent-verb-fallback
-//  4. place-call
-//  5. answer-and-silence
-//  6. wait-for-stt
-//  7. send-prompt
-//  8. assert-llm-response — the fallback LLM echoed our keywords
-//  9. hangup
+//  3. provision-app-fallback — only when c.app is set
+//  4. script-agent-verb-fallback
+//  5. place-call
+//  6. answer-and-silence
+//  7. wait-for-stt
+//  8. send-prompt
+//  9. assert-llm-response — the fallback LLM echoed our keywords
 //
-// 10. wait-action-agent-complete
-// 11. assert-llm-fallback — llm_fallback in the actionHook payload
+// 10. hangup
+// 11. wait-action-agent-complete
+// 12. assert-llm-fallback — llm_fallback in the actionHook payload
 func runLLMFallbackCall(t *testing.T, c fallbackCase) []webhook.Callback {
 	t.Helper()
 	s := Step(t, "preflight-skips")
@@ -402,13 +403,15 @@ func TestVerb_Agent_LLMFallback_AppFlagOff(t *testing.T) {
 // Steps:
 //  1. preflight-skips
 //  2. ensure-prompt-wav
-//  3. script-agent-verb-fake-primary
-//  4. place-call
-//  5. answer-and-silence
-//  6. wait-for-stt
-//  7. send-prompt — until the agent ends itself
-//  8. wait-action-agent-complete
-//  9. assert-no-fallback
+//  3. provision-app-fallback — only when app is set
+//  4. script-agent-verb-fake-primary
+//  5. place-call
+//  6. answer-and-silence
+//  7. wait-for-stt
+//  8. send-prompt — until the agent ends itself
+//  9. wait-action-agent-complete
+//
+// 10. assert-no-fallback
 func runNoFallbackCall(t *testing.T, fail webhook.LLMReply, app *appFallback, build func(*webhook.Session) agentVerbOpts) {
 	t.Helper()
 	s := Step(t, "preflight-skips")
@@ -473,25 +476,46 @@ func fakePrimaryOnly(sess *webhook.Session, fallback []map[string]any) agentVerb
 }
 
 // provisionAppFallback creates an application whose fallback LLM is deepseek
-// on a stored credential, returning its SID ("" when app is nil).
+// on a stored credential, returning its SID ("" when app is nil). It reads
+// the application back so a flag the API dropped is not mistaken for an
+// agent that ignored it.
 func provisionAppFallback(ctx context.Context, t *testing.T, app *appFallback) string {
 	t.Helper()
 	if app == nil {
 		return ""
 	}
 	s := Step(t, "provision-app-fallback")
-	defer s.Done()
 	suffix := "llmfb-" + strings.ToLower(strings.TrimPrefix(t.Name(), "TestVerb_Agent_LLMFallback_"))
 	label := provision.Name(suffix)
-	client.ManagedAccountLlmCredential(t, ctx, suite.AccountSID, provision.LlmCredentialCreate{
+	credSID, err := client.CreateAccountLlmCredential(ctx, suite.AccountSID, provision.LlmCredentialCreate{
 		Vendor: "deepseek", Label: label, APIKey: cfg.DeepseekAPIKey,
 	})
-	return provisionWebhookApp(t, ctx, suffix, func(a *provision.ApplicationCreate) {
-		if app.enabled {
-			a.UseForFallbackLlm = 1
-		}
-		a.FallbackLlmVendor, a.FallbackLlmModel, a.FallbackLlmLabel = "deepseek", "deepseek-chat", label
-	})
+	if err != nil {
+		s.Fatalf("create deepseek llm credential: %v", err)
+	}
+	t.Cleanup(func() { _ = client.DeleteAccountLlmCredential(context.Background(), suite.AccountSID, credSID) })
+
+	body := webhookAppBody(suffix)
+	if app.enabled {
+		body.UseForFallbackLlm = 1
+	}
+	body.FallbackLlmVendor, body.FallbackLlmModel, body.FallbackLlmLabel = "deepseek", "deepseek-chat", label
+	appSID, err := client.CreateApplication(ctx, body)
+	if err != nil {
+		s.Fatalf("create application: %v", err)
+	}
+	t.Cleanup(func() { _ = client.DeleteApplication(context.Background(), appSID) })
+
+	got, err := client.GetApplication(ctx, appSID)
+	if err != nil {
+		s.Fatalf("get application: %v", err)
+	}
+	if got.UseForFallbackLlm != body.UseForFallbackLlm || got.FallbackLlmVendor != "deepseek" {
+		s.Fatalf("application stored use_for_fallback_llm=%d fallback_llm_vendor=%q, want %d deepseek",
+			got.UseForFallbackLlm, got.FallbackLlmVendor, body.UseForFallbackLlm)
+	}
+	s.Done()
+	return appSID
 }
 
 func ensurePromptWAVs(ctx context.Context, t *testing.T, prompts ...string) []string {

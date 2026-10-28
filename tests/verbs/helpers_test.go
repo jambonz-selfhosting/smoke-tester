@@ -577,9 +577,14 @@ func WaitFor(t *testing.T, name string, d time.Duration) {
 // (`answer`, `sip:decline`) to set up an `sip:app-<sid>@<realm>` target
 // they can dial. Without this helper, every UAC test rebuilds the same
 // 14-field ApplicationCreate body.
-func provisionWebhookApp(t *testing.T, ctx context.Context, suffix string, mutate ...func(*provision.ApplicationCreate)) string {
+func provisionWebhookApp(t *testing.T, ctx context.Context, suffix string) string {
 	t.Helper()
-	body := provision.ApplicationCreate{
+	return client.ManagedApplication(t, ctx, webhookAppBody(suffix))
+}
+
+// webhookAppBody is the application provisionWebhookApp creates.
+func webhookAppBody(suffix string) provision.ApplicationCreate {
+	return provision.ApplicationCreate{
 		Name:       provision.Name(suffix),
 		AccountSID: suite.AccountSID,
 		CallHook: provision.Webhook{
@@ -597,10 +602,6 @@ func provisionWebhookApp(t *testing.T, ctx context.Context, suffix string, mutat
 		SpeechRecognizerLabel:    deepgramLabel,
 		SpeechRecognizerLanguage: "en-US",
 	}
-	for _, m := range mutate {
-		m(&body)
-	}
-	return client.ManagedApplication(t, ctx, body)
 }
 
 // HangupAndWaitEnded hangs the call up (best-effort) and blocks for up

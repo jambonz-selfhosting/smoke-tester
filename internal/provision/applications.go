@@ -41,7 +41,7 @@ type ApplicationCreate struct {
 	LlmVendor                string         `json:"llm_vendor,omitempty"`
 	LlmModel                 string         `json:"llm_model,omitempty"`
 	LlmLabel                 string         `json:"llm_label,omitempty"`
-	UseForFallbackLlm        int            `json:"use_for_fallback_llm,omitempty"`
+	UseForFallbackLlm        int            `json:"use_for_fallback_llm"`
 	FallbackLlmVendor        string         `json:"fallback_llm_vendor,omitempty"`
 	FallbackLlmModel         string         `json:"fallback_llm_model,omitempty"`
 	FallbackLlmLabel         string         `json:"fallback_llm_label,omitempty"`
@@ -61,6 +61,8 @@ type Application struct {
 	SpeechSynthesisVoice     string   `json:"speech_synthesis_voice,omitempty"`
 	SpeechRecognizerVendor   string   `json:"speech_recognizer_vendor,omitempty"`
 	SpeechRecognizerLanguage string   `json:"speech_recognizer_language,omitempty"`
+	UseForFallbackLlm        int      `json:"use_for_fallback_llm"`
+	FallbackLlmVendor        string   `json:"fallback_llm_vendor,omitempty"`
 }
 
 // CreateApplication POSTs /Applications. Returns the new SID.
