@@ -111,6 +111,7 @@ type agentVerbOpts struct {
 	TTS               map[string]any // default deepgram when nil
 	LLMNoAuth         bool           // omit llm.auth so feature-server looks up stored credentials
 	LLMLabel          string
+	LLMAuth           map[string]any // replaces the default inline auth
 	LLMFallback       []map[string]any
 	FallbackTimeoutMs *int
 }
@@ -144,12 +145,14 @@ func buildAgentVerb(opts agentVerbOpts) map[string]any {
 	llm := map[string]any{
 		"vendor": firstNonEmpty(opts.LLMVendor, "deepseek"),
 		"model":  firstNonEmpty(opts.LLMModel, "deepseek-chat"),
-		// Inline auth — feature-server skips the DB credential lookup
-		// when auth is set on the verb (lib/tasks/agent/index.js:446).
+		// inline auth: feature-server skips the DB credential lookup
 		"auth": map[string]any{
 			"apiKey": firstNonEmpty(opts.LLMApiKey, cfg.DeepseekAPIKey),
 		},
 		"llmOptions": llmOptions,
+	}
+	if opts.LLMAuth != nil {
+		llm["auth"] = opts.LLMAuth
 	}
 	if opts.LLMNoAuth {
 		delete(llm, "auth")

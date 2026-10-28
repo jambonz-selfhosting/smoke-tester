@@ -8,11 +8,8 @@ import (
 	"time"
 )
 
-// Fake OpenAI-compatible chat-completions server, mounted at
-// /llm/<test-id>/v1. An agent verb pointed at it (vendor "openai",
-// auth.baseURL = that URL) lets a test script each LLM response: normal
-// text, tool calls, HTTP errors, a hang, or a stream cut mid-reply.
-// Failure modes a real vendor cannot be made to produce on demand.
+// Scriptable OpenAI-compatible chat completions at /llm/<test-id>/v1, for LLM
+// failures a real vendor won't produce on demand.
 
 // LLMReply scripts one chat-completions response. The zero value echoes the
 // caller's last user message.
@@ -22,7 +19,6 @@ type LLMReply struct {
 	RetryAfter    string // Retry-After header for a Status reply
 	Text          string
 	ToolCalls     []LLMToolCall
-	Hang          bool // send nothing until the client gives up
 	DropAfterText bool // stream Text, then cut the connection without finishing
 }
 
@@ -114,14 +110,7 @@ func (s *Server) handleFakeLLM(w http.ResponseWriter, r *http.Request) {
 	reply := sess.nextLLMReply(body)
 	model, _ := body["model"].(string)
 
-	switch {
-	case reply.Hang:
-		select {
-		case <-r.Context().Done():
-		case <-time.After(2 * time.Minute):
-		}
-		return
-	case reply.Status >= 300:
+	if reply.Status >= 300 {
 		if reply.RetryAfter != "" {
 			w.Header().Set("Retry-After", reply.RetryAfter)
 		}
@@ -207,14 +196,9 @@ func streamCompletion(w http.ResponseWriter, model string, reply LLMReply, usage
 		send(chunk(map[string]any{"content": reply.Text}, nil))
 	}
 	if reply.DropAfterText {
-		// let the text reach the client, then kill the connection mid-stream
+		// let the text reach the client, then abort the response on any transport
 		time.Sleep(300 * time.Millisecond)
-		if hj, ok := w.(http.Hijacker); ok {
-			if conn, _, err := hj.Hijack(); err == nil {
-				_ = conn.Close()
-			}
-		}
-		return
+		panic(http.ErrAbortHandler)
 	}
 	if len(reply.ToolCalls) > 0 {
 		send(chunk(map[string]any{"tool_calls": toolCallsJSON(reply.ToolCalls, true)}, nil))
