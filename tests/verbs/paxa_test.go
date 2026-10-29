@@ -280,8 +280,9 @@ func TestVerb_Say_Stream_Paxa_Thai(t *testing.T) {
 }
 
 // TestVerb_Agent_Paxa_BargeIn — a live agent on paxa TTS: the caller barges
-// into the greeting (the socket's cancel drops it) and the reply to the
-// barge-in must be heard on the same socket.
+// into a long reply. The socket's cancel drops it, the reply to the barge-in
+// is heard on the same socket, and alignment trims the interrupted turn to
+// what was actually spoken (turn_end response ends with " -").
 //
 // Steps:
 //  1. preflight-skips
@@ -289,12 +290,14 @@ func TestVerb_Say_Stream_Paxa_Thai(t *testing.T) {
 //  3. script-agent-verb
 //  4. place-call
 //  5. answer-and-silence
-//  6. wait-into-greeting
-//  7. barge-in-and-record-reply
-//  8. assert-barge-in-reply
-//  9. assert-user-interruption
+//  6. ask-for-long-reply
+//  7. wait-into-reply
+//  8. barge-in-and-record-reply
+//  9. assert-barge-in-reply
 //
-// 10. hangup-and-wait-ended
+// 10. assert-user-interruption
+// 11. assert-reply-trimmed
+// 12. hangup-and-wait-ended
 func TestVerb_Agent_Paxa_BargeIn(t *testing.T) {
 	if !requirePaxa(t) {
 		return
@@ -315,6 +318,7 @@ func TestVerb_Agent_Paxa_BargeIn(t *testing.T) {
 	if err != nil {
 		s.Fatalf("EnsureWAV: %v", err)
 	}
+	askWAV := resolveFixture(t, speechWAV)
 	s.Done()
 
 	_, sess := claimSession(t)
@@ -323,10 +327,9 @@ func TestVerb_Agent_Paxa_BargeIn(t *testing.T) {
 	noReprompt := 0
 	ScriptAgent(sess, agentVerbOpts{
 		SystemPrompt: "You are a friendly voice assistant. " +
-			"On your first turn, greet the user with a long, slow welcome " +
-			"of at least three full sentences so they have time to interrupt. " +
-			"On subsequent turns, repeat the user's words back to them verbatim.",
-		Greeting:          true,
+			"If the user says a list of code words, repeat them back verbatim. " +
+			"Otherwise answer with a long, slow reply of at least six full sentences " +
+			"about what the user said.",
 		BargeIn:           true,
 		NoResponseTimeout: &noReprompt,
 		TTS:               paxaSynth(paxaVoice, "en-US", nil),
@@ -346,7 +349,19 @@ func TestVerb_Agent_Paxa_BargeIn(t *testing.T) {
 	}
 	s.Done()
 
-	WaitFor(t, "wait-into-greeting", 4*time.Second)
+	WaitFor(t, "settle", 2*time.Second)
+
+	s = Step(t, "ask-for-long-reply")
+	if err := call.SendWAV(askWAV); err != nil {
+		s.Fatalf("SendWAV: %v", err)
+	}
+	if err := call.SendSilence(); err != nil {
+		s.Fatalf("SendSilence: %v", err)
+	}
+	s.Done()
+
+	// paxa's final lands ~2s after speech ends; leave a few seconds of reply
+	WaitFor(t, "wait-into-reply", 8*time.Second)
 
 	s = Step(t, "barge-in-and-record-reply")
 	rec := filepath.Join(t.TempDir(), "paxa-barge-reply.pcm")
@@ -371,6 +386,21 @@ func TestVerb_Agent_Paxa_BargeIn(t *testing.T) {
 	cbs := DrainCallbacks(sess, time.Second)
 	if len(findAgentEvents(cbs, "user_interruption")) == 0 {
 		s.Errorf("no user_interruption event: %s", summarizeEventTypes(cbs))
+	}
+	s.Done()
+
+	s = Step(t, "assert-reply-trimmed")
+	trimmed := ""
+	for _, te := range findAgentEvents(cbs, "turn_end") {
+		if interrupted, _ := te.JSON["interrupted"].(bool); interrupted {
+			trimmed, _ = te.JSON["response"].(string)
+			break
+		}
+	}
+	if !strings.HasSuffix(trimmed, " -") {
+		s.Errorf("interrupted turn_end response not trimmed: %q (%s)", trimmed, summarizeEventTypes(cbs))
+	} else {
+		s.Logf("reply heard before barge-in: %q", trimmed)
 	}
 	s.Done()
 
@@ -490,6 +520,46 @@ func TestVerb_Gather_Speech_Paxa_Options(t *testing.T) {
 	r["hints"] = []string{"sun", "shining"}
 	transcript := paxaGather(t, r, resolveFixture(t, speechWAV))
 	assertHits(t, transcript, 2, "sun", "shining")
+}
+
+// paxaThaiWAV is one Thai turn: "I'd like to book a table for two tomorrow night".
+const paxaThaiWAV = "testdata/th_reservation.wav"
+
+// TestVerb_Gather_Speech_Paxa_Thai — Thai speech with language th-TH.
+//
+// Steps:
+//   - script-gather-speech-paxa
+//   - place-call
+//   - answer-and-silence
+//   - wait-for-recognizer
+//   - send-wav
+//   - wait-action-gather-callback
+//   - assert-transcript
+func TestVerb_Gather_Speech_Paxa_Thai(t *testing.T) {
+	if !requirePaxa(t) {
+		return
+	}
+	transcript := paxaGather(t, paxaRecognizer("th-TH", nil), resolveFixture(t, paxaThaiWAV))
+	assertHits(t, transcript, 2, "จองโต๊ะ", "สองคน", "พรุ่งนี้")
+}
+
+// TestVerb_Gather_Speech_Paxa_AnyLanguage — language "any" is not sent, so
+// Paxa detects the language itself and the Thai turn still comes back in Thai.
+//
+// Steps:
+//   - script-gather-speech-paxa
+//   - place-call
+//   - answer-and-silence
+//   - wait-for-recognizer
+//   - send-wav
+//   - wait-action-gather-callback
+//   - assert-transcript
+func TestVerb_Gather_Speech_Paxa_AnyLanguage(t *testing.T) {
+	if !requirePaxa(t) {
+		return
+	}
+	transcript := paxaGather(t, paxaRecognizer("any", nil), resolveFixture(t, paxaThaiWAV))
+	assertHits(t, transcript, 2, "จองโต๊ะ", "สองคน", "พรุ่งนี้")
 }
 
 // paxaTranscribe runs transcribe on paxa with recognizer and returns the
