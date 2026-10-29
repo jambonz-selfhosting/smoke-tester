@@ -100,6 +100,14 @@ var (
 	// Samantha Ferris (en-US); KugelAudio voice ids are numeric.
 	kugelaudioVoice = "1071"
 
+	// AssemblyAI TTS credential, provisioned IF ASSEMBLYAI_API_KEY is set.
+	assemblyaiLabel string
+	assemblyaiSID   string
+	assemblyaiVoice = "aai-jane"
+	// same key on the EU host (credential api_uri)
+	assemblyaiEULabel string
+	assemblyaiEUSID   string
+
 	// Speechify TTS credential, provisioned IF SPEECHIFY_API_KEY is set.
 	// No model on the credential, so mediajam picks one from the language.
 	speechifyLabel string
@@ -296,6 +304,16 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: KUGELAUDIO_API_KEY not set — KugelAudio tests will skip")
 	}
 
+	// 3b3a. AssemblyAI TTS speech credential — optional.
+	if cfg.HasAssemblyai() {
+		if err := provisionAssemblyaiCredential(); err != nil {
+			log.Fatalf("tests/verbs: AssemblyAI credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: AssemblyAI credential label=%s sid=%s", assemblyaiLabel, assemblyaiSID)
+	} else {
+		log.Printf("tests/verbs: ASSEMBLYAI_API_KEY not set — AssemblyAI tests will skip")
+	}
+
 	// 3b4. Speechify TTS speech credential — optional.
 	if cfg.HasSpeechify() {
 		if err := provisionSpeechifyCredential(); err != nil {
@@ -449,6 +467,7 @@ func TestMain(m *testing.M) {
 	teardownMurfCredential()
 	teardownElevenlabsCredential()
 	teardownKugelaudioCredential()
+	teardownAssemblyaiCredential()
 	teardownSpeechifyCredential()
 	teardownSvaraCredential()
 	teardownGiggyCredential()
@@ -647,6 +666,48 @@ func teardownKugelaudioCredential() {
 			log.Printf("tests/verbs: cleanup: delete KugelAudio credential %s: %v", *sid, err)
 		}
 		*sid = ""
+	}
+}
+
+// provisionAssemblyaiCredential creates two TTS-only AssemblyAI credentials on
+// assemblyai-tts-1 with the same key: `it-assemblyai-<runID>` on the default
+// (US) host and `it-assemblyai-eu-<runID>` with the EU api_uri.
+func provisionAssemblyaiCredential() error {
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	create := func(label, apiURI string) (string, error) {
+		return client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+			Vendor:    "assemblyai",
+			Label:     label,
+			APIKey:    cfg.AssemblyaiAPIKey,
+			ModelID:   "assemblyai-tts-1",
+			APIURI:    apiURI,
+			UseForTTS: true,
+		})
+	}
+	var err error
+	assemblyaiLabel = "it-assemblyai-" + provision.RunID()
+	if assemblyaiSID, err = create(assemblyaiLabel, ""); err != nil {
+		return err
+	}
+	assemblyaiEULabel = "it-assemblyai-eu-" + provision.RunID()
+	if assemblyaiEUSID, err = create(assemblyaiEULabel, "tts.eu.assemblyai.com"); err != nil {
+		teardownAssemblyaiCredential()
+		return err
+	}
+	return nil
+}
+
+func teardownAssemblyaiCredential() {
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	for _, sid := range []string{assemblyaiSID, assemblyaiEUSID} {
+		if sid == "" {
+			continue
+		}
+		if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, sid); err != nil {
+			log.Printf("tests/verbs: cleanup: delete AssemblyAI credential %s: %v", sid, err)
+		}
 	}
 }
 

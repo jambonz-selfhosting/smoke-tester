@@ -85,6 +85,9 @@ type Settings struct {
 	// Optional — KugelAudio TTS API key. Unset = the kugelaudio tests skip.
 	KugelaudioAPIKey string
 
+	// Optional — AssemblyAI API key for the TTS tests. Unset = they skip.
+	AssemblyaiAPIKey string
+
 	// Optional — Speechify TTS API key. Unset = the speechify tests skip.
 	SpeechifyAPIKey string
 
@@ -277,6 +280,9 @@ func (s *Settings) HasElevenlabs() bool { return s.ElevenlabsAPIKey != "" }
 // HasKugelaudio reports whether the KugelAudio TTS tests can run.
 func (s *Settings) HasKugelaudio() bool { return s.KugelaudioAPIKey != "" }
 
+// HasAssemblyai reports whether the AssemblyAI TTS tests can run.
+func (s *Settings) HasAssemblyai() bool { return s.AssemblyaiAPIKey != "" }
+
 // HasSpeechify reports whether the Speechify TTS tests can run.
 func (s *Settings) HasSpeechify() bool { return s.SpeechifyAPIKey != "" }
 
@@ -422,6 +428,7 @@ func parse() (*Settings, error) {
 		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
 		ElevenlabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
 		KugelaudioAPIKey:         os.Getenv("KUGELAUDIO_API_KEY"),
+		AssemblyaiAPIKey:         os.Getenv("ASSEMBLYAI_API_KEY"),
 		SpeechifyAPIKey:          os.Getenv("SPEECHIFY_API_KEY"),
 		SvaraAPIKey:              os.Getenv("SVARA_API_KEY"),
 		SvaraVoiceID:             firstNonEmpty(os.Getenv("SVARA_VOICE_ID"), "sv_a5thzx8v"),
