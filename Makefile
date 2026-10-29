@@ -101,13 +101,13 @@ TEST_PACKAGES := ./tests/... ./internal/contract/... ./internal/provision/...
 # TIMEOUT, e.g.:  make test-verbs TIMEOUT=600s
 TIMEOUT ?= 300s
 TIMEOUT_VERBS ?= $(TIMEOUT)
-# test-report runs the WHOLE suite (154 tests and growing) in one go test
+# test-report runs the WHOLE suite (~320 tests and growing) in one go test
 # invocation, so it needs a far larger budget than any single package: at
-# -parallel 4 the full suite is ~10 minutes wall-clock. When the go-test
+# -parallel 4 the full suite is ~24 minutes wall-clock. When the go-test
 # timeout fires mid-run it kills every in-flight test, which reads as a
 # mass failure — if report.html shows dozens of tests cut off mid-step,
 # raise this before suspecting the cluster.
-TIMEOUT_REPORT ?= 900s
+TIMEOUT_REPORT ?= 2400s
 
 test:
 	go test -count=1 -timeout $(TIMEOUT) -parallel $(PARALLEL) $(TEST_PACKAGES)
