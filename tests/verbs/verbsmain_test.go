@@ -139,6 +139,10 @@ var (
 	mistralLabel string
 	mistralSID   string
 
+	// paxa STT+TTS speech credential, provisioned only when PAXA_API_KEY is set.
+	paxaLabel string
+	paxaSID   string
+
 	// Default xai TTS voice.
 	xaiVoice    = "eve"
 	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
@@ -379,6 +383,15 @@ func TestMain(m *testing.M) {
 	} else {
 		log.Printf("tests/verbs: MISTRAL_API_KEY not set — mistral tests will pass without exercising mistral")
 	}
+	// 3c''''. paxa STT+TTS speech credential — optional, same pattern as mistral.
+	if cfg.HasPaxa() {
+		if err := provisionPaxaCredential(); err != nil {
+			log.Fatalf("tests/verbs: paxa credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: paxa credential label=%s sid=%s", paxaLabel, paxaSID)
+	} else {
+		log.Printf("tests/verbs: PAXA_API_KEY not set — paxa tests will pass without exercising paxa")
+	}
 
 	// 3d. speechmatics STT speech credential — optional. Only provisioned
 	// when SPEECHMATICS_API_KEY is set; otherwise the speechmatics gather/
@@ -462,6 +475,7 @@ func TestMain(m *testing.M) {
 	teardownZoomCredential()
 	teardownGradiumCredential()
 	teardownMistralCredential()
+	teardownPaxaCredential()
 	teardownSpeechmaticsCredential()
 	teardownSpeechmaticsAgentCredential()
 	teardownOpenaiCredential()
@@ -944,6 +958,40 @@ func teardownMistralCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, mistralSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete mistral credential %s: %v", mistralSID, err)
+	}
+}
+
+// provisionPaxaCredential creates a paxa speech credential for both STT and
+// TTS under the suite account, labelled `it-<runID>-paxa`. Called only when
+// PAXA_API_KEY is set.
+func provisionPaxaCredential() error {
+	paxaLabel = provision.Name("paxa")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "paxa",
+		Label:      paxaLabel,
+		APIKey:     cfg.PaxaAPIKey,
+		ModelID:    paxaTTSModel,
+		STTModelID: paxaSTTModel,
+		UseForTTS:  true,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	paxaSID = sid
+	return nil
+}
+
+func teardownPaxaCredential() {
+	if paxaSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, paxaSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete paxa credential %s: %v", paxaSID, err)
 	}
 }
 
