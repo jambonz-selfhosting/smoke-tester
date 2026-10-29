@@ -34,6 +34,11 @@ type Settings struct {
 	SPAPIKey string
 	SPSID    string
 
+	// AllowSPPolicyChanges lets tests change the SP's support audio capture
+	// policy. allow_all overrides every account's opt-out, so leave it off on
+	// a shared cluster with customer accounts under the SP.
+	AllowSPPolicyChanges bool
+
 	// Required — SBC public IP. Verb tests dial this IP for all SIP
 	// traffic regardless of the Request-URI domain. The harness installs
 	// a custom DNS resolver in the SIP transport so the synthetic
@@ -73,11 +78,55 @@ type Settings struct {
 	// credential-missing log — see HasMurf.
 	MurfAPIKey string
 
+	// Optional — ElevenLabs API key for the eleven_v3 (Text to Dialogue)
+	// streaming tests. Unset = those tests skip — see HasElevenlabs.
+	ElevenlabsAPIKey string
+
+	// Optional — KugelAudio TTS API key. Unset = the kugelaudio tests skip.
+	KugelaudioAPIKey string
+
+	// Optional — AssemblyAI API key for the TTS tests. Unset = they skip.
+	AssemblyaiAPIKey string
+
+	// Optional — Speechify TTS API key. Unset = the speechify tests skip.
+	SpeechifyAPIKey string
+
+	// Optional — Svara TTS API key. Unset = the svara tests skip.
+	SvaraAPIKey string
+	// Svara voice ids; default to an American English and a Hindi library voice.
+	SvaraVoiceID      string
+	SvaraHindiVoiceID string
+
+	// Optional — Giggy API key (TTS + STT). Unset = the giggy tests skip.
+	GiggyAPIKey string
+	// Giggy voice UUID; defaults to an English (US General) public voice.
+	GiggyVoiceID string
+
 	// Optional — xAI STT API key. When set, TestMain provisions an xai
 	// SpeechCredential under the ephemeral account and the xai gather/
 	// transcribe tests exercise it. When unset those tests pass without
 	// exercising xai STT — see HasXai.
 	XaiAPIKey string
+
+	// Optional — Zoom Build platform API key (Scribe Live mode STT). When set,
+	// TestMain provisions a zoom SpeechCredential and the zoom gather/transcribe
+	// tests exercise it; unset, they pass without exercising zoom — see HasZoom.
+	ZoomAPIKey string
+
+	// Optional — Gradium API key (streaming STT). When set, TestMain provisions
+	// a gradium SpeechCredential and the gradium gather/transcribe/agent tests
+	// exercise it; unset, they pass without exercising gradium — see HasGradium.
+	GradiumAPIKey string
+
+	// Optional — Mistral API key (Voxtral 3 realtime STT and TTS). When set,
+	// TestMain provisions a mistral SpeechCredential for both; unset, the
+	// mistral tests pass without exercising it — see HasMistral.
+	MistralAPIKey string
+
+	// Optional — Paxa Labs API key (TTS and realtime STT). When set, TestMain
+	// provisions a paxa SpeechCredential for both; unset, the paxa tests pass
+	// without exercising it — see HasPaxa.
+	PaxaAPIKey string
 
 	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the gemini
 	// live transcription models, which authenticate as a service account on
@@ -85,28 +134,47 @@ type Settings struct {
 	// carry, so it is a separate variable.
 	GeminiServiceKey string
 
-	// Optional — OpenAI GPT Live (limited-access alpha) API key. This is an
-	// OpenAI key enrolled in the GPT Live Early Access Program; a plain
-	// OPENAI_API_KEY is rejected at connect, so this is a SEPARATE variable
-	// rather than a fallback to OpenAIAPIKey — otherwise the gptlive tests
-	// would fail for everyone who happens to have an ordinary OpenAI key.
-	// When unset the gptlive tests pass without exercising GPT Live — see
-	// HasGptLive.
+	// Optional — Gemini Developer API key ("AIza..."), for the google s2s
+	// (Gemini Live) tests. NOT interchangeable with GeminiServiceKey: Google
+	// refuses service accounts on the Developer API ("Access to Gemini API is
+	// restricted with service accounts"), and Vertex refuses API keys. Hence a
+	// separate key; the Vertex s2s test uses GeminiServiceKey instead.
+	GeminiAPIKey string
+
+	// Optional — OpenAI GPT-Live API key, kept separate from OpenAIAPIKey so
+	// the gptlive tests run only when explicitly asked for. When unset they
+	// pass without exercising GPT-Live — see HasGptLive.
 	GptLiveAPIKey string
 
-	// Optional — GPT Live model/host/path overrides. The alpha's model names
-	// churn, and the connection URL jambonz defaults to (api.openai.com,
-	// v1/live?model=<model>) is INFERRED from the Event API reference rather
-	// than documented, so these let a run target the real endpoint without a
-	// code change. Empty host/path means "use the feature-server default".
+	// Optional — GPT-Live model/host/path overrides. Empty host/path means the
+	// feature-server default (api.openai.com, v1/live/sessions).
 	GptLiveModel string
 	GptLiveHost  string
 	GptLivePath  string
 
 	// Optional — the Responses-side model a `responses` delegation runs its
 	// turns on (delegation.responses.model, required by the server). Distinct
-	// from GptLiveModel, which is the GPT Live voice model in the URL.
+	// from GptLiveModel, which is the GPT-Live voice model.
 	GptLiveDelegationModel string
+
+	// Optional — Azure Voice Live. The host names a Microsoft Foundry or Azure
+	// Speech resource and has no default, so BOTH the key and the host must be
+	// set for the voicelive tests to run — see HasVoiceLive. VoiceLiveVoice is
+	// an Azure TTS voice name, not an OpenAI one.
+	VoiceLiveAPIKey string
+	VoiceLiveHost   string
+	VoiceLiveModel  string
+	VoiceLiveVoice  string
+
+	// Optional — Amazon Nova Sonic on Bedrock. Static IAM credentials (a
+	// session token too for STS creds) — see HasNova. NovaRegion must be a
+	// region serving Nova Sonic.
+	NovaAccessKeyID     string
+	NovaSecretAccessKey string
+	NovaSessionToken    string
+	NovaRegion          string
+	NovaModel           string
+	NovaVoice           string
 
 	// Optional — Speechmatics STT API key. When set, TestMain provisions a
 	// speechmatics SpeechCredential under the ephemeral account and the
@@ -206,9 +274,43 @@ func (s *Settings) HasOpenAI() bool { return s.OpenAIAPIKey != "" }
 // the key is unset the test skips (passes) with a credential-missing log.
 func (s *Settings) HasMurf() bool { return s.MurfAPIKey != "" }
 
+// HasElevenlabs reports whether the ElevenLabs TTS tests can run.
+func (s *Settings) HasElevenlabs() bool { return s.ElevenlabsAPIKey != "" }
+
+// HasKugelaudio reports whether the KugelAudio TTS tests can run.
+func (s *Settings) HasKugelaudio() bool { return s.KugelaudioAPIKey != "" }
+
+// HasAssemblyai reports whether the AssemblyAI TTS tests can run.
+func (s *Settings) HasAssemblyai() bool { return s.AssemblyaiAPIKey != "" }
+
+// HasSpeechify reports whether the Speechify TTS tests can run.
+func (s *Settings) HasSpeechify() bool { return s.SpeechifyAPIKey != "" }
+
+// HasSvara reports whether the Svara TTS tests can run.
+func (s *Settings) HasSvara() bool { return s.SvaraAPIKey != "" }
+
+// HasGiggy reports whether the Giggy TTS and STT tests can run.
+func (s *Settings) HasGiggy() bool { return s.GiggyAPIKey != "" }
+
 // HasXai reports whether the xai STT gather/transcribe tests can run.
 // Optional: when the key is unset those tests pass without exercising xai.
 func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
+
+// HasZoom reports whether the zoom STT gather/transcribe tests can run.
+// Optional: when the key is unset those tests pass without exercising zoom.
+func (s *Settings) HasZoom() bool { return s.ZoomAPIKey != "" }
+
+// HasGradium reports whether the gradium STT gather/transcribe tests can run.
+// Optional: when the key is unset those tests pass without exercising gradium.
+func (s *Settings) HasGradium() bool { return s.GradiumAPIKey != "" }
+
+// HasMistral reports whether the mistral (Voxtral) STT and TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising mistral.
+func (s *Settings) HasMistral() bool { return s.MistralAPIKey != "" }
+
+// HasPaxa reports whether the paxa STT and TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising paxa.
+func (s *Settings) HasPaxa() bool { return s.PaxaAPIKey != "" }
 
 // HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
 // can run. Optional: when the key is unset those tests pass without
@@ -218,7 +320,22 @@ func (s *Settings) HasXai() bool { return s.XaiAPIKey != "" }
 // gemini. The dialogflow key is NOT a fallback — it lacks aiplatform access.
 func (s *Settings) HasGeminiStt() bool { return s.GeminiServiceKey != "" }
 
-// HasGptLive reports whether the OpenAI GPT Live (alpha) S2S tests can run.
+// HasGeminiS2S reports whether the google (Gemini Live) S2S tests can run.
+// Optional: when GEMINI_API_KEY is unset those tests pass without exercising
+// Gemini Live. GeminiServiceKey is deliberately NOT a fallback — see the
+// GeminiAPIKey field comment.
+func (s *Settings) HasGeminiS2S() bool { return s.GeminiAPIKey != "" }
+
+// HasVoiceLive reports whether the Azure Voice Live S2S tests can run.
+// Optional, and needs BOTH values: unlike every other s2s vendor the endpoint
+// is resource-specific, so there is no host to fall back on.
+func (s *Settings) HasVoiceLive() bool { return s.VoiceLiveAPIKey != "" && s.VoiceLiveHost != "" }
+
+// HasNova reports whether the Amazon Nova Sonic S2S tests can run.
+// Optional: when the IAM keys are unset those tests pass without exercising nova.
+func (s *Settings) HasNova() bool { return s.NovaAccessKeyID != "" && s.NovaSecretAccessKey != "" }
+
+// HasGptLive reports whether the OpenAI GPT-Live S2S tests can run.
 // Optional: when the key is unset those tests pass without exercising gptlive.
 func (s *Settings) HasGptLive() bool { return s.GptLiveAPIKey != "" }
 
@@ -309,12 +426,36 @@ func parse() (*Settings, error) {
 		DeepseekAPIKey:           os.Getenv("DEEPSEEK_API_KEY"),
 		OpenAIAPIKey:             os.Getenv("OPENAI_API_KEY"),
 		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
+		ElevenlabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
+		KugelaudioAPIKey:         os.Getenv("KUGELAUDIO_API_KEY"),
+		AssemblyaiAPIKey:         os.Getenv("ASSEMBLYAI_API_KEY"),
+		SpeechifyAPIKey:          os.Getenv("SPEECHIFY_API_KEY"),
+		SvaraAPIKey:              os.Getenv("SVARA_API_KEY"),
+		SvaraVoiceID:             firstNonEmpty(os.Getenv("SVARA_VOICE_ID"), "sv_a5thzx8v"),
+		SvaraHindiVoiceID:        firstNonEmpty(os.Getenv("SVARA_HINDI_VOICE_ID"), "sv_fhn6tfve"),
+		GiggyAPIKey:              os.Getenv("GIGGY_API_KEY"),
+		GiggyVoiceID:             firstNonEmpty(os.Getenv("GIGGY_VOICE_ID"), "8f5aee7d-dd96-41c4-b04f-19bff046b02a"),
 		XaiAPIKey:                os.Getenv("XAI_API_KEY"),
+		ZoomAPIKey:               os.Getenv("ZOOM_API_KEY"),
+		GradiumAPIKey:            os.Getenv("GRADIUM_API_KEY"),
+		MistralAPIKey:            os.Getenv("MISTRAL_API_KEY"),
+		PaxaAPIKey:               os.Getenv("PAXA_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
-		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1-boulder-alpha"),
+		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
+		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
 		GptLiveHost:              os.Getenv("GPTLIVE_HOST"),
 		GptLivePath:              os.Getenv("GPTLIVE_PATH"),
 		GptLiveDelegationModel:   firstNonEmpty(os.Getenv("GPTLIVE_DELEGATION_MODEL"), "gpt-5.5"),
+		VoiceLiveAPIKey:          os.Getenv("VOICELIVE_API_KEY"),
+		VoiceLiveHost:            os.Getenv("VOICELIVE_HOST"),
+		VoiceLiveModel:           firstNonEmpty(os.Getenv("VOICELIVE_MODEL"), "gpt-realtime"),
+		VoiceLiveVoice:           firstNonEmpty(os.Getenv("VOICELIVE_VOICE"), "en-US-AvaNeural"),
+		NovaAccessKeyID:          os.Getenv("NOVA_ACCESS_KEY_ID"),
+		NovaSecretAccessKey:      os.Getenv("NOVA_SECRET_ACCESS_KEY"),
+		NovaSessionToken:         os.Getenv("NOVA_SESSION_TOKEN"),
+		NovaRegion:               firstNonEmpty(os.Getenv("NOVA_REGION"), "us-east-1"),
+		NovaModel:                firstNonEmpty(os.Getenv("NOVA_MODEL"), "amazon.nova-2-5-sonic"),
+		NovaVoice:                firstNonEmpty(os.Getenv("NOVA_VOICE"), "tiffany"),
 		SpeechmaticsAPIKey:       os.Getenv("SPEECHMATICS_API_KEY"),
 		SpeechmaticsSTTURI:       firstNonEmpty(os.Getenv("SPEECHMATICS_STT_URI"), "eu2.rt.speechmatics.com"),
 		SpeechmaticsAgentAPIKey:  os.Getenv("SPEECHMATICS_AGENT_API_KEY"),
@@ -411,6 +552,14 @@ func parse() (*Settings, error) {
 		ttl = time.Duration(n) * time.Hour
 	}
 	s.OrphanTTL = ttl
+
+	if v := os.Getenv("JAMBONZ_ALLOW_SP_POLICY_CHANGES"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("JAMBONZ_ALLOW_SP_POLICY_CHANGES must be true/false: %w", err)
+		}
+		s.AllowSPPolicyChanges = b
+	}
 
 	// contract strictness defaults on per ADR-0015
 	s.ContractStrict = true

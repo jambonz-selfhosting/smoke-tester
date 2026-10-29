@@ -101,13 +101,13 @@ TEST_PACKAGES := ./tests/... ./internal/contract/... ./internal/provision/...
 # TIMEOUT, e.g.:  make test-verbs TIMEOUT=600s
 TIMEOUT ?= 300s
 TIMEOUT_VERBS ?= $(TIMEOUT)
-# test-report runs the WHOLE suite (154 tests and growing) in one go test
+# test-report runs the WHOLE suite (~320 tests and growing) in one go test
 # invocation, so it needs a far larger budget than any single package: at
-# -parallel 4 the full suite is ~10 minutes wall-clock. When the go-test
+# -parallel 4 the full suite is ~24 minutes wall-clock. When the go-test
 # timeout fires mid-run it kills every in-flight test, which reads as a
 # mass failure — if report.html shows dozens of tests cut off mid-step,
 # raise this before suspecting the cluster.
-TIMEOUT_REPORT ?= 900s
+TIMEOUT_REPORT ?= 2400s
 
 test:
 	go test -count=1 -timeout $(TIMEOUT) -parallel $(PARALLEL) $(TEST_PACKAGES)
@@ -151,7 +151,11 @@ RELEASE_GATE_VERBS := \
 	TestSDP_Sendonly_InitialOffer \
 	TestSDP_Sendonly_ReinviteLoop \
 	TestSDP_Sendonly_HoldResume \
-	TestSDP_OfferMode_EarlyAnswerDirectionChange
+	TestSDP_OfferMode_EarlyAnswerDirectionChange \
+	TestFive9_Voicestream_ListenGetsAudio \
+	TestFive9_Voicestream_ReverseBlocked \
+	TestMute_ParentLeg_Directional \
+	TestMute_ChildLeg_Directional
 
 # Report-only: run and show the result, but never fail the release on it.
 #
@@ -288,16 +292,20 @@ list-drachtio:
 
 test-report:
 	@# `go test -json` streams NDJSON test events; cmd/testreport renders
-	@# them into a self-contained HTML file. Don't fail make on test
-	@# failures — the point is to produce a viewable report even when red.
-	go test -json -count=1 -timeout $(TIMEOUT_REPORT) -parallel $(PARALLEL) $(TEST_PACKAGES) | go run ./cmd/testreport > report.html || true
+	@# them into a self-contained HTML file. The two steps are separated on
+	@# purpose: a red suite must still produce a report (hence `|| true` on
+	@# the test run), but a broken renderer must NOT — piping them together
+	@# hid a missing cmd/testreport behind a 0-byte report.html and an echo
+	@# claiming success.
+	go test -json -count=1 -timeout $(TIMEOUT_REPORT) -parallel $(PARALLEL) $(TEST_PACKAGES) > report.ndjson || true
+	go run ./cmd/testreport < report.ndjson > report.html
 	@echo "wrote report.html (open it in your browser)"
 
 lint:
 	go vet ./...
 
 clean:
-	rm -rf bin/ coverage.out report.xml report.html
+	rm -rf bin/ coverage.out report.xml report.html report.ndjson
 	find . -name '*.wav' -not -path './spikes/*' -not -path './tests/verbs/testdata/*' -delete
 
 # Empty phony prerequisite used to force pattern-rule recipes (%_test.go) to
