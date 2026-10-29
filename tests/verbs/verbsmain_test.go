@@ -104,6 +104,9 @@ var (
 	assemblyaiLabel string
 	assemblyaiSID   string
 	assemblyaiVoice = "aai-jane"
+	// same key on the EU host (credential api_uri)
+	assemblyaiEULabel string
+	assemblyaiEUSID   string
 
 	// Speechify TTS credential, provisioned IF SPEECHIFY_API_KEY is set.
 	// No model on the credential, so mediajam picks one from the language.
@@ -652,34 +655,45 @@ func teardownKugelaudioCredential() {
 	}
 }
 
-// provisionAssemblyaiCredential creates a TTS-only AssemblyAI credential on
-// assemblyai-tts-1, labelled `it-assemblyai-<runID>`.
+// provisionAssemblyaiCredential creates two TTS-only AssemblyAI credentials on
+// assemblyai-tts-1 with the same key: `it-assemblyai-<runID>` on the default
+// (US) host and `it-assemblyai-eu-<runID>` with the EU api_uri.
 func provisionAssemblyaiCredential() error {
-	assemblyaiLabel = "it-assemblyai-" + provision.RunID()
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
-		Vendor:    "assemblyai",
-		Label:     assemblyaiLabel,
-		APIKey:    cfg.AssemblyaiAPIKey,
-		ModelID:   "assemblyai-tts-1",
-		UseForTTS: true,
-	})
-	if err != nil {
+	create := func(label, apiURI string) (string, error) {
+		return client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+			Vendor:    "assemblyai",
+			Label:     label,
+			APIKey:    cfg.AssemblyaiAPIKey,
+			ModelID:   "assemblyai-tts-1",
+			APIURI:    apiURI,
+			UseForTTS: true,
+		})
+	}
+	var err error
+	assemblyaiLabel = "it-assemblyai-" + provision.RunID()
+	if assemblyaiSID, err = create(assemblyaiLabel, ""); err != nil {
 		return err
 	}
-	assemblyaiSID = sid
+	assemblyaiEULabel = "it-assemblyai-eu-" + provision.RunID()
+	if assemblyaiEUSID, err = create(assemblyaiEULabel, "tts.eu.assemblyai.com"); err != nil {
+		teardownAssemblyaiCredential()
+		return err
+	}
 	return nil
 }
 
 func teardownAssemblyaiCredential() {
-	if assemblyaiSID == "" {
-		return
-	}
 	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
 	defer cancel()
-	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, assemblyaiSID); err != nil {
-		log.Printf("tests/verbs: cleanup: delete AssemblyAI credential %s: %v", assemblyaiSID, err)
+	for _, sid := range []string{assemblyaiSID, assemblyaiEUSID} {
+		if sid == "" {
+			continue
+		}
+		if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, sid); err != nil {
+			log.Printf("tests/verbs: cleanup: delete AssemblyAI credential %s: %v", sid, err)
+		}
 	}
 }
 

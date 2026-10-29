@@ -65,7 +65,7 @@ func TestVerb_Say_Assemblyai(t *testing.T) {
 		minDur:     1 * time.Second,
 		maxDur:     9 * time.Second,
 		verb: V("say", "text", "This voice test is working correctly.",
-			"synthesizer", assemblyaiSynth(assemblyaiVoice, "en-US")),
+			"synthesizer", assemblyaiSynth(assemblyaiVoice, "english")),
 		wantWords: []string{"voice test", "working correctly"},
 	})
 }
@@ -81,7 +81,7 @@ func TestVerb_Say_Assemblyai(t *testing.T) {
 func TestVerb_Say_Stream_Assemblyai(t *testing.T) {
 	requireAssemblyai(t)
 	t.Parallel()
-	runStreamingSay(t, "say-stream-assemblyai", assemblyaiSynth(assemblyaiVoice, "en-US"))
+	runStreamingSay(t, "say-stream-assemblyai", assemblyaiSynth(assemblyaiVoice, "english"))
 }
 
 // TestVerb_Say_Stream_Assemblyai_TwoTurns — two streaming says on one call
@@ -96,15 +96,15 @@ func TestVerb_Say_Stream_Assemblyai(t *testing.T) {
 func TestVerb_Say_Stream_Assemblyai_TwoTurns(t *testing.T) {
 	requireAssemblyai(t)
 	t.Parallel()
-	synth := assemblyaiSynth(assemblyaiVoice, "en-US")
+	synth := assemblyaiSynth(assemblyaiVoice, "english")
 	runAssemblyaiScript(t, "say-stream-assemblyai-2turns", 1*time.Second, 15*time.Second,
 		[]string{"weather", "garden"},
 		V("say", "text", "The first sentence is about the weather.", "stream", true, "synthesizer", synth),
 		V("say", "text", "The second sentence is about the garden.", "stream", true, "synthesizer", synth))
 }
 
-// TestVerb_Say_Stream_Assemblyai_German — de-DE must reach the service as
-// "german"; a raw code is refused at connect and no turn speaks.
+// TestVerb_Say_Stream_Assemblyai_German — the service's own language name
+// ("german") reaches the socket; a code it does not know is refused at connect.
 // Audio duration is the check: the offline STT is English-only.
 //
 // Steps:
@@ -117,11 +117,12 @@ func TestVerb_Say_Stream_Assemblyai_German(t *testing.T) {
 	t.Parallel()
 	runAssemblyaiScript(t, "say-stream-assemblyai-de", 1500*time.Millisecond, 12*time.Second, nil,
 		V("say", "text", "Guten Tag, dieser Sprachtest funktioniert einwandfrei.", "stream", true,
-			"synthesizer", assemblyaiSynth(assemblyaiGermanVoice, "de-DE")))
+			"synthesizer", assemblyaiSynth(assemblyaiGermanVoice, "german")))
 }
 
-// TestVerb_Say_Assemblyai_Options — one-shot say with every HTTP option:
-// EU region, speed (only 1 is accepted) and extend_biometric_consent=false.
+// TestVerb_Say_Assemblyai_Options — one-shot say on the EU credential
+// (api_uri) with every HTTP option: speed (only 1 is accepted) and
+// extend_biometric_consent=false.
 //
 // Steps:
 //  1. place-call
@@ -131,10 +132,9 @@ func TestVerb_Say_Stream_Assemblyai_German(t *testing.T) {
 func TestVerb_Say_Assemblyai_Options(t *testing.T) {
 	requireAssemblyai(t)
 	t.Parallel()
-	synth := assemblyaiSynth(assemblyaiVoice, "en-US")
-	synth["options"] = map[string]any{
-		"api_uri": "tts.eu.assemblyai.com", "speed": 1, "extend_biometric_consent": false,
-	}
+	synth := assemblyaiSynth(assemblyaiVoice, "english")
+	synth["label"] = assemblyaiEULabel
+	synth["options"] = map[string]any{"speed": 1, "extend_biometric_consent": false}
 	runSay(t, sayOpts{
 		ctxTimeout: 30 * time.Second,
 		tag:        "say-assemblyai-options",
@@ -145,8 +145,8 @@ func TestVerb_Say_Assemblyai_Options(t *testing.T) {
 	})
 }
 
-// TestVerb_Say_Stream_Assemblyai_Options — streaming say with every
-// websocket option: EU region, inactivity_timeout and
+// TestVerb_Say_Stream_Assemblyai_Options — streaming say on the EU
+// credential (api_uri) with every websocket option: inactivity_timeout and
 // extend_biometric_consent=false.
 //
 // Steps:
@@ -158,10 +158,9 @@ func TestVerb_Say_Assemblyai_Options(t *testing.T) {
 func TestVerb_Say_Stream_Assemblyai_Options(t *testing.T) {
 	requireAssemblyai(t)
 	t.Parallel()
-	synth := assemblyaiSynth(assemblyaiVoice, "en-US")
-	synth["options"] = map[string]any{
-		"api_uri": "tts.eu.assemblyai.com", "inactivity_timeout": 30, "extend_biometric_consent": false,
-	}
+	synth := assemblyaiSynth(assemblyaiVoice, "english")
+	synth["label"] = assemblyaiEULabel
+	synth["options"] = map[string]any{"inactivity_timeout": 30, "extend_biometric_consent": false}
 	runAssemblyaiScript(t, "say-stream-assemblyai-options", 1*time.Second, 12*time.Second,
 		[]string{"european", "working"},
 		V("say", "text", "The European region is working.", "stream", true, "synthesizer", synth))
@@ -252,7 +251,7 @@ func TestVerb_Agent_Assemblyai_BargeIn(t *testing.T) {
 		Greeting:          true,
 		BargeIn:           true,
 		NoResponseTimeout: &noReprompt,
-		TTS:               assemblyaiSynth(assemblyaiVoice, "en-US"),
+		TTS:               assemblyaiSynth(assemblyaiVoice, "english"),
 	})
 	s.Done()
 
@@ -327,5 +326,5 @@ func TestVerb_Agent_Assemblyai_BargeIn(t *testing.T) {
 func TestVerb_Agent_Assemblyai_HistoryTrimmedToSpoken(t *testing.T) {
 	requireAssemblyai(t)
 	t.Parallel()
-	runHistoryTrimAfterBargeIn(t, assemblyaiSynth(assemblyaiVoice, "en-US"))
+	runHistoryTrimAfterBargeIn(t, assemblyaiSynth(assemblyaiVoice, "english"))
 }
