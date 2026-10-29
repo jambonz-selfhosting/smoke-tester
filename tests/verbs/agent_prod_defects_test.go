@@ -578,6 +578,8 @@ func runHistoryTrimAfterBargeIn(t *testing.T, ttsSynth map[string]any) {
 			})...)
 		cancel()
 	}
+	// user_interruption is posted alongside the interrupted turn_end and can land just after it
+	collected = append(collected, DrainCallbacks(sess, time.Second)...)
 	s.Done()
 
 	s = Step(t, "collect-events")
