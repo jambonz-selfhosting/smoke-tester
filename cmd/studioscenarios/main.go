@@ -30,7 +30,7 @@ import (
 
 type turn struct {
 	Say string `json:"say"`
-	// WaitAgent: wait for the agent to finish speaking first (default true).
+	// WaitAgent: wait for the agent to finish speaking first (default true); false barges in once it starts.
 	WaitAgent *bool `json:"wait_agent,omitempty"`
 }
 
@@ -241,6 +241,30 @@ func waitAgentDone(ctx context.Context, call *jsip.Call, m *voiceMeter, quiet, m
 	}
 }
 
+// waitAgentSpeaking returns once the agent has been speaking for into, so the next turn barges in.
+func waitAgentSpeaking(ctx context.Context, call *jsip.Call, m *voiceMeter, into, max time.Duration) bool {
+	start := time.Now()
+	m.sawVoice = false
+	var first time.Time
+	for time.Since(start) < max {
+		select {
+		case <-call.Done():
+			return false
+		case <-ctx.Done():
+			return false
+		case <-time.After(50 * time.Millisecond):
+		}
+		m.poll()
+		if m.sawVoice && first.IsZero() {
+			first = time.Now()
+		}
+		if !first.IsZero() && time.Since(first) >= into {
+			return true
+		}
+	}
+	return true
+}
+
 // internal/stt is fixed to en-US and returns no timings, so this asks Deepgram for per-utterance starts.
 func transcribe(pcm []byte, lang string) (string, error) {
 	q := url.Values{"model": {"nova-3"}, "language": {lang}, "encoding": {"linear16"}, "sample_rate": {"8000"}, "punctuate": {"true"}, "utterances": {"true"}}
@@ -437,9 +461,11 @@ func run() error {
 				max = 2 * time.Second
 			}
 			alive = waitAgentDone(ctx, call, m, 2500*time.Millisecond, max)
-			if !alive {
-				break
-			}
+		} else {
+			alive = waitAgentSpeaking(ctx, call, m, 800*time.Millisecond, 12*time.Second)
+		}
+		if !alive {
+			break
 		}
 		mark("caller", t.Say)
 		if err := call.SendWAV(wavs[i]); err != nil {
@@ -475,30 +501,29 @@ func run() error {
 		} `json:"session"`
 	}
 	callSid := ""
-	if viaDID {
-		// The newest call on this agent is ours; the record lands a few seconds after hangup.
-		for i := 0; i < 15 && callSid == ""; i++ {
-			var list struct {
-				Calls []struct {
-					CallSID string    `json:"call_sid"`
-					When    time.Time `json:"when"`
-				} `json:"calls"`
-			}
-			_ = st.do("GET", fmt.Sprintf("/calls?agent_id=%s&limit=1", sc.AgentID), nil, &list)
-			if len(list.Calls) > 0 && list.Calls[0].When.After(start.Add(-10*time.Second)) {
-				callSid = list.Calls[0].CallSID
-			} else {
-				time.Sleep(2 * time.Second)
-			}
-		}
-	} else {
+	if !viaDID {
 		_ = st.do("GET", fmt.Sprintf("/agents/%s/test-sessions/%s", sc.AgentID, sess.Session.ID), nil, &view)
 		if view.Session.CallSID != nil {
 			callSid = *view.Session.CallSID
 		}
-		if callSid == "" {
-			callSid = dialSid
+	}
+	// A test session can end without its call_sid; the newest call on this agent is ours.
+	for i := 0; i < 15 && callSid == ""; i++ {
+		var list struct {
+			Calls []struct {
+				CallSID string    `json:"call_sid"`
+				When    time.Time `json:"when"`
+			} `json:"calls"`
 		}
+		_ = st.do("GET", fmt.Sprintf("/calls?agent_id=%s&limit=1", sc.AgentID), nil, &list)
+		if len(list.Calls) > 0 && list.Calls[0].When.After(start.Add(-10*time.Second)) {
+			callSid = list.Calls[0].CallSID
+		} else {
+			time.Sleep(2 * time.Second)
+		}
+	}
+	if callSid == "" {
+		callSid = dialSid
 	}
 	var detail json.RawMessage
 	if callSid != "" {

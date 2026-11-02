@@ -9,17 +9,20 @@
       "say": "Hi, can you check the status of order 4 1 7 2 for me?"
     },
     {
-      "say": "Sorry, actually, wait, I have another question.",
-      "wait_agent": false
+      "say": "Can you put me through to someone in billing?"
     },
     {
-      "say": "Can you put me through to someone in billing?"
+      "say": "One more thing. Can you tell me how returns work, step by step?"
+    },
+    {
+      "say": "Sorry, actually, wait, never mind that.",
+      "wait_agent": false
     },
     {
       "say": "Thanks, that answered it. That's all, goodbye."
     }
   ],
-  "max_sec": 150,
+  "max_sec": 180,
   "tail_sec": 20,
   "expect": {
     "caller_turns": 2,
