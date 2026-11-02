@@ -1,0 +1,39 @@
+{
+  "name": "s2s-azure-openai",
+  "agent_id": "REPLACE_WITH_AZURE_OPENAI_AGENT_ID",
+  "direction": "inbound",
+  "language": "en",
+  "voice": "aura-2-thalia-en",
+  "turns": [
+    {
+      "say": "Hi, can you check the status of order 4 1 7 2 for me?"
+    },
+    {
+      "say": "Sorry, actually, wait, I have another question.",
+      "wait_agent": false
+    },
+    {
+      "say": "Can you put me through to someone in billing?"
+    },
+    {
+      "say": "Thanks, that answered it. That's all, goodbye."
+    }
+  ],
+  "max_sec": 150,
+  "tail_sec": 20,
+  "expect": {
+    "caller_turns": 2,
+    "latency_turns": 2,
+    "tools_ok": [
+      "get_order_status"
+    ],
+    "agent_hangup": true,
+    "events": [
+      "(?i)transfer"
+    ],
+    "heard": [
+      "(?i)shipped|deliver"
+    ],
+    "interrupted": true
+  }
+}

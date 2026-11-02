@@ -20,6 +20,7 @@ import (
 	"net/url"
 	"os"
 	"path/filepath"
+	"regexp"
 	"strings"
 	"time"
 
@@ -44,6 +45,98 @@ type scenario struct {
 	Turns     []turn            `json:"turns"`
 	MaxSec    int               `json:"max_sec,omitempty"`
 	TailSec   int               `json:"tail_sec,omitempty"` // wait after the last turn; 0 means 25
+	Expect    *expect           `json:"expect,omitempty"`
+}
+
+// expect: what Studio's call record must show for the scenario to pass. Unset fields are not checked.
+type expect struct {
+	CallerTurns  int      `json:"caller_turns,omitempty"`  // caller turns with text, at least
+	LatencyTurns int      `json:"latency_turns,omitempty"` // agent turns with a latency record, at least
+	ToolsOK      []string `json:"tools_ok,omitempty"`      // tools that must have run and succeeded
+	AgentHangup  *bool    `json:"agent_hangup,omitempty"`  // who must end the call
+	Completion   string   `json:"completion,omitempty"`    // regexp on cdr.completion_reason
+	Events       []string `json:"events,omitempty"`        // regexps each matching some event (text + sub)
+	Heard        []string `json:"heard,omitempty"`         // regexps on what the caller heard
+	Interrupted  bool     `json:"interrupted,omitempty"`   // an agent turn was cut off by the caller
+}
+
+type callDetail struct {
+	Cdr struct {
+		CompletionReason string `json:"completion_reason"`
+		Ended            string `json:"ended"`
+	} `json:"cdr"`
+	Turns []struct {
+		Role        string          `json:"role"`
+		Text        string          `json:"text"`
+		Latency     json.RawMessage `json:"latency"`
+		Interrupted bool            `json:"interrupted"`
+		ToolCalls   []struct {
+			Name string `json:"name"`
+			OK   bool   `json:"ok"`
+		} `json:"tool_calls"`
+	} `json:"turns"`
+	Events []struct {
+		Text string `json:"text"`
+		Sub  string `json:"sub"`
+	} `json:"events"`
+}
+
+// check returns one line per expectation that the call did not meet.
+func check(e *expect, raw json.RawMessage, endedByAgent bool, heard string) []string {
+	var fails []string
+	var d callDetail
+	if len(raw) == 0 || json.Unmarshal(raw, &d) != nil {
+		return []string{"no Studio call record"}
+	}
+	caller, latency, interrupted := 0, 0, false
+	tools := map[string]bool{}
+	for _, t := range d.Turns {
+		if t.Role == "caller" && strings.TrimSpace(t.Text) != "" {
+			caller++
+		}
+		if t.Role == "agent" && len(t.Latency) > 0 && string(t.Latency) != "null" {
+			latency++
+		}
+		interrupted = interrupted || t.Interrupted
+		for _, c := range t.ToolCalls {
+			tools[c.Name] = tools[c.Name] || c.OK
+		}
+	}
+	if caller < e.CallerTurns {
+		fails = append(fails, fmt.Sprintf("caller turns with text: %d, want >= %d", caller, e.CallerTurns))
+	}
+	if latency < e.LatencyTurns {
+		fails = append(fails, fmt.Sprintf("agent turns with latency: %d, want >= %d", latency, e.LatencyTurns))
+	}
+	for _, name := range e.ToolsOK {
+		if !tools[name] {
+			fails = append(fails, fmt.Sprintf("tool %s did not succeed", name))
+		}
+	}
+	if e.AgentHangup != nil && *e.AgentHangup != endedByAgent {
+		fails = append(fails, fmt.Sprintf("ended by agent: %v, want %v", endedByAgent, *e.AgentHangup))
+	}
+	if e.Completion != "" && !regexp.MustCompile(e.Completion).MatchString(d.Cdr.CompletionReason) {
+		fails = append(fails, fmt.Sprintf("completion reason %q does not match %q", d.Cdr.CompletionReason, e.Completion))
+	}
+	for _, re := range e.Events {
+		r, hit := regexp.MustCompile(re), false
+		for _, ev := range d.Events {
+			hit = hit || r.MatchString(ev.Text+" "+ev.Sub)
+		}
+		if !hit {
+			fails = append(fails, fmt.Sprintf("no event matches %q", re))
+		}
+	}
+	for _, re := range e.Heard {
+		if !regexp.MustCompile(re).MatchString(heard) {
+			fails = append(fails, fmt.Sprintf("caller did not hear %q", re))
+		}
+	}
+	if e.Interrupted && !interrupted {
+		fails = append(fails, "no agent turn was interrupted")
+	}
+	return fails
 }
 
 type studio struct {
@@ -419,14 +512,25 @@ func run() error {
 		log.Printf("transcribe: %v", err)
 	}
 	_ = os.WriteFile(filepath.Join(dir, "heard.txt"), []byte(transcript), 0o644)
+	var fails []string
+	if sc.Expect != nil {
+		fails = check(sc.Expect, detail, endedByAgent, transcript)
+	}
 	summary := map[string]any{
 		"scenario": sc.Name, "agent_id": sc.AgentID, "direction": sc.Direction,
 		"test_session": sess.Session.ID, "call_sid": callSid, "sip_call_id": call.CallID(),
 		"ended_by_agent": endedByAgent, "duration_s": math.Round(call.Duration().Seconds()*10) / 10,
-		"timeline": timeline, "studio_call": detail,
+		"timeline": timeline, "studio_call": detail, "checked": sc.Expect != nil, "failures": fails,
 	}
 	b, _ := json.MarshalIndent(summary, "", "  ")
 	_ = os.WriteFile(filepath.Join(dir, "result.json"), b, 0o644)
-	fmt.Printf("== %s call_sid=%s ended_by_agent=%v\n%s", sc.Name, callSid, endedByAgent, transcript)
+	fmt.Printf("== %s call_sid=%s ended_by_agent=%v\n%s\n", sc.Name, callSid, endedByAgent, transcript)
+	if sc.Expect == nil {
+		return nil
+	}
+	if len(fails) > 0 {
+		return fmt.Errorf("%s FAILED:\n  %s", sc.Name, strings.Join(fails, "\n  "))
+	}
+	fmt.Printf("== %s PASSED\n", sc.Name)
 	return nil
 }
