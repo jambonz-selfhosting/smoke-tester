@@ -1,302 +1,17 @@
-// Command studioscenarios plays a scripted caller against an Agent Studio agent
-// through a Studio test session: register as the session's SIP user, then dial
-// the agent (inbound) or let Studio ring us (outbound), speak each turn once the
-// agent stops talking, and save the audio, the transcript and Studio's call record.
+// Command studioscenarios plays one scripted caller against an existing Agent Studio agent
+// (internal/studio does the work). make test-studio builds its own agents and runs every vendor.
 package main
 
 import (
-	"bytes"
 	"context"
-	"encoding/binary"
-	"encoding/json"
-	"errors"
 	"flag"
 	"fmt"
-	"io"
 	"log"
-	"math"
-	"net"
-	"net/http"
-	"net/url"
 	"os"
-	"path/filepath"
-	"regexp"
 	"strings"
-	"time"
 
-	jsip "github.com/jambonz-selfhosting/smoke-tester/internal/sip"
-	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
+	"github.com/jambonz-selfhosting/smoke-tester/internal/studio"
 )
-
-type turn struct {
-	Say string `json:"say"`
-	// WaitAgent: wait for the agent to finish speaking first (default true); false barges in once it starts.
-	WaitAgent *bool `json:"wait_agent,omitempty"`
-}
-
-type scenario struct {
-	Name      string            `json:"name"`
-	AgentID   string            `json:"agent_id"`
-	Direction string            `json:"direction"`     // inbound | outbound | inbound-did
-	DID       string            `json:"did,omitempty"` // inbound-did: number routed to the published agent
-	Language  string            `json:"language"`      // for the offline transcript
-	Voice     string            `json:"voice"`         // Deepgram voice for the caller
-	Env       map[string]string `json:"env,omitempty"`
-	Turns     []turn            `json:"turns"`
-	MaxSec    int               `json:"max_sec,omitempty"`
-	TailSec   int               `json:"tail_sec,omitempty"` // wait after the last turn; 0 means 25
-	Expect    *expect           `json:"expect,omitempty"`
-}
-
-// expect: what Studio's call record must show for the scenario to pass. Unset fields are not checked.
-type expect struct {
-	CallerTurns  int      `json:"caller_turns,omitempty"`  // caller turns with text, at least
-	LatencyTurns int      `json:"latency_turns,omitempty"` // agent turns with a latency record, at least
-	ToolsOK      []string `json:"tools_ok,omitempty"`      // tools that must have run and succeeded
-	AgentHangup  *bool    `json:"agent_hangup,omitempty"`  // who must end the call
-	Completion   string   `json:"completion,omitempty"`    // regexp on cdr.completion_reason
-	Events       []string `json:"events,omitempty"`        // regexps each matching some event (text + sub)
-	Heard        []string `json:"heard,omitempty"`         // regexps on what the caller heard
-	Interrupted  bool     `json:"interrupted,omitempty"`   // an agent turn was cut off by the caller
-}
-
-type callDetail struct {
-	Cdr struct {
-		CompletionReason string `json:"completion_reason"`
-		Ended            string `json:"ended"`
-	} `json:"cdr"`
-	Turns []struct {
-		Role        string          `json:"role"`
-		Text        string          `json:"text"`
-		Latency     json.RawMessage `json:"latency"`
-		Interrupted bool            `json:"interrupted"`
-		ToolCalls   []struct {
-			Name string `json:"name"`
-			OK   bool   `json:"ok"`
-		} `json:"tool_calls"`
-	} `json:"turns"`
-	Events []struct {
-		Text string `json:"text"`
-		Sub  string `json:"sub"`
-	} `json:"events"`
-}
-
-// check returns one line per expectation that the call did not meet.
-func check(e *expect, raw json.RawMessage, endedByAgent bool, heard string) []string {
-	var fails []string
-	var d callDetail
-	if len(raw) == 0 || json.Unmarshal(raw, &d) != nil {
-		return []string{"no Studio call record"}
-	}
-	caller, latency, interrupted := 0, 0, false
-	tools := map[string]bool{}
-	for _, t := range d.Turns {
-		if t.Role == "caller" && strings.TrimSpace(t.Text) != "" {
-			caller++
-		}
-		if t.Role == "agent" && len(t.Latency) > 0 && string(t.Latency) != "null" {
-			latency++
-		}
-		interrupted = interrupted || t.Interrupted
-		for _, c := range t.ToolCalls {
-			tools[c.Name] = tools[c.Name] || c.OK
-		}
-	}
-	if caller < e.CallerTurns {
-		fails = append(fails, fmt.Sprintf("caller turns with text: %d, want >= %d", caller, e.CallerTurns))
-	}
-	if latency < e.LatencyTurns {
-		fails = append(fails, fmt.Sprintf("agent turns with latency: %d, want >= %d", latency, e.LatencyTurns))
-	}
-	for _, name := range e.ToolsOK {
-		if !tools[name] {
-			fails = append(fails, fmt.Sprintf("tool %s did not succeed", name))
-		}
-	}
-	if e.AgentHangup != nil && *e.AgentHangup != endedByAgent {
-		fails = append(fails, fmt.Sprintf("ended by agent: %v, want %v", endedByAgent, *e.AgentHangup))
-	}
-	if e.Completion != "" && !regexp.MustCompile(e.Completion).MatchString(d.Cdr.CompletionReason) {
-		fails = append(fails, fmt.Sprintf("completion reason %q does not match %q", d.Cdr.CompletionReason, e.Completion))
-	}
-	for _, re := range e.Events {
-		r, hit := regexp.MustCompile(re), false
-		for _, ev := range d.Events {
-			hit = hit || r.MatchString(ev.Text+" "+ev.Sub)
-		}
-		if !hit {
-			fails = append(fails, fmt.Sprintf("no event matches %q", re))
-		}
-	}
-	for _, re := range e.Heard {
-		if !regexp.MustCompile(re).MatchString(heard) {
-			fails = append(fails, fmt.Sprintf("caller did not hear %q", re))
-		}
-	}
-	if e.Interrupted && !interrupted {
-		fails = append(fails, "no agent turn was interrupted")
-	}
-	return fails
-}
-
-type studio struct {
-	base, sid, origin string
-}
-
-func (s studio) do(method, path string, body any, out any) error {
-	var rd io.Reader
-	if body != nil {
-		b, _ := json.Marshal(body)
-		rd = bytes.NewReader(b)
-	}
-	req, _ := http.NewRequest(method, s.base+path, rd)
-	req.Header.Set("Cookie", "__Host-studio_sid="+s.sid)
-	req.Header.Set("Origin", s.origin)
-	if body != nil {
-		req.Header.Set("Content-Type", "application/json")
-	}
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return err
-	}
-	defer res.Body.Close()
-	data, _ := io.ReadAll(res.Body)
-	if res.StatusCode >= 300 {
-		return fmt.Errorf("%s %s: %d %s", method, path, res.StatusCode, string(data))
-	}
-	if out != nil && len(data) > 0 {
-		return json.Unmarshal(data, out)
-	}
-	return nil
-}
-
-type sessionResp struct {
-	Session struct {
-		ID      string  `json:"id"`
-		CallSID *string `json:"call_sid"`
-	} `json:"session"`
-	Webrtc struct {
-		Server         string `json:"server"`
-		Realm          string `json:"realm"`
-		Username       string `json:"username"`
-		Password       string `json:"password"`
-		ApplicationSID string `json:"application_sid"`
-		Token          string `json:"token"`
-	} `json:"webrtc"`
-}
-
-// voiceMeter tails the call's PCM recording and reports whether the agent is speaking.
-type voiceMeter struct {
-	path      string
-	off       int64
-	lastVoice time.Time
-	sawVoice  bool
-}
-
-func (m *voiceMeter) poll() {
-	f, err := os.Open(m.path)
-	if err != nil {
-		return
-	}
-	defer f.Close()
-	st, _ := f.Stat()
-	if st.Size()-m.off < 320 {
-		return
-	}
-	buf := make([]byte, (st.Size()-m.off)/320*320)
-	n, _ := f.ReadAt(buf, m.off)
-	m.off += int64(n)
-	for i := 0; i+320 <= n; i += 320 {
-		var sum float64
-		for j := i; j < i+320; j += 2 {
-			v := float64(int16(binary.LittleEndian.Uint16(buf[j:])))
-			sum += v * v
-		}
-		if math.Sqrt(sum/160) > 400 {
-			m.lastVoice, m.sawVoice = time.Now(), true
-		}
-	}
-}
-
-// waitAgentDone returns once the agent has spoken and then been quiet for quiet,
-// or after max with no speech at all.
-func waitAgentDone(ctx context.Context, call *jsip.Call, m *voiceMeter, quiet, max time.Duration) bool {
-	start := time.Now()
-	m.sawVoice = false
-	for {
-		select {
-		case <-call.Done():
-			return false
-		case <-ctx.Done():
-			return false
-		case <-time.After(100 * time.Millisecond):
-		}
-		m.poll()
-		if m.sawVoice && time.Since(m.lastVoice) >= quiet {
-			return true
-		}
-		if !m.sawVoice && time.Since(start) >= max {
-			return true
-		}
-	}
-}
-
-// waitAgentSpeaking returns once the agent has been speaking for into, so the next turn barges in.
-func waitAgentSpeaking(ctx context.Context, call *jsip.Call, m *voiceMeter, into, max time.Duration) bool {
-	start := time.Now()
-	m.sawVoice = false
-	var first time.Time
-	for time.Since(start) < max {
-		select {
-		case <-call.Done():
-			return false
-		case <-ctx.Done():
-			return false
-		case <-time.After(50 * time.Millisecond):
-		}
-		m.poll()
-		if m.sawVoice && first.IsZero() {
-			first = time.Now()
-		}
-		if !first.IsZero() && time.Since(first) >= into {
-			return true
-		}
-	}
-	return true
-}
-
-// internal/stt is fixed to en-US and returns no timings, so this asks Deepgram for per-utterance starts.
-func transcribe(pcm []byte, lang string) (string, error) {
-	q := url.Values{"model": {"nova-3"}, "language": {lang}, "encoding": {"linear16"}, "sample_rate": {"8000"}, "punctuate": {"true"}, "utterances": {"true"}}
-	req, _ := http.NewRequest("POST", "https://api.deepgram.com/v1/listen?"+q.Encode(), bytes.NewReader(pcm))
-	req.Header.Set("Authorization", "Token "+os.Getenv("DEEPGRAM_API_KEY"))
-	req.Header.Set("Content-Type", "application/octet-stream")
-	res, err := http.DefaultClient.Do(req)
-	if err != nil {
-		return "", err
-	}
-	defer res.Body.Close()
-	if res.StatusCode >= 300 {
-		body, _ := io.ReadAll(res.Body)
-		return "", fmt.Errorf("deepgram %d: %s", res.StatusCode, body)
-	}
-	var out struct {
-		Results struct {
-			Utterances []struct {
-				Start      float64 `json:"start"`
-				Transcript string  `json:"transcript"`
-			} `json:"utterances"`
-		} `json:"results"`
-	}
-	if err := json.NewDecoder(res.Body).Decode(&out); err != nil {
-		return "", err
-	}
-	var b strings.Builder
-	for _, u := range out.Results.Utterances {
-		fmt.Fprintf(&b, "[%6.1fs] %s\n", u.Start, u.Transcript)
-	}
-	return b.String(), nil
-}
 
 func main() {
 	if err := run(); err != nil {
@@ -305,256 +20,42 @@ func main() {
 	}
 }
 
-// run returns errors instead of exiting, so the deferred test-session delete and SIP teardown always run.
 func run() error {
 	scFile := flag.String("scenario", "", "scenario JSON")
 	outDir := flag.String("out", "", "output dir")
 	sidFile := flag.String("sid", "", "file holding a Studio session cookie value")
-	account := flag.String("account", "01a15da7-95f6-7175-9fc4-4fe05028a000", "Studio account (workspace) id")
+	account := flag.String("account", "", "Studio account (workspace) id; empty: the login's first workspace")
 	apiBase := flag.String("api", "https://studio.jambonz.io/v1", "Studio API base")
 	sbc := flag.String("sbc", "56.10.102.117:5060", "SBC host:port")
 	fromHost := flag.String("from-host", "123.21.48.183", "inbound-did: From host (a whitelisted carrier IP)")
 	flag.Parse()
 
-	raw, err := os.ReadFile(*scFile)
+	sc, err := studio.LoadScenario(*scFile)
 	if err != nil {
 		return err
 	}
-	var sc scenario
-	if err := json.Unmarshal(raw, &sc); err != nil {
-		return err
-	}
-	if sc.MaxSec == 0 {
-		sc.MaxSec = 150
-	}
-	sidRaw, err := os.ReadFile(*sidFile)
+	sid, err := os.ReadFile(*sidFile)
 	if err != nil {
 		return err
 	}
-	api, err := url.Parse(*apiBase)
-	if err != nil {
-		return fmt.Errorf("-api: %w", err)
-	}
-	// Studio rejects writes whose Origin is not its own host.
-	origin := api.Scheme + "://" + api.Host
-	st := studio{base: fmt.Sprintf("%s/accounts/%s", *apiBase, *account), sid: strings.TrimSpace(string(sidRaw)), origin: origin}
-	dir := filepath.Join(*outDir, sc.Name)
-	_ = os.MkdirAll(filepath.Join(dir, "utt"), 0o755)
-	ctx, cancel := context.WithTimeout(context.Background(), time.Duration(sc.MaxSec)*time.Second)
-	defer cancel()
-
-	// Caller audio first, so TTS latency never lands inside the call.
-	wavs := make([]string, len(sc.Turns))
-	for i, t := range sc.Turns {
-		if wavs[i], err = tts.EnsureWAV(ctx, filepath.Join(dir, "utt"), t.Say, tts.PromptOptions{Model: sc.Voice}); err != nil {
-			return fmt.Errorf("tts turn %d: %w", i, err)
-		}
-	}
-
-	// inbound-did goes through the published route like a carrier would; the others use a test session.
-	viaDID := sc.Direction == "inbound-did"
-	var sess sessionResp
-	if !viaDID {
-		body := map[string]any{"record": true}
-		if len(sc.Env) > 0 {
-			body["env"] = sc.Env
-		}
-		if sc.Direction == "outbound" {
-			body["outbound"] = map[string]any{"ring": "browser"}
-		}
-		if err := st.do("POST", fmt.Sprintf("/agents/%s/test-sessions", sc.AgentID), body, &sess); err != nil {
-			return fmt.Errorf("create test session: %w", err)
-		}
-		log.Printf("session %s realm=%s user=%s app=%s", sess.Session.ID, sess.Webrtc.Realm, sess.Webrtc.Username, sess.Webrtc.ApplicationSID)
-		defer func() {
-			_ = st.do("DELETE", fmt.Sprintf("/agents/%s/test-sessions/%s", sc.AgentID, sess.Session.ID), nil, nil)
-		}()
-	}
-	w := sess.Webrtc
-
-	sbcHost, _, _ := net.SplitHostPort(*sbc)
-	hosts := map[string]string{}
-	if w.Realm != "" {
-		hosts[w.Realm] = sbcHost
-	}
-	res, err := jsip.NewStaticResolver(hosts)
+	c, err := studio.New(*apiBase, string(sid))
 	if err != nil {
 		return err
 	}
-	defer res.Close()
-
-	incoming := make(chan *jsip.Call, 1)
-	handler := func(hctx context.Context, c *jsip.Call) error {
-		if err := c.Answer(); err != nil {
-			return err
-		}
-		incoming <- c
-		<-c.Done()
-		return nil
+	ctx := context.Background()
+	if err := c.UseWorkspace(ctx, *account); err != nil {
+		return err
 	}
-	cfg := jsip.Config{SIPDomain: w.Realm, User: w.Username, Pass: w.Password, Resolver: res.Resolver()}
-	if viaDID {
-		cfg = jsip.Config{User: "studioscenarios", Resolver: res.Resolver()}
-	}
-	stack, err := jsip.Start(ctx, cfg, handler)
+	r, err := studio.Run(ctx, c, sc, studio.RunOptions{OutDir: *outDir, SBC: *sbc, FromHost: *fromHost})
 	if err != nil {
-		return fmt.Errorf("register: %w", err)
+		return err
 	}
-	defer stack.Stop()
-
-	var call *jsip.Call
-	dialSid := ""
-	start := time.Now()
-	if viaDID {
-		from := fmt.Sprintf("+1555%07d", time.Now().UnixNano()%10_000_000)
-		call, err = stack.Invite(ctx, fmt.Sprintf("sip:%s@%s", sc.DID, *sbc), jsip.InviteOptions{
-			Headers: jsip.H{
-				"From": fmt.Sprintf("<sip:%s@%s>;tag=%08x", from, *fromHost, time.Now().UnixNano()&0xffffffff),
-				"To":   fmt.Sprintf("<sip:%s@%s>", sc.DID, sbcHost),
-			},
-		})
-		if err != nil {
-			return fmt.Errorf("invite: %w", err)
-		}
-	} else if sc.Direction == "outbound" {
-		var d struct {
-			CallSID string `json:"call_sid"`
-		}
-		if err := st.do("POST", fmt.Sprintf("/agents/%s/test-sessions/%s/dial", sc.AgentID, sess.Session.ID), map[string]string{"token": w.Token}, &d); err != nil {
-			return fmt.Errorf("dial: %w", err)
-		}
-		log.Printf("studio dialing us, call_sid=%s", d.CallSID)
-		dialSid = d.CallSID
-		select {
-		case call = <-incoming:
-		case <-ctx.Done():
-			return errors.New("no incoming call from studio")
-		}
-	} else {
-		call, err = stack.Invite(ctx, fmt.Sprintf("sip:app-%s@%s", w.ApplicationSID, w.Realm), jsip.InviteOptions{
-			Headers: jsip.H{"X-Application-Sid": w.ApplicationSID, "X-Vab-Test-Session": w.Token},
-		})
-		if err != nil {
-			return fmt.Errorf("invite: %w", err)
-		}
-	}
-	log.Printf("connected call-id=%s codec=%s", call.CallID(), call.Codec())
-
-	pcm := filepath.Join(dir, "callee-heard.pcm")
-	_ = call.StartRecording(pcm)
-	_ = call.SendSilence()
-	m := &voiceMeter{path: pcm}
-	timeline := []map[string]any{}
-	mark := func(ev, text string) {
-		timeline = append(timeline, map[string]any{"t": math.Round(time.Since(start).Seconds()*10) / 10, "ev": ev, "text": text})
-	}
-
-	alive := true
-	for i, t := range sc.Turns {
-		if !alive {
-			break
-		}
-		if t.WaitAgent == nil || *t.WaitAgent {
-			// Outbound agents wait for the callee, so the first turn waits less.
-			max := 12 * time.Second
-			if i == 0 && sc.Direction == "outbound" {
-				max = 2 * time.Second
-			}
-			alive = waitAgentDone(ctx, call, m, 2500*time.Millisecond, max)
-		} else {
-			alive = waitAgentSpeaking(ctx, call, m, 800*time.Millisecond, 12*time.Second)
-		}
-		if !alive {
-			break
-		}
-		mark("caller", t.Say)
-		if err := call.SendWAV(wavs[i]); err != nil {
-			mark("error", err.Error())
-			break
-		}
-		_ = call.SendSilence()
-	}
-	tail := sc.TailSec
-	if tail == 0 {
-		tail = 25
-	}
-	if alive {
-		mark("caller_done", "")
-		select {
-		case <-call.Done():
-		case <-ctx.Done():
-		case <-time.After(time.Duration(tail) * time.Second):
-		}
-	}
-	endedByAgent := call.State() == jsip.StateEnded
-	if !endedByAgent {
-		_ = call.Hangup()
-	}
-	call.StopRecording()
-	mark("end", map[bool]string{true: "agent hung up", false: "caller hung up"}[endedByAgent])
-
-	// Studio's own view of the call.
-	time.Sleep(4 * time.Second)
-	var view struct {
-		Session struct {
-			CallSID *string `json:"call_sid"`
-		} `json:"session"`
-	}
-	callSid := ""
-	if !viaDID {
-		_ = st.do("GET", fmt.Sprintf("/agents/%s/test-sessions/%s", sc.AgentID, sess.Session.ID), nil, &view)
-		if view.Session.CallSID != nil {
-			callSid = *view.Session.CallSID
-		}
-	}
-	// A test session can end without its call_sid; the newest call on this agent is ours.
-	for i := 0; i < 15 && callSid == ""; i++ {
-		var list struct {
-			Calls []struct {
-				CallSID string    `json:"call_sid"`
-				When    time.Time `json:"when"`
-			} `json:"calls"`
-		}
-		_ = st.do("GET", fmt.Sprintf("/calls?agent_id=%s&limit=1", sc.AgentID), nil, &list)
-		if len(list.Calls) > 0 && list.Calls[0].When.After(start.Add(-10*time.Second)) {
-			callSid = list.Calls[0].CallSID
-		} else {
-			time.Sleep(2 * time.Second)
-		}
-	}
-	if callSid == "" {
-		callSid = dialSid
-	}
-	var detail json.RawMessage
-	if callSid != "" {
-		if err := st.do("GET", "/calls/"+callSid, nil, &detail); err != nil {
-			log.Printf("call detail: %v", err)
-		}
-	}
-	heard, _ := os.ReadFile(pcm)
-	transcript, err := transcribe(heard, sc.Language)
-	if err != nil {
-		log.Printf("transcribe: %v", err)
-	}
-	_ = os.WriteFile(filepath.Join(dir, "heard.txt"), []byte(transcript), 0o644)
-	var fails []string
-	if sc.Expect != nil {
-		fails = check(sc.Expect, detail, endedByAgent, transcript)
-	}
-	summary := map[string]any{
-		"scenario": sc.Name, "agent_id": sc.AgentID, "direction": sc.Direction,
-		"test_session": sess.Session.ID, "call_sid": callSid, "sip_call_id": call.CallID(),
-		"ended_by_agent": endedByAgent, "duration_s": math.Round(call.Duration().Seconds()*10) / 10,
-		"timeline": timeline, "studio_call": detail, "checked": sc.Expect != nil, "failures": fails,
-	}
-	b, _ := json.MarshalIndent(summary, "", "  ")
-	_ = os.WriteFile(filepath.Join(dir, "result.json"), b, 0o644)
-	fmt.Printf("== %s call_sid=%s ended_by_agent=%v\n%s\n", sc.Name, callSid, endedByAgent, transcript)
+	fmt.Printf("== %s call_sid=%s ended_by_agent=%v\n%s\n", sc.Name, r.CallSID, r.EndedByAgent, r.Transcript)
 	if sc.Expect == nil {
 		return nil
 	}
-	if len(fails) > 0 {
-		return fmt.Errorf("%s FAILED:\n  %s", sc.Name, strings.Join(fails, "\n  "))
+	if len(r.Failures) > 0 {
+		return fmt.Errorf("%s FAILED:\n  %s", sc.Name, strings.Join(r.Failures, "\n  "))
 	}
 	fmt.Printf("== %s PASSED\n", sc.Name)
 	return nil

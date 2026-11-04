@@ -1,4 +1,4 @@
-package main
+package studio
 
 import (
 	"encoding/json"
@@ -21,18 +21,18 @@ const record = `{
 
 func TestCheckPasses(t *testing.T) {
 	yes := true
-	e := &expect{CallerTurns: 2, LatencyTurns: 2, ToolsOK: []string{"get_order_status"}, AgentHangup: &yes,
+	e := &Expect{CallerTurns: 2, LatencyTurns: 2, ToolsOK: []string{"get_order_status"}, AgentHangup: &yes,
 		Completion: "hangup", Events: []string{"(?i)transfer.*returned"}, Heard: []string{"(?i)shipped"}, Interrupted: true}
-	if f := check(e, json.RawMessage(record), true, "it shipped yesterday"); len(f) > 0 {
+	if f := Check(e, json.RawMessage(record), true, "it shipped yesterday"); len(f) > 0 {
 		t.Fatalf("want pass, got %v", f)
 	}
 }
 
 func TestCheckNamesEachFailure(t *testing.T) {
 	no := false
-	e := &expect{CallerTurns: 3, LatencyTurns: 3, ToolsOK: []string{"book"}, AgentHangup: &no,
+	e := &Expect{CallerTurns: 3, LatencyTurns: 3, ToolsOK: []string{"book"}, AgentHangup: &no,
 		Completion: "^credential", Events: []string{"handoff"}, Heard: []string{"refund"}}
-	f := strings.Join(check(e, json.RawMessage(record), true, "it shipped"), "\n")
+	f := strings.Join(Check(e, json.RawMessage(record), true, "it shipped"), "\n")
 	for _, want := range []string{"caller turns with text: 2", "agent turns with latency: 2", "tool book",
 		"ended by agent: true", `completion reason "hangup tool"`, `no event matches "handoff"`, `did not hear "refund"`} {
 		if !strings.Contains(f, want) {
@@ -42,7 +42,7 @@ func TestCheckNamesEachFailure(t *testing.T) {
 }
 
 func TestCheckWithoutRecord(t *testing.T) {
-	if f := check(&expect{}, nil, false, ""); len(f) != 1 || f[0] != "no Studio call record" {
+	if f := Check(&Expect{}, nil, false, ""); len(f) != 1 || f[0] != "no Studio call record" {
 		t.Fatalf("got %v", f)
 	}
 }

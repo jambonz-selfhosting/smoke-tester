@@ -146,6 +146,15 @@ type Settings struct {
 	// pass without exercising GPT-Live — see HasGptLive.
 	GptLiveAPIKey string
 
+	// Optional — Agent Studio for tests/studio (make test-studio). The workspace's
+	// session cookie comes from StudioSIDFile, or one sign-in with the email and
+	// password. StudioAccountID empty: the login's first owner/admin workspace.
+	StudioAPIURL    string
+	StudioAccountID string
+	StudioSIDFile   string
+	StudioEmail     string
+	StudioPassword  string
+
 	// Optional — GPT-Live model/host/path overrides. Empty host/path means the
 	// feature-server default (api.openai.com, v1/live/sessions).
 	GptLiveModel string
@@ -339,6 +348,11 @@ func (s *Settings) HasNova() bool { return s.NovaAccessKeyID != "" && s.NovaSecr
 // Optional: when the key is unset those tests pass without exercising gptlive.
 func (s *Settings) HasGptLive() bool { return s.GptLiveAPIKey != "" }
 
+// HasStudio reports whether tests/studio can reach Agent Studio: its API and a way to sign in.
+func (s *Settings) HasStudio() bool {
+	return s.StudioAPIURL != "" && (s.StudioSIDFile != "" || (s.StudioEmail != "" && s.StudioPassword != ""))
+}
+
 // HasSpeechmatics reports whether the speechmatics STT gather/transcribe
 // tests can run. Optional: when the key is unset those tests pass without
 // exercising speechmatics.
@@ -441,6 +455,11 @@ func parse() (*Settings, error) {
 		MistralAPIKey:            os.Getenv("MISTRAL_API_KEY"),
 		PaxaAPIKey:               os.Getenv("PAXA_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
+		StudioAPIURL:             strings.TrimRight(os.Getenv("STUDIO_API_URL"), "/"),
+		StudioAccountID:          os.Getenv("STUDIO_ACCOUNT_ID"),
+		StudioSIDFile:            os.Getenv("STUDIO_SID_FILE"),
+		StudioEmail:              os.Getenv("STUDIO_EMAIL"),
+		StudioPassword:           os.Getenv("STUDIO_PASSWORD"),
 		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
 		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
 		GptLiveHost:              os.Getenv("GPTLIVE_HOST"),
