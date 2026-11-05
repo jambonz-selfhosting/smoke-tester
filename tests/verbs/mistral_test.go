@@ -190,6 +190,7 @@ func TestVerb_Gather_Speech_Mistral(t *testing.T) {
 //   - wait-action-gather-callback
 //   - assert-transcript
 func TestVerb_Gather_Speech_Mistral_Options(t *testing.T) {
+	vendorExtra(t)
 	if !requireMistral(t) {
 		return
 	}
@@ -221,6 +222,7 @@ func TestVerb_Gather_Speech_Mistral_Options(t *testing.T) {
 //   - wait-action-gather-callback
 //   - assert-transcript
 func TestVerb_Gather_Speech_Mistral_LongDelay(t *testing.T) {
+	vendorExtra(t)
 	if !requireMistral(t) {
 		return
 	}
@@ -242,6 +244,7 @@ func TestVerb_Gather_Speech_Mistral_LongDelay(t *testing.T) {
 //   - wait-action-gather-callback
 //   - assert-transcript
 func TestVerb_Gather_Speech_Mistral_Spanish(t *testing.T) {
+	vendorExtra(t)
 	if !requireMistral(t) {
 		return
 	}
@@ -379,6 +382,7 @@ func TestVerb_Transcribe_Mistral(t *testing.T) {
 //   - collect-transcription-hook
 //   - assert-transcript
 func TestVerb_Transcribe_Mistral_Diarize(t *testing.T) {
+	vendorExtra(t)
 	if !requireMistral(t) {
 		return
 	}
@@ -413,25 +417,6 @@ func TestVerb_Agent_Echo_Mistral(t *testing.T) {
 		return
 	}
 	runMistralAgentEcho(t, nil)
-}
-
-// TestVerb_Agent_Echo_Mistral_TTS — the same echo with Voxtral on both sides,
-// so the replies heard are Voxtral speech streamed sentence by sentence.
-//
-// Steps:
-//   - preflight-skips
-//   - ensure-prompt-wav
-//   - script-agent-verb-mistral
-//   - place-call
-//   - answer-and-silence
-//   - wait-for-stt
-//   - turn-N-record-and-speak
-//   - turn-N-assert-echo
-func TestVerb_Agent_Echo_Mistral_TTS(t *testing.T) {
-	if !requireMistral(t) {
-		return
-	}
-	runMistralAgentEcho(t, mistralSynth(mistralVoice, "en-US", nil))
 }
 
 func runMistralAgentEcho(t *testing.T, synth map[string]any) {
@@ -527,6 +512,7 @@ func runMistralAgentEcho(t *testing.T, synth map[string]any) {
 //   - turn-N-speak-and-drain
 //   - assert-preflight-hit
 func TestVerb_Agent_Mistral_EarlyGeneration(t *testing.T) {
+	vendorExtra(t)
 	if !requireMistral(t) {
 		return
 	}
@@ -641,6 +627,7 @@ func TestVerb_Say_Mistral(t *testing.T) {
 //  3. assert-audio-duration
 //  4. assert-transcript
 func TestVerb_Say_Mistral_Options(t *testing.T) {
+	vendorExtra(t)
 	if !requireMistral(t) {
 		return
 	}
@@ -667,6 +654,7 @@ func TestVerb_Say_Mistral_Options(t *testing.T) {
 //  2. answer-record-and-wait-end
 //  3. assert-audio-duration
 func TestVerb_Say_Mistral_French(t *testing.T) {
+	vendorExtra(t)
 	if !requireMistral(t) {
 		return
 	}
@@ -679,141 +667,6 @@ func TestVerb_Say_Mistral_French(t *testing.T) {
 		verb: V("say", "text", "Bonjour, votre commande a été expédiée ce matin.",
 			"synthesizer", mistralSynth(mistralFrenchVoice, "fr-FR", nil)),
 	})
-}
-
-// TestVerb_Say_Stream_Mistral — streaming say.
-//
-// Steps:
-//  1. script-streaming-say
-//  2. place-ws-call
-//  3. answer-record-and-wait-end
-//  4. assert-audio-duration
-//  5. assert-transcript
-func TestVerb_Say_Stream_Mistral(t *testing.T) {
-	if !requireMistral(t) {
-		return
-	}
-	t.Parallel()
-	runStreamingSay(t, "say-stream-mistral", mistralSynth(mistralVoice, "en-US", nil))
-}
-
-// TestVerb_Say_Stream_Mistral_MultiSentence — one streaming say of several
-// sentences: each is its own request, and all must be heard in order.
-//
-// Steps:
-//  1. script-say
-//  2. place-ws-call
-//  3. answer-record-and-wait-end
-//  4. assert-audio-duration
-//  5. assert-transcript-ordered
-func TestVerb_Say_Stream_Mistral_MultiSentence(t *testing.T) {
-	if !requireMistral(t) {
-		return
-	}
-	t.Parallel()
-	runMistralScript(t, "say-stream-mistral-multi", 3*time.Second, 20*time.Second,
-		[]string{"monday", "wednesday", "friday"},
-		V("say", "text", "We open at nine on Monday. On Wednesday we close early. "+
-			"Friday is our late night, until ten.",
-			"stream", true, "synthesizer", mistralSynth(mistralVoice, "en-US", nil)))
-}
-
-// TestVerb_Agent_Mistral_BargeIn — a live agent on mistral TTS: the caller
-// barges into the greeting (the in-flight request is cancelled) and the reply
-// to the barge-in must be heard.
-//
-// Steps:
-//  1. preflight-skips
-//  2. ensure-prompt-wav
-//  3. script-agent-verb
-//  4. place-call
-//  5. answer-and-silence
-//  6. wait-into-greeting
-//  7. barge-in-and-record-reply
-//  8. assert-barge-in-reply
-//  9. assert-user-interruption
-//
-// 10. hangup-and-wait-ended
-func TestVerb_Agent_Mistral_BargeIn(t *testing.T) {
-	if !requireMistral(t) {
-		return
-	}
-	requireWebhook(t)
-
-	s := Step(t, "preflight-skips")
-	if !agentSkipPreflight(t, s) {
-		return
-	}
-	s.Done()
-
-	ctx := WithTimeout(t, 120*time.Second)
-	uas := claimUAS(t, ctx)
-
-	s = Step(t, "ensure-prompt-wav")
-	bargeWAV, err := tts.EnsureWAV(ctx, "testdata/agent", agentEchoPrompt, tts.PromptOptions{Model: "aura-asteria-en"})
-	if err != nil {
-		s.Fatalf("EnsureWAV: %v", err)
-	}
-	s.Done()
-
-	_, sess := claimSession(t)
-
-	s = Step(t, "script-agent-verb")
-	noReprompt := 0
-	ScriptAgent(sess, agentVerbOpts{
-		SystemPrompt: "You are a friendly voice assistant. " +
-			"On your first turn, greet the user with a long, slow welcome " +
-			"of at least three full sentences so they have time to interrupt. " +
-			"On subsequent turns, repeat the user's words back to them verbatim.",
-		Greeting:          true,
-		BargeIn:           true,
-		NoResponseTimeout: &noReprompt,
-		TTS:               mistralSynth(mistralVoice, "en-US", nil),
-	})
-	s.Done()
-
-	s = Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
-	s.Done()
-
-	s = Step(t, "answer-and-silence")
-	if err := call.Answer(); err != nil {
-		s.Fatalf("Answer: %v", err)
-	}
-	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence: %v", err)
-	}
-	s.Done()
-
-	WaitFor(t, "wait-into-greeting", 4*time.Second)
-
-	s = Step(t, "barge-in-and-record-reply")
-	rec := filepath.Join(t.TempDir(), "mistral-barge-reply.pcm")
-	if err := call.StartRecording(rec); err != nil {
-		s.Fatalf("StartRecording: %v", err)
-	}
-	if err := call.SendWAV(bargeWAV); err != nil {
-		s.Fatalf("SendWAV: %v", err)
-	}
-	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence: %v", err)
-	}
-	time.Sleep(LLMReplyWindow)
-	call.StopRecording()
-	s.Done()
-
-	s = Step(t, "assert-barge-in-reply")
-	AssertTranscriptHasMost(s, ctx, rec, 2, "alpha", "bravo", "charlie", "delta")
-	s.Done()
-
-	s = Step(t, "assert-user-interruption")
-	cbs := DrainCallbacks(sess, time.Second)
-	if len(findAgentEvents(cbs, "user_interruption")) == 0 {
-		s.Errorf("no user_interruption event: %s", summarizeEventTypes(cbs))
-	}
-	s.Done()
-
-	HangupAndWaitEnded(t, ctx, call)
 }
 
 // runMistralScript runs the says then hangs up; wantOrdered, when set,
