@@ -43,6 +43,9 @@ type SpeechCredentialCreate struct {
 	// APIURI is the vendor's API base URL where it has regional hosts
 	// (gradium: https://eu.api.gradium.ai).
 	APIURI string `json:"api_uri,omitempty"`
+	// Options is the credential's Extra Options JSON (kugelaudio keeps its
+	// regional api_uri there).
+	Options string `json:"options,omitempty"`
 }
 
 // CreateAccountSpeechCredential POSTs a credential under an account. Returns
