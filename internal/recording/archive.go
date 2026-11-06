@@ -22,8 +22,6 @@
 package recording
 
 import (
-	"bytes"
-	"encoding/binary"
 	"fmt"
 	"log"
 	"os"
@@ -31,14 +29,8 @@ import (
 	"regexp"
 	"strings"
 	"sync"
-)
 
-// Telephony WAV parameters. The RTP audio the harness records is already
-// decoded to this shape by internal/sip.
-const (
-	sampleRate    = 8000
-	numChannels   = 1
-	bitsPerSample = 16
+	"github.com/jambonz-selfhosting/smoke-tester/internal/wav"
 )
 
 // Archiver turns captured PCM into organised WAV artifacts. Safe for
@@ -92,7 +84,7 @@ func (a *Archiver) Archive(test, role, pcmPath string) (string, error) {
 		return "", fmt.Errorf("recording: mkdir %s: %w", dir, err)
 	}
 	out := filepath.Join(dir, name+".wav")
-	if err := os.WriteFile(out, wrapWAV(pcm), 0o644); err != nil {
+	if err := os.WriteFile(out, wav.Wrap(pcm), 0o644); err != nil {
 		return "", fmt.Errorf("recording: write %s: %w", out, err)
 	}
 	return out, nil
@@ -152,27 +144,3 @@ func sanitize(s string) string {
 	return s
 }
 
-// wrapWAV prepends a 44-byte RIFF/WAVE header to raw LPCM. Layout matches
-// internal/tts.writeTelephonyWAV and internal/sip.readTelephonyWAV.
-func wrapWAV(pcm []byte) []byte {
-	byteRate := uint32(sampleRate * numChannels * bitsPerSample / 8)
-	blockAlign := uint16(numChannels * bitsPerSample / 8)
-
-	var buf bytes.Buffer
-	buf.Grow(44 + len(pcm))
-	buf.WriteString("RIFF")
-	binary.Write(&buf, binary.LittleEndian, uint32(36+len(pcm)))
-	buf.WriteString("WAVE")
-	buf.WriteString("fmt ")
-	binary.Write(&buf, binary.LittleEndian, uint32(16))
-	binary.Write(&buf, binary.LittleEndian, uint16(1)) // PCM
-	binary.Write(&buf, binary.LittleEndian, uint16(numChannels))
-	binary.Write(&buf, binary.LittleEndian, uint32(sampleRate))
-	binary.Write(&buf, binary.LittleEndian, byteRate)
-	binary.Write(&buf, binary.LittleEndian, blockAlign)
-	binary.Write(&buf, binary.LittleEndian, uint16(bitsPerSample))
-	buf.WriteString("data")
-	binary.Write(&buf, binary.LittleEndian, uint32(len(pcm)))
-	buf.Write(pcm)
-	return buf.Bytes()
-}

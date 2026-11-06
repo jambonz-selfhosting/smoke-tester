@@ -260,9 +260,12 @@ func assertAMDType(s *StepCtx, types []string, want string) {
 const amdShortGreeting = "Hello, who is this?"
 
 // longGreeting is a >=9-word greeting: feature-server classifies a
-// transcript at or above thresholdWordCount as a machine.
-const amdLongGreeting = "Hi, you have reached the voicemail of Jordan Smith, " +
-	"please leave a message after the tone and I will call you back."
+// transcript at or above thresholdWordCount as a machine. It must avoid the
+// built-in voicemail hints ("voicemail", "you have reached", "leave a
+// message", ...), which match first and report reason "hint" instead, and
+// commas, whose pauses can split it into short (human) finals.
+const amdLongGreeting = "Hi this is Jordan Smith speaking and thanks so much for calling " +
+	"me today so tell me what you need and I will help"
 
 // TestVerb_Dial_AMD_HumanDetected — callee answers with a short (<9-word)
 // greeting; AMD classifies it as a human and fires amd_human_detected,

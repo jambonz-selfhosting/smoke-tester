@@ -1,0 +1,74 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jambonz.org/schema/callbacks/llm-elevenlabs-event",
+  "$comment": "TODO: upstream — not in @jambonz/schema callbacks/. Shapes taken from live ElevenLabs Agents WebSocket traffic (2026-10-12).",
+  "title": "LLM elevenlabs eventHook payload",
+  "description": "An ElevenLabs Agents server event forwarded verbatim by the llm verb (vendor elevenlabs) to its eventHook.",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"const": "conversation_initiation_metadata"}}},
+      "then": {
+        "required": ["conversation_initiation_metadata_event"],
+        "properties": {
+          "conversation_initiation_metadata_event": {
+            "type": "object",
+            "required": ["conversation_id"],
+            "properties": {"conversation_id": {"type": "string", "minLength": 1}},
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "user_transcript"}}},
+      "then": {
+        "required": ["user_transcription_event"],
+        "properties": {
+          "user_transcription_event": {
+            "type": "object",
+            "required": ["user_transcript"],
+            "properties": {"user_transcript": {"type": "string"}},
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "agent_response"}}},
+      "then": {
+        "required": ["agent_response_event"],
+        "properties": {
+          "agent_response_event": {
+            "type": "object",
+            "required": ["agent_response"],
+            "properties": {"agent_response": {"type": "string"}},
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "client_tool_call"}}},
+      "then": {
+        "required": ["client_tool_call"],
+        "properties": {
+          "client_tool_call": {
+            "type": "object",
+            "required": ["tool_name", "tool_call_id"],
+            "properties": {
+              "tool_name": {"type": "string", "minLength": 1},
+              "tool_call_id": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    }
+  ]
+}

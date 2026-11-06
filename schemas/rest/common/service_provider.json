@@ -14,7 +14,11 @@
     "ms_teams_fqdn": { "type": ["string", "null"] },
     "test_number": { "type": ["string", "null"] },
     "test_application_name": { "type": ["string", "null"] },
-    "test_application_sid": { "type": ["string", "null"] }
+    "test_application_sid": { "type": ["string", "null"] },
+    "support_audio_capture_policy": {
+      "description": "allow_all / disable_all override every account; per_account defers to accounts.disable_media_capture",
+      "enum": ["allow_all", "disable_all", "per_account"]
+    }
   },
   "additionalProperties": true
 }

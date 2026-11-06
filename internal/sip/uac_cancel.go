@@ -123,3 +123,21 @@ func (p *PendingInvite) CancelWithHeaders(ctx context.Context, extra ...sip.Head
 
 // Close releases the dialog. Safe to call after CancelWithHeaders.
 func (p *PendingInvite) Close() error { return p.dialog.Close() }
+
+// WaitFinal blocks until the pending INVITE gets its final response and returns
+// its status code. A 2xx is ACKed by diago; a non-2xx comes back as the status.
+func (p *PendingInvite) WaitFinal(ctx context.Context) (int, error) {
+	err := p.dialog.WaitAnswer(ctx, sipgo.AnswerOptions{})
+	if err == nil {
+		return 200, nil
+	}
+	var ptrErr *sipgo.ErrDialogResponse
+	var valErr sipgo.ErrDialogResponse
+	switch {
+	case errors.As(err, &ptrErr) && ptrErr.Res != nil:
+		return int(ptrErr.Res.StatusCode), nil
+	case errors.As(err, &valErr) && valErr.Res != nil:
+		return int(valErr.Res.StatusCode), nil
+	}
+	return 0, fmt.Errorf("waitFinal: %w", err)
+}
