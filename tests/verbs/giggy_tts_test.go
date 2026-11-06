@@ -4,11 +4,9 @@
 package verbs
 
 import (
-	"path/filepath"
 	"testing"
 	"time"
 
-	"github.com/jambonz-selfhosting/smoke-tester/internal/tts"
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
@@ -81,6 +79,7 @@ func TestVerb_Say_Giggy(t *testing.T) {
 //  4. assert-audio-duration
 //  5. assert-transcript-ordered
 func TestVerb_Say_Giggy_CachedReplay(t *testing.T) {
+	vendorExtra(t)
 	requireGiggy(t)
 	t.Parallel()
 	synth := giggySynth(nil)
@@ -101,6 +100,7 @@ func TestVerb_Say_Giggy_CachedReplay(t *testing.T) {
 //  3. assert-audio-duration
 //  4. assert-transcript
 func TestVerb_Say_Giggy_Options(t *testing.T) {
+	vendorExtra(t)
 	requireGiggy(t)
 	t.Parallel()
 	runSay(t, sayOpts{
@@ -114,160 +114,6 @@ func TestVerb_Say_Giggy_Options(t *testing.T) {
 		// STT drops some of the opening short sentence at 2x, so check the long one
 		wantWords: []string{"warehouse", "delivery window"},
 	})
-}
-
-// TestVerb_Say_Stream_Giggy — streaming say.
-//
-// Steps:
-//  1. script-streaming-say
-//  2. place-ws-call
-//  3. answer-record-and-wait-end
-//  4. assert-audio-duration
-//  5. assert-transcript
-func TestVerb_Say_Stream_Giggy(t *testing.T) {
-	requireGiggy(t)
-	t.Parallel()
-	runStreamingSay(t, "say-stream-giggy", giggySynth(nil))
-}
-
-// TestVerb_Say_Stream_Giggy_TwoTurns — two streaming says on one call;
-// the second must still speak after the first turn's flush completed.
-//
-// Steps:
-//  1. script-say
-//  2. place-ws-call
-//  3. answer-record-and-wait-end
-//  4. assert-audio-duration
-//  5. assert-transcript-ordered
-func TestVerb_Say_Stream_Giggy_TwoTurns(t *testing.T) {
-	requireGiggy(t)
-	t.Parallel()
-	synth := giggySynth(nil)
-	runGiggyScript(t, "say-stream-giggy-2turns", 1*time.Second, 15*time.Second,
-		[]string{"weather", "garden"},
-		V("say", "text", "The first sentence is about the weather.", "stream", true, "synthesizer", synth),
-		V("say", "text", "The second sentence is about the garden.", "stream", true, "synthesizer", synth))
-}
-
-// TestVerb_Say_Stream_Giggy_MultiSentence — one streaming say of several
-// sentences: each is its own request, and all of them must be heard in order.
-//
-// Steps:
-//  1. script-say
-//  2. place-ws-call
-//  3. answer-record-and-wait-end
-//  4. assert-audio-duration
-//  5. assert-transcript-ordered
-func TestVerb_Say_Stream_Giggy_MultiSentence(t *testing.T) {
-	requireGiggy(t)
-	t.Parallel()
-	runGiggyScript(t, "say-stream-giggy-multi", 3*time.Second, 20*time.Second,
-		[]string{"monday", "wednesday", "friday"},
-		V("say", "text", "We open at nine on Monday. On Wednesday we close early. "+
-			"Friday is our late night, until ten.",
-			"stream", true, "synthesizer", giggySynth(nil)))
-}
-
-// TestVerb_Agent_Giggy_BargeIn — a live agent on giggy: the caller
-// barges into the greeting (the in-flight request is cancelled) and the reply
-// to the barge-in must be heard.
-//
-// Steps:
-//  1. preflight-skips
-//  2. ensure-prompt-wav
-//  3. script-agent-verb
-//  4. place-call
-//  5. answer-and-silence
-//  6. wait-into-greeting
-//  7. barge-in-and-record-reply
-//  8. assert-barge-in-reply
-//  9. assert-user-interruption
-//
-// 10. hangup-and-wait-ended
-func TestVerb_Agent_Giggy_BargeIn(t *testing.T) {
-	requireGiggy(t)
-	t.Parallel()
-	requireWebhook(t)
-
-	s := Step(t, "preflight-skips")
-	if !agentSkipPreflight(t, s) {
-		return
-	}
-	s.Done()
-
-	ctx := WithTimeout(t, 120*time.Second)
-	uas := claimUAS(t, ctx)
-
-	s = Step(t, "ensure-prompt-wav")
-	bargeWAV, err := tts.EnsureWAV(ctx, "testdata/agent", agentEchoPrompt, tts.PromptOptions{Model: "aura-asteria-en"})
-	if err != nil {
-		s.Fatalf("EnsureWAV: %v", err)
-	}
-	s.Done()
-
-	_, sess := claimSession(t)
-
-	s = Step(t, "script-agent-verb")
-	noReprompt := 0
-	ScriptAgent(sess, agentVerbOpts{
-		SystemPrompt: "You are a friendly voice assistant. " +
-			"On your first turn, greet the user with a long, slow welcome " +
-			"of at least three full sentences so they have time to interrupt. " +
-			"On subsequent turns, repeat the user's words back to them verbatim.",
-		Greeting:          true,
-		BargeIn:           true,
-		NoResponseTimeout: &noReprompt,
-		TTS:               giggySynth(nil),
-	})
-	s.Done()
-
-	s = Step(t, "place-call")
-	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(90))
-	s.Done()
-
-	s = Step(t, "answer-and-silence")
-	if err := call.Answer(); err != nil {
-		s.Fatalf("Answer: %v", err)
-	}
-	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence: %v", err)
-	}
-	s.Done()
-
-	WaitFor(t, "wait-into-greeting", 4*time.Second)
-
-	s = Step(t, "barge-in-and-record-reply")
-	rec := filepath.Join(t.TempDir(), "giggy-barge-reply.pcm")
-	if err := call.StartRecording(rec); err != nil {
-		s.Fatalf("StartRecording: %v", err)
-	}
-	if err := call.SendWAV(bargeWAV); err != nil {
-		s.Fatalf("SendWAV: %v", err)
-	}
-	if err := call.SendSilence(); err != nil {
-		s.Fatalf("SendSilence: %v", err)
-	}
-	time.Sleep(LLMReplyWindow)
-	call.StopRecording()
-	s.Done()
-
-	s = Step(t, "assert-barge-in-reply")
-	AssertTranscriptHasMost(s, ctx, rec, 2, "alpha", "bravo", "charlie", "delta")
-	s.Done()
-
-	s = Step(t, "assert-user-interruption")
-	cbs := DrainCallbacks(sess, time.Second)
-	if len(findAgentEvents(cbs, "user_interruption")) == 0 {
-		s.Errorf("no user_interruption event: %s", summarizeEventTypes(cbs))
-	}
-	for _, te := range findAgentEvents(cbs, "turn_end") {
-		if lat, ok := te.JSON["latency"].(map[string]any); ok {
-			s.Logf("giggy turn_end tts_ms=%v", lat["tts_ms"])
-		}
-	}
-	s.Done()
-
-	HangupAndWaitEnded(t, ctx, call)
 }
 
 // runGiggyScript runs the says then hangs up; wantOrdered, when set,

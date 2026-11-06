@@ -146,6 +146,87 @@ var (
 	paxaLabel string
 	paxaSID   string
 
+	// sarvam STT+TTS speech credential, provisioned only when SARVAM_API_KEY is set.
+	sarvamLabel string
+	sarvamSID   string
+
+	// smallestai STT+TTS speech credential, provisioned only when SMALLESTAI_API_KEY is set.
+	smallestaiLabel string
+	smallestaiSID   string
+
+	// azureopenai STT+TTS speech credential, provisioned only when
+	// AZUREOPENAI_API_KEY and AZUREOPENAI_API_URI are set.
+	azureopenaiLabel string
+	azureopenaiSID   string
+
+	// gnani STT+TTS speech credential, provisioned only when GNANI_API_KEY is set.
+	gnaniLabel string
+	gnaniSID   string
+
+	// meta STT-only speech credential, provisioned only when META_API_KEY is set.
+	metaLabel string
+	metaSID   string
+
+	// minimax TTS-only speech credential, provisioned only when MINIMAX_API_KEY is set.
+	minimaxLabel string
+	minimaxSID   string
+
+	// neuphonic TTS-only speech credential, provisioned only when NEUPHONIC_API_KEY is set.
+	neuphonicLabel string
+	neuphonicSID   string
+
+	// camb TTS-only speech credential, provisioned only when CAMB_API_KEY is set.
+	cambLabel string
+	cambSID   string
+
+	// asyncai TTS-only speech credential, provisioned only when ASYNCAI_API_KEY is set.
+	asyncaiLabel string
+	asyncaiSID   string
+
+	// respeecher TTS-only speech credential, provisioned only when RESPEECHER_API_KEY is set.
+	respeecherLabel string
+	respeecherSID   string
+
+	// bland TTS-only speech credential, provisioned only when BLAND_API_KEY is set.
+	blandLabel string
+	blandSID   string
+
+	// simplismart TTS-only speech credential, provisioned only when SIMPLISMART_API_KEY is set.
+	simplismartLabel string
+	simplismartSID   string
+
+	// spitch TTS-only speech credential, provisioned only when SPITCH_API_KEY is set.
+	spitchLabel string
+	spitchSID   string
+
+	// kokoro TTS-only speech credential, provisioned only when KOKORO_API_URI is set.
+	kokoroLabel string
+	kokoroSID   string
+
+	// vakyam TTS-only speech credential, provisioned only when VAKYAM_API_KEY is set.
+	vakyamLabel string
+	vakyamSID   string
+
+	// groq TTS-only speech credential, provisioned only when GROQ_API_KEY is set.
+	groqLabel string
+	groqSID   string
+
+	// hume TTS-only speech credential, provisioned only when HUME_API_KEY is set.
+	humeLabel string
+	humeSID   string
+
+	// inworld STT-only speech credential, provisioned only when INWORLD_API_KEY is set.
+	inworldLabel string
+	inworldSID   string
+
+	// soniox STT+TTS speech credential, provisioned only when SONIOX_API_KEY is set.
+	sonioxLabel string
+	sonioxSID   string
+
+	// saidwire STT-only speech credential, provisioned only when SAIDWIRE_API_KEY is set.
+	saidwireLabel string
+	saidwireSID   string
+
 	// Default xai TTS voice.
 	xaiVoice    = "eve"
 	xaiLlmModel = "grok-4.3" // xAI flagship chat model for the agent-verb LLM test
@@ -166,6 +247,13 @@ var (
 	// pass without exercising speechmatics.
 	speechmaticsLabel string
 	speechmaticsSID   string
+
+	// speechmatics TTS-only credential (no speechmatics_stt_uri), same
+	// SPEECHMATICS_API_KEY; a create failure is kept for the credential test.
+	speechmaticsTtsLabel string
+	speechmaticsTtsSID   string
+	speechmaticsTtsErr   error
+	speechmaticsTtsVoice = "sarah"
 
 	// speechmaticsagent (Speechmatics Agent STT) speech credential
 	// (STT-only) provisioned at TestMain IF SPEECHMATICS_AGENT_API_KEY is
@@ -395,6 +483,186 @@ func TestMain(m *testing.M) {
 	} else {
 		log.Printf("tests/verbs: PAXA_API_KEY not set — paxa tests will pass without exercising paxa")
 	}
+	// sarvam STT+TTS speech credential — optional, same pattern as paxa.
+	if cfg.HasSarvam() {
+		if err := provisionSarvamCredential(); err != nil {
+			log.Fatalf("tests/verbs: sarvam credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: sarvam credential label=%s sid=%s", sarvamLabel, sarvamSID)
+	} else {
+		log.Printf("tests/verbs: SARVAM_API_KEY not set — sarvam tests will pass without exercising sarvam")
+	}
+	// smallestai STT+TTS speech credential — optional, same pattern as paxa.
+	if cfg.HasSmallestai() {
+		if err := provisionSmallestaiCredential(); err != nil {
+			log.Fatalf("tests/verbs: smallestai credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: smallestai credential label=%s sid=%s", smallestaiLabel, smallestaiSID)
+	} else {
+		log.Printf("tests/verbs: SMALLESTAI_API_KEY not set — smallestai tests will pass without exercising smallestai")
+	}
+	// azureopenai STT+TTS speech credential — optional, same pattern as paxa.
+	if cfg.HasAzureopenai() {
+		if err := provisionAzureopenaiCredential(); err != nil {
+			log.Fatalf("tests/verbs: azureopenai credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: azureopenai credential label=%s sid=%s", azureopenaiLabel, azureopenaiSID)
+	} else {
+		log.Printf("tests/verbs: AZUREOPENAI_API_KEY/AZUREOPENAI_API_URI not set — azureopenai tests will pass without exercising azureopenai")
+	}
+	// gnani STT+TTS speech credential — optional, same pattern as paxa.
+	if cfg.HasGnani() {
+		if err := provisionGnaniCredential(); err != nil {
+			log.Fatalf("tests/verbs: gnani credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: gnani credential label=%s sid=%s", gnaniLabel, gnaniSID)
+	} else {
+		log.Printf("tests/verbs: GNANI_API_KEY not set — gnani tests will pass without exercising gnani")
+	}
+	// meta STT-only speech credential — optional, same pattern as paxa.
+	if cfg.HasMeta() {
+		if err := provisionMetaCredential(); err != nil {
+			log.Fatalf("tests/verbs: meta credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: meta credential label=%s sid=%s", metaLabel, metaSID)
+	} else {
+		log.Printf("tests/verbs: META_API_KEY not set — meta tests will pass without exercising meta")
+	}
+	// minimax TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasMinimax() {
+		if err := provisionMinimaxCredential(); err != nil {
+			log.Fatalf("tests/verbs: minimax credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: minimax credential label=%s sid=%s", minimaxLabel, minimaxSID)
+	} else {
+		log.Printf("tests/verbs: MINIMAX_API_KEY not set — minimax tests will pass without exercising minimax")
+	}
+	// neuphonic TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasNeuphonic() {
+		if err := provisionNeuphonicCredential(); err != nil {
+			log.Fatalf("tests/verbs: neuphonic credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: neuphonic credential label=%s sid=%s", neuphonicLabel, neuphonicSID)
+	} else {
+		log.Printf("tests/verbs: NEUPHONIC_API_KEY not set — neuphonic tests will pass without exercising neuphonic")
+	}
+	// camb TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasCamb() {
+		if err := provisionCambCredential(); err != nil {
+			log.Fatalf("tests/verbs: camb credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: camb credential label=%s sid=%s", cambLabel, cambSID)
+	} else {
+		log.Printf("tests/verbs: CAMB_API_KEY not set — camb tests will pass without exercising camb")
+	}
+	// asyncai TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasAsyncai() {
+		if err := provisionAsyncaiCredential(); err != nil {
+			log.Fatalf("tests/verbs: asyncai credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: asyncai credential label=%s sid=%s", asyncaiLabel, asyncaiSID)
+	} else {
+		log.Printf("tests/verbs: ASYNCAI_API_KEY not set — asyncai tests will pass without exercising asyncai")
+	}
+	// respeecher TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasRespeecher() {
+		if err := provisionRespeecherCredential(); err != nil {
+			log.Fatalf("tests/verbs: respeecher credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: respeecher credential label=%s sid=%s", respeecherLabel, respeecherSID)
+	} else {
+		log.Printf("tests/verbs: RESPEECHER_API_KEY not set — respeecher tests will pass without exercising respeecher")
+	}
+	// bland TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasBland() {
+		if err := provisionBlandCredential(); err != nil {
+			log.Fatalf("tests/verbs: bland credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: bland credential label=%s sid=%s", blandLabel, blandSID)
+	} else {
+		log.Printf("tests/verbs: BLAND_API_KEY not set — bland tests will pass without exercising bland")
+	}
+	// simplismart TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasSimplismart() {
+		if err := provisionSimplismartCredential(); err != nil {
+			log.Fatalf("tests/verbs: simplismart credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: simplismart credential label=%s sid=%s", simplismartLabel, simplismartSID)
+	} else {
+		log.Printf("tests/verbs: SIMPLISMART_API_KEY not set — simplismart tests will pass without exercising simplismart")
+	}
+	// spitch TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasSpitch() {
+		if err := provisionSpitchCredential(); err != nil {
+			log.Fatalf("tests/verbs: spitch credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: spitch credential label=%s sid=%s", spitchLabel, spitchSID)
+	} else {
+		log.Printf("tests/verbs: SPITCH_API_KEY not set — spitch tests will pass without exercising spitch")
+	}
+	// kokoro TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasKokoro() {
+		if err := provisionKokoroCredential(); err != nil {
+			log.Fatalf("tests/verbs: kokoro credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: kokoro credential label=%s sid=%s", kokoroLabel, kokoroSID)
+	} else {
+		log.Printf("tests/verbs: KOKORO_API_URI not set — kokoro tests will pass without exercising kokoro")
+	}
+	// vakyam TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasVakyam() {
+		if err := provisionVakyamCredential(); err != nil {
+			log.Fatalf("tests/verbs: vakyam credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: vakyam credential label=%s sid=%s", vakyamLabel, vakyamSID)
+	} else {
+		log.Printf("tests/verbs: VAKYAM_API_KEY not set — vakyam tests will pass without exercising vakyam")
+	}
+	// groq TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasGroq() {
+		if err := provisionGroqCredential(); err != nil {
+			log.Fatalf("tests/verbs: groq credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: groq credential label=%s sid=%s", groqLabel, groqSID)
+	} else {
+		log.Printf("tests/verbs: GROQ_API_KEY not set — groq tests will pass without exercising groq")
+	}
+	// hume TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasHume() {
+		if err := provisionHumeCredential(); err != nil {
+			log.Fatalf("tests/verbs: hume credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: hume credential label=%s sid=%s", humeLabel, humeSID)
+	} else {
+		log.Printf("tests/verbs: HUME_API_KEY not set — hume tests will pass without exercising hume")
+	}
+	// inworld STT-only speech credential — optional, same pattern as paxa.
+	if cfg.HasInworld() {
+		if err := provisionInworldCredential(); err != nil {
+			log.Fatalf("tests/verbs: inworld credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: inworld credential label=%s sid=%s", inworldLabel, inworldSID)
+	} else {
+		log.Printf("tests/verbs: INWORLD_API_KEY not set — inworld tests will pass without exercising inworld")
+	}
+	// soniox STT+TTS speech credential — optional, same pattern as paxa.
+	if cfg.HasSoniox() {
+		if err := provisionSonioxCredential(); err != nil {
+			log.Fatalf("tests/verbs: soniox credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: soniox credential label=%s sid=%s", sonioxLabel, sonioxSID)
+	} else {
+		log.Printf("tests/verbs: SONIOX_API_KEY not set — soniox tests will pass without exercising soniox")
+	}
+	// 3c'''''. saidwire STT speech credential — optional, same pattern as gradium.
+	if cfg.HasSaidwire() {
+		if err := provisionSaidwireCredential(); err != nil {
+			log.Fatalf("tests/verbs: saidwire credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: saidwire credential label=%s sid=%s", saidwireLabel, saidwireSID)
+	} else {
+		log.Printf("tests/verbs: SAIDWIRE_API_KEY not set — saidwire STT tests will pass without exercising saidwire")
+	}
 
 	// 3d. speechmatics STT speech credential — optional. Only provisioned
 	// when SPEECHMATICS_API_KEY is set; otherwise the speechmatics gather/
@@ -406,6 +674,14 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: speechmatics credential label=%s sid=%s", speechmaticsLabel, speechmaticsSID)
 	} else {
 		log.Printf("tests/verbs: SPEECHMATICS_API_KEY not set — speechmatics STT tests will pass without exercising speechmatics")
+	}
+	if cfg.HasSpeechmatics() {
+		// Not fatal: an api-server without TTS-only support must not sink the STT tests.
+		if speechmaticsTtsErr = provisionSpeechmaticsTtsCredential(); speechmaticsTtsErr != nil {
+			log.Printf("tests/verbs: speechmatics TTS-only credential provisioning failed: %v", speechmaticsTtsErr)
+		} else {
+			log.Printf("tests/verbs: speechmatics TTS credential label=%s sid=%s", speechmaticsTtsLabel, speechmaticsTtsSID)
+		}
 	}
 
 	// 3d-bis. speechmaticsagent (Agent STT) speech credential — optional.
@@ -479,7 +755,28 @@ func TestMain(m *testing.M) {
 	teardownGradiumCredential()
 	teardownMistralCredential()
 	teardownPaxaCredential()
+	teardownSarvamCredential()
+	teardownSmallestaiCredential()
+	teardownAzureopenaiCredential()
+	teardownGnaniCredential()
+	teardownMetaCredential()
+	teardownMinimaxCredential()
+	teardownNeuphonicCredential()
+	teardownCambCredential()
+	teardownAsyncaiCredential()
+	teardownRespeecherCredential()
+	teardownBlandCredential()
+	teardownSimplismartCredential()
+	teardownSpitchCredential()
+	teardownKokoroCredential()
+	teardownVakyamCredential()
+	teardownGroqCredential()
+	teardownHumeCredential()
+	teardownInworldCredential()
+	teardownSonioxCredential()
+	teardownSaidwireCredential()
 	teardownSpeechmaticsCredential()
+	teardownSpeechmaticsTtsCredential()
 	teardownSpeechmaticsAgentCredential()
 	teardownOpenaiCredential()
 	if sipResolver != nil {
@@ -1005,6 +1302,629 @@ func teardownPaxaCredential() {
 	}
 }
 
+// provisionSarvamCredential creates a sarvam speech credential for both STT
+// and TTS under the suite account. Called only when SARVAM_API_KEY is set.
+func provisionSarvamCredential() error {
+	sarvamLabel = provision.Name("sarvam")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "sarvam",
+		Label:      sarvamLabel,
+		APIKey:     cfg.SarvamAPIKey,
+		ModelID:    sarvamTTSModel,
+		STTModelID: sarvamSTTModel,
+		UseForTTS:  true,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	sarvamSID = sid
+	return nil
+}
+
+func teardownSarvamCredential() {
+	if sarvamSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, sarvamSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete sarvam credential %s: %v", sarvamSID, err)
+	}
+}
+
+// provisionSmallestaiCredential creates a smallestai speech credential for
+// both STT and TTS under the suite account. Called only when SMALLESTAI_API_KEY is set.
+func provisionSmallestaiCredential() error {
+	smallestaiLabel = provision.Name("smallestai")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "smallestai",
+		Label:      smallestaiLabel,
+		APIKey:     cfg.SmallestaiAPIKey,
+		ModelID:    smallestaiTTSModel,
+		STTModelID: smallestaiSTTModel,
+		UseForTTS:  true,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	smallestaiSID = sid
+	return nil
+}
+
+func teardownSmallestaiCredential() {
+	if smallestaiSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, smallestaiSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete smallestai credential %s: %v", smallestaiSID, err)
+	}
+}
+
+// provisionAzureopenaiCredential creates an azureopenai speech credential
+// for both STT and TTS under the suite account. Called only when
+// AZUREOPENAI_API_KEY and AZUREOPENAI_API_URI are set.
+func provisionAzureopenaiCredential() error {
+	azureopenaiLabel = provision.Name("azureopenai")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "azureopenai",
+		Label:      azureopenaiLabel,
+		APIKey:     cfg.AzureopenaiAPIKey,
+		APIURI:     cfg.AzureopenaiAPIURI,
+		ModelID:    cfg.AzureopenaiTTSDeployment,
+		STTModelID: cfg.AzureopenaiSTTDeployment,
+		UseForTTS:  true,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	azureopenaiSID = sid
+	return nil
+}
+
+func teardownAzureopenaiCredential() {
+	if azureopenaiSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, azureopenaiSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete azureopenai credential %s: %v", azureopenaiSID, err)
+	}
+}
+
+// provisionGnaniCredential creates a gnani speech credential for both STT
+// and TTS under the suite account. Called only when GNANI_API_KEY is set.
+func provisionGnaniCredential() error {
+	gnaniLabel = provision.Name("gnani")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "gnani",
+		Label:      gnaniLabel,
+		APIKey:     cfg.GnaniAPIKey,
+		ModelID:    gnaniTTSModel,
+		STTModelID: gnaniSTTModel,
+		UseForTTS:  true,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	gnaniSID = sid
+	return nil
+}
+
+func teardownGnaniCredential() {
+	if gnaniSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, gnaniSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete gnani credential %s: %v", gnaniSID, err)
+	}
+}
+
+// provisionMetaCredential creates an STT-only meta speech credential under
+// the suite account. Called only when META_API_KEY is set.
+func provisionMetaCredential() error {
+	metaLabel = provision.Name("meta")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "meta",
+		Label:      metaLabel,
+		APIKey:     cfg.MetaAPIKey,
+		STTModelID: metaSTTModel,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	metaSID = sid
+	return nil
+}
+
+func teardownMetaCredential() {
+	if metaSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, metaSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete meta credential %s: %v", metaSID, err)
+	}
+}
+
+// provisionMinimaxCredential creates a TTS-only minimax speech credential
+// under the suite account. Called only when MINIMAX_API_KEY is set.
+func provisionMinimaxCredential() error {
+	minimaxLabel = provision.Name("minimax")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "minimax",
+		Label:     minimaxLabel,
+		APIKey:    cfg.MinimaxAPIKey,
+		ModelID:   minimaxTTSModel,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	minimaxSID = sid
+	return nil
+}
+
+func teardownMinimaxCredential() {
+	if minimaxSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, minimaxSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete minimax credential %s: %v", minimaxSID, err)
+	}
+}
+
+// provisionNeuphonicCredential creates a TTS-only neuphonic speech credential
+// under the suite account. Called only when NEUPHONIC_API_KEY is set.
+func provisionNeuphonicCredential() error {
+	neuphonicLabel = provision.Name("neuphonic")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "neuphonic",
+		Label:     neuphonicLabel,
+		APIKey:    cfg.NeuphonicAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	neuphonicSID = sid
+	return nil
+}
+
+func teardownNeuphonicCredential() {
+	if neuphonicSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, neuphonicSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete neuphonic credential %s: %v", neuphonicSID, err)
+	}
+}
+
+// provisionCambCredential creates a TTS-only camb speech credential under the
+// suite account. Called only when CAMB_API_KEY is set.
+func provisionCambCredential() error {
+	cambLabel = provision.Name("camb")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "camb",
+		Label:     cambLabel,
+		APIKey:    cfg.CambAPIKey,
+		ModelID:   "mars-flash",
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	cambSID = sid
+	return nil
+}
+
+func teardownCambCredential() {
+	if cambSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, cambSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete camb credential %s: %v", cambSID, err)
+	}
+}
+
+// provisionAsyncaiCredential creates a TTS-only asyncai speech credential under
+// the suite account. Called only when ASYNCAI_API_KEY is set.
+func provisionAsyncaiCredential() error {
+	asyncaiLabel = provision.Name("asyncai")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "asyncai",
+		Label:     asyncaiLabel,
+		APIKey:    cfg.AsyncaiAPIKey,
+		ModelID:   "async_flash_v1.5",
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	asyncaiSID = sid
+	return nil
+}
+
+func teardownAsyncaiCredential() {
+	if asyncaiSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, asyncaiSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete asyncai credential %s: %v", asyncaiSID, err)
+	}
+}
+
+// provisionRespeecherCredential creates a TTS-only respeecher speech credential
+// under the suite account. No model_id, so the model follows the language.
+func provisionRespeecherCredential() error {
+	respeecherLabel = provision.Name("respeecher")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "respeecher",
+		Label:     respeecherLabel,
+		APIKey:    cfg.RespeecherAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	respeecherSID = sid
+	return nil
+}
+
+func teardownRespeecherCredential() {
+	if respeecherSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, respeecherSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete respeecher credential %s: %v", respeecherSID, err)
+	}
+}
+
+// provisionBlandCredential creates a TTS-only bland speech credential under
+// the suite account. No model: the voice UUID selects it.
+func provisionBlandCredential() error {
+	blandLabel = provision.Name("bland")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "bland",
+		Label:     blandLabel,
+		APIKey:    cfg.BlandAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	blandSID = sid
+	return nil
+}
+
+func teardownBlandCredential() {
+	if blandSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, blandSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete bland credential %s: %v", blandSID, err)
+	}
+}
+
+// provisionSimplismartCredential creates a TTS-only simplismart speech
+// credential under the suite account. No model: mediajam picks it by language.
+func provisionSimplismartCredential() error {
+	simplismartLabel = provision.Name("simplismart")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "simplismart",
+		Label:     simplismartLabel,
+		APIKey:    cfg.SimplismartAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	simplismartSID = sid
+	return nil
+}
+
+func teardownSimplismartCredential() {
+	if simplismartSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, simplismartSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete simplismart credential %s: %v", simplismartSID, err)
+	}
+}
+
+// provisionSpitchCredential creates a TTS-only spitch speech credential
+// under the suite account (default host: no api_uri).
+func provisionSpitchCredential() error {
+	spitchLabel = provision.Name("spitch")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "spitch",
+		Label:     spitchLabel,
+		APIKey:    cfg.SpitchAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	spitchSID = sid
+	return nil
+}
+
+func teardownSpitchCredential() {
+	if spitchSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, spitchSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete spitch credential %s: %v", spitchSID, err)
+	}
+}
+
+// provisionKokoroCredential creates a TTS-only kokoro speech credential
+// under the suite account; api_uri is required, api_key only when set.
+func provisionKokoroCredential() error {
+	kokoroLabel = provision.Name("kokoro")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "kokoro",
+		Label:     kokoroLabel,
+		APIURI:    cfg.KokoroAPIURI,
+		APIKey:    cfg.KokoroAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	kokoroSID = sid
+	return nil
+}
+
+func teardownKokoroCredential() {
+	if kokoroSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, kokoroSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete kokoro credential %s: %v", kokoroSID, err)
+	}
+}
+
+// provisionVakyamCredential creates a TTS-only vakyam speech credential
+// under the suite account (default host: no api_uri).
+func provisionVakyamCredential() error {
+	vakyamLabel = provision.Name("vakyam")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "vakyam",
+		Label:     vakyamLabel,
+		APIKey:    cfg.VakyamAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	vakyamSID = sid
+	return nil
+}
+
+func teardownVakyamCredential() {
+	if vakyamSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, vakyamSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete vakyam credential %s: %v", vakyamSID, err)
+	}
+}
+
+// provisionGroqCredential creates a TTS-only groq speech credential
+// under the suite account (default host: no api_uri).
+func provisionGroqCredential() error {
+	groqLabel = provision.Name("groq")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "groq",
+		Label:     groqLabel,
+		APIKey:    cfg.GroqAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	groqSID = sid
+	return nil
+}
+
+func teardownGroqCredential() {
+	if groqSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, groqSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete groq credential %s: %v", groqSID, err)
+	}
+}
+
+// provisionHumeCredential creates a TTS-only hume speech credential
+// under the suite account (default host, no model_id: Hume auto-routes).
+func provisionHumeCredential() error {
+	humeLabel = provision.Name("hume")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "hume",
+		Label:     humeLabel,
+		APIKey:    cfg.HumeAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	humeSID = sid
+	return nil
+}
+
+func teardownHumeCredential() {
+	if humeSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, humeSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete hume credential %s: %v", humeSID, err)
+	}
+}
+
+// provisionInworldCredential creates an STT-only inworld speech credential
+// with no model_id, which the api-server must accept when use_for_tts is off.
+func provisionInworldCredential() error {
+	inworldLabel = provision.Name("inworld")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "inworld",
+		Label:      inworldLabel,
+		APIKey:     cfg.InworldAPIKey,
+		STTModelID: inworldSTTModel,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	inworldSID = sid
+	return nil
+}
+
+func teardownInworldCredential() {
+	if inworldSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, inworldSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete inworld credential %s: %v", inworldSID, err)
+	}
+}
+
+// provisionSonioxCredential creates a soniox speech credential for both STT
+// and TTS under the suite account. Called only when SONIOX_API_KEY is set.
+func provisionSonioxCredential() error {
+	sonioxLabel = provision.Name("soniox")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "soniox",
+		Label:     sonioxLabel,
+		APIKey:    cfg.SonioxAPIKey,
+		ModelID:   sonioxTTSModel,
+		UseForTTS: true,
+		UseForSTT: true,
+	})
+	if err != nil {
+		return err
+	}
+	sonioxSID = sid
+	return nil
+}
+
+func teardownSonioxCredential() {
+	if sonioxSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, sonioxSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete soniox credential %s: %v", sonioxSID, err)
+	}
+}
+
+// provisionSaidwireCredential creates an STT-only saidwire speech credential
+// under the suite account, labelled `it-<runID>-saidwire`. Called only when
+// SAIDWIRE_API_KEY is set.
+func provisionSaidwireCredential() error {
+	saidwireLabel = provision.Name("saidwire")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "saidwire",
+		Label:     saidwireLabel,
+		APIKey:    cfg.SaidwireAPIKey,
+		UseForSTT: true,
+	})
+	if err != nil {
+		return err
+	}
+	saidwireSID = sid
+	return nil
+}
+
+func teardownSaidwireCredential() {
+	if saidwireSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, saidwireSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete saidwire credential %s: %v", saidwireSID, err)
+	}
+}
+
 // provisionSpeechmaticsCredential creates a speechmatics speech credential
 // under the suite account, labelled `it-speechmatics-<runID>`. STT-only.
 // Called only when SPEECHMATICS_API_KEY is set.
@@ -1024,6 +1944,37 @@ func provisionSpeechmaticsCredential() error {
 	}
 	speechmaticsSID = sid
 	return nil
+}
+
+// provisionSpeechmaticsTtsCredential creates a TTS-only speechmatics
+// credential without speechmatics_stt_uri (default TTS host).
+func provisionSpeechmaticsTtsCredential() error {
+	speechmaticsTtsLabel = "it-speechmatics-tts-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "speechmatics",
+		Label:     speechmaticsTtsLabel,
+		APIKey:    cfg.SpeechmaticsAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		speechmaticsTtsLabel = ""
+		return err
+	}
+	speechmaticsTtsSID = sid
+	return nil
+}
+
+func teardownSpeechmaticsTtsCredential() {
+	if speechmaticsTtsSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, speechmaticsTtsSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete speechmatics TTS credential %s: %v", speechmaticsTtsSID, err)
+	}
 }
 
 // provisionSpeechmaticsAgentCredential creates a speechmaticsagent

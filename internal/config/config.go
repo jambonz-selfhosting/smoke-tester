@@ -128,6 +128,116 @@ type Settings struct {
 	// without exercising it — see HasPaxa.
 	PaxaAPIKey string
 
+	// Optional — Sarvam AI API key (TTS and realtime STT). Unset = the sarvam
+	// tests pass without exercising it — see HasSarvam.
+	SarvamAPIKey string
+
+	// Optional — Smallest AI API key (Lightning TTS and Pulse STT). Unset =
+	// the smallestai tests pass without exercising it — see HasSmallestai.
+	SmallestaiAPIKey string
+
+	// Optional — Azure OpenAI resource key and endpoint (realtime STT and
+	// /audio/speech TTS). Both are needed — see HasAzureopenai. The
+	// deployment names default to the model names.
+	AzureopenaiAPIKey        string
+	AzureopenaiAPIURI        string
+	AzureopenaiSTTDeployment string
+	AzureopenaiTTSDeployment string
+
+	// Optional — Gnani (Vachana) API key (STT and TTS). Unset = the gnani
+	// tests pass without exercising it — see HasGnani.
+	GnaniAPIKey string
+
+	// Optional — Meta Model API key (Muse Voice Transcribe, STT only). Unset =
+	// the meta tests pass without exercising it — see HasMeta.
+	MetaAPIKey string
+
+	// Optional — MiniMax TTS API key. Unset = the minimax tests pass without
+	// exercising it — see HasMinimax.
+	MinimaxAPIKey string
+	// MiniMax system voice id; defaults to the en-US default voice.
+	MinimaxVoiceID string
+
+	// Optional — Neuphonic TTS API key. Unset = the neuphonic tests pass
+	// without exercising it — see HasNeuphonic.
+	NeuphonicAPIKey string
+	// Neuphonic voice id; defaults to the en-US stock voice (Hannah).
+	NeuphonicVoiceID string
+
+	// Optional — Camb.ai TTS API key. Unset = the camb tests pass without
+	// exercising it — see HasCamb.
+	CambAPIKey string
+	// Camb numeric voice id; defaults to the documented default voice.
+	CambVoiceID string
+
+	// Optional — Async (asyncai) TTS API key. Unset = the asyncai tests pass
+	// without exercising it — see HasAsyncai.
+	AsyncaiAPIKey string
+	// Async voice id; defaults to the only documented voice.
+	AsyncaiVoiceID string
+
+	// Optional — Respeecher TTS API key. Unset = the respeecher tests pass
+	// without exercising it — see HasRespeecher.
+	RespeecherAPIKey string
+	// Respeecher voice id for the en-rt model; defaults to samantha.
+	RespeecherVoiceID string
+
+	// Optional — Bland AI TTS API key. Unset = the bland tests pass
+	// without exercising it — see HasBland.
+	BlandAPIKey string
+	// Bland voice UUID; defaults to Karen.
+	BlandVoiceID string
+
+	// Optional — Simplismart TTS API key. Unset = the simplismart tests pass
+	// without exercising it — see HasSimplismart.
+	SimplismartAPIKey string
+	// Simplismart Orpheus voice; defaults to tara.
+	SimplismartVoiceID string
+
+	// Optional — Spitch TTS API key. Unset = the spitch tests pass without
+	// exercising it — see HasSpitch.
+	SpitchAPIKey string
+	// Spitch voice; defaults to lina (English).
+	SpitchVoiceID string
+
+	// Optional — self-hosted Kokoro-FastAPI base URL (required by the vendor).
+	// Unset = the kokoro tests pass without exercising it — see HasKokoro.
+	KokoroAPIURI string
+	// Optional — only when the Kokoro server sits behind a bearer token.
+	KokoroAPIKey string
+	// Kokoro voice; defaults to af_heart (en-US).
+	KokoroVoiceID string
+
+	// Optional — Vakyam TTS API key. Unset = the vakyam tests pass without
+	// exercising it — see HasVakyam.
+	VakyamAPIKey string
+	// Vakyam voice; defaults to Archana.
+	VakyamVoiceID string
+
+	// Optional — Groq TTS (Orpheus) API key. Unset = the groq tests pass
+	// without exercising it — see HasGroq.
+	GroqAPIKey string
+	// Groq voice; defaults to autumn (en-US).
+	GroqVoiceID string
+
+	// Optional — Hume TTS (Octave) API key. Unset = the hume tests pass
+	// without exercising it — see HasHume.
+	HumeAPIKey string
+	// Hume voice name or UUID; defaults to Ava Song.
+	HumeVoiceID string
+
+	// Optional — Inworld Portal Base64 Basic credential (realtime STT). Unset =
+	// the inworld tests pass without exercising it — see HasInworld.
+	InworldAPIKey string
+
+	// Optional — Soniox API key (realtime TTS; the same key serves STT). Unset =
+	// the soniox tests pass without exercising it — see HasSoniox.
+	SonioxAPIKey string
+
+	// Optional — Saidwire API key (realtime STT). Unset = the saidwire tests
+	// pass without exercising it — see HasSaidwire.
+	SaidwireAPIKey string
+
 	// Optional — service-account JSON (read from GEMINI_KEYFILE) for the gemini
 	// live transcription models, which authenticate as a service account on
 	// Vertex AI. Needs roles/aiplatform.user, which the dialogflow key does not
@@ -312,6 +422,88 @@ func (s *Settings) HasMistral() bool { return s.MistralAPIKey != "" }
 // Optional: when the key is unset those tests pass without exercising paxa.
 func (s *Settings) HasPaxa() bool { return s.PaxaAPIKey != "" }
 
+// HasSarvam reports whether the sarvam STT and TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising sarvam.
+func (s *Settings) HasSarvam() bool { return s.SarvamAPIKey != "" }
+
+// HasSmallestai reports whether the smallestai STT and TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising smallestai.
+func (s *Settings) HasSmallestai() bool { return s.SmallestaiAPIKey != "" }
+
+// HasAzureopenai reports whether the azureopenai STT and TTS tests can run.
+// Optional: unless both key and endpoint are set those tests pass without exercising it.
+func (s *Settings) HasAzureopenai() bool {
+	return s.AzureopenaiAPIKey != "" && s.AzureopenaiAPIURI != ""
+}
+
+// HasGnani reports whether the gnani STT and TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising gnani.
+func (s *Settings) HasGnani() bool { return s.GnaniAPIKey != "" }
+
+// HasMeta reports whether the meta STT tests can run.
+// Optional: when the key is unset those tests pass without exercising meta.
+func (s *Settings) HasMeta() bool { return s.MetaAPIKey != "" }
+
+// HasMinimax reports whether the minimax TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising minimax.
+func (s *Settings) HasMinimax() bool { return s.MinimaxAPIKey != "" }
+
+// HasNeuphonic reports whether the neuphonic TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising neuphonic.
+func (s *Settings) HasNeuphonic() bool { return s.NeuphonicAPIKey != "" }
+
+// HasCamb reports whether the camb TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising camb.
+func (s *Settings) HasCamb() bool { return s.CambAPIKey != "" }
+
+// HasAsyncai reports whether the asyncai TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising asyncai.
+func (s *Settings) HasAsyncai() bool { return s.AsyncaiAPIKey != "" }
+
+// HasRespeecher reports whether the respeecher TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising respeecher.
+func (s *Settings) HasRespeecher() bool { return s.RespeecherAPIKey != "" }
+
+// HasBland reports whether the bland TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising bland.
+func (s *Settings) HasBland() bool { return s.BlandAPIKey != "" }
+
+// HasSimplismart reports whether the simplismart TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising simplismart.
+func (s *Settings) HasSimplismart() bool { return s.SimplismartAPIKey != "" }
+
+// HasSpitch reports whether the spitch TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising spitch.
+func (s *Settings) HasSpitch() bool { return s.SpitchAPIKey != "" }
+
+// HasKokoro reports whether the kokoro TTS tests can run. Gated on the
+// server URL: Kokoro is self-hosted and the api key is optional.
+func (s *Settings) HasKokoro() bool { return s.KokoroAPIURI != "" }
+
+// HasVakyam reports whether the vakyam TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising vakyam.
+func (s *Settings) HasVakyam() bool { return s.VakyamAPIKey != "" }
+
+// HasGroq reports whether the groq TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising groq.
+func (s *Settings) HasGroq() bool { return s.GroqAPIKey != "" }
+
+// HasHume reports whether the hume TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising hume.
+func (s *Settings) HasHume() bool { return s.HumeAPIKey != "" }
+
+// HasInworld reports whether the inworld STT tests can run.
+// Optional: when the key is unset those tests pass without exercising inworld.
+func (s *Settings) HasInworld() bool { return s.InworldAPIKey != "" }
+
+// HasSoniox reports whether the soniox TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising soniox.
+func (s *Settings) HasSoniox() bool { return s.SonioxAPIKey != "" }
+
+// HasSaidwire reports whether the saidwire STT tests can run.
+// Optional: when the key is unset those tests pass without exercising saidwire.
+func (s *Settings) HasSaidwire() bool { return s.SaidwireAPIKey != "" }
+
 // HasGeminiStt reports whether the google/gemini STT gather/transcribe tests
 // can run. Optional: when the key is unset those tests pass without
 // exercising gemini.
@@ -440,6 +632,42 @@ func parse() (*Settings, error) {
 		GradiumAPIKey:            os.Getenv("GRADIUM_API_KEY"),
 		MistralAPIKey:            os.Getenv("MISTRAL_API_KEY"),
 		PaxaAPIKey:               os.Getenv("PAXA_API_KEY"),
+		SarvamAPIKey:             os.Getenv("SARVAM_API_KEY"),
+		SmallestaiAPIKey:         os.Getenv("SMALLESTAI_API_KEY"),
+		AzureopenaiAPIKey:        os.Getenv("AZUREOPENAI_API_KEY"),
+		AzureopenaiAPIURI:        os.Getenv("AZUREOPENAI_API_URI"),
+		AzureopenaiSTTDeployment: firstNonEmpty(os.Getenv("AZUREOPENAI_STT_DEPLOYMENT"), "gpt-live-transcribe"),
+		AzureopenaiTTSDeployment: firstNonEmpty(os.Getenv("AZUREOPENAI_TTS_DEPLOYMENT"), "gpt-4o-mini-tts"),
+		GnaniAPIKey:              os.Getenv("GNANI_API_KEY"),
+		MetaAPIKey:               os.Getenv("META_API_KEY"),
+		MinimaxAPIKey:            os.Getenv("MINIMAX_API_KEY"),
+		MinimaxVoiceID:           firstNonEmpty(os.Getenv("MINIMAX_VOICE_ID"), "English_expressive_narrator"),
+		NeuphonicAPIKey:          os.Getenv("NEUPHONIC_API_KEY"),
+		NeuphonicVoiceID:         firstNonEmpty(os.Getenv("NEUPHONIC_VOICE_ID"), "eeb488b8-d532-4235-aa57-f070cfc44750"),
+		CambAPIKey:               os.Getenv("CAMB_API_KEY"),
+		CambVoiceID:              firstNonEmpty(os.Getenv("CAMB_VOICE_ID"), "147320"),
+		AsyncaiAPIKey:            os.Getenv("ASYNCAI_API_KEY"),
+		AsyncaiVoiceID:           firstNonEmpty(os.Getenv("ASYNCAI_VOICE_ID"), "e0f39dc4-f691-4e78-bba5-5c636692cc04"),
+		RespeecherAPIKey:         os.Getenv("RESPEECHER_API_KEY"),
+		RespeecherVoiceID:        firstNonEmpty(os.Getenv("RESPEECHER_VOICE_ID"), "samantha"),
+		BlandAPIKey:              os.Getenv("BLAND_API_KEY"),
+		BlandVoiceID:             firstNonEmpty(os.Getenv("BLAND_VOICE_ID"), "29158307-9893-4149-8a75-bc9ce313d64e"),
+		SimplismartAPIKey:        os.Getenv("SIMPLISMART_API_KEY"),
+		SimplismartVoiceID:       firstNonEmpty(os.Getenv("SIMPLISMART_VOICE_ID"), "tara"),
+		SpitchAPIKey:             os.Getenv("SPITCH_API_KEY"),
+		SpitchVoiceID:            firstNonEmpty(os.Getenv("SPITCH_VOICE_ID"), "lina"),
+		KokoroAPIURI:             os.Getenv("KOKORO_API_URI"),
+		KokoroAPIKey:             os.Getenv("KOKORO_API_KEY"),
+		KokoroVoiceID:            firstNonEmpty(os.Getenv("KOKORO_VOICE_ID"), "af_heart"),
+		VakyamAPIKey:             os.Getenv("VAKYAM_API_KEY"),
+		VakyamVoiceID:            firstNonEmpty(os.Getenv("VAKYAM_VOICE_ID"), "Archana"),
+		GroqAPIKey:               os.Getenv("GROQ_API_KEY"),
+		GroqVoiceID:              firstNonEmpty(os.Getenv("GROQ_VOICE_ID"), "autumn"),
+		HumeAPIKey:               os.Getenv("HUME_API_KEY"),
+		HumeVoiceID:              firstNonEmpty(os.Getenv("HUME_VOICE_ID"), "Ava Song"),
+		InworldAPIKey:            os.Getenv("INWORLD_API_KEY"),
+		SonioxAPIKey:             os.Getenv("SONIOX_API_KEY"),
+		SaidwireAPIKey:           os.Getenv("SAIDWIRE_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
 		GeminiAPIKey:             os.Getenv("GEMINI_API_KEY"),
 		GptLiveModel:             firstNonEmpty(os.Getenv("GPTLIVE_MODEL"), "gpt-live-1"),
