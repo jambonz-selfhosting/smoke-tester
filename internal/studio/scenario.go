@@ -15,6 +15,8 @@ type Turn struct {
 	Say string `json:"say"`
 	// WaitAgent: wait for the agent to finish speaking first (default true); false barges in once it starts.
 	WaitAgent *bool `json:"wait_agent,omitempty"`
+	// PauseSec: stay silent this long first, e.g. while the call is away on a detour or transfer.
+	PauseSec int `json:"pause_sec,omitempty"`
 }
 
 type Scenario struct {

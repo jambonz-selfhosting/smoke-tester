@@ -555,7 +555,8 @@ func TestStudio_Situations_DetourCall(t *testing.T) {
 		Turns: []studio.Turn{
 			{Say: "I lost my job last month, so I can't pay the full amount."},
 			{Say: "I'd like to pay part of it by card now, please."},
-			{Say: "What are your branch opening hours?"},
+			// The detour to a number that never answers fails after about 35 s; wait for the agent to be back.
+			{Say: "What are your branch opening hours?", PauseSec: 45},
 			{Say: "Thanks, that's all. Goodbye."},
 		},
 		MaxSec: 200, TailSec: 15,

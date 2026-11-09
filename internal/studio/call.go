@@ -298,6 +298,18 @@ func Run(ctx context.Context, c *Client, sc Scenario, o RunOptions) (*Result, er
 		if !alive {
 			break
 		}
+		if t.PauseSec > 0 {
+			select {
+			case <-call.Done():
+				alive = false
+			case <-ctx.Done():
+				alive = false
+			case <-time.After(time.Duration(t.PauseSec) * time.Second):
+			}
+			if !alive {
+				break
+			}
+		}
 		if t.WaitAgent == nil || *t.WaitAgent {
 			// Outbound agents wait for the callee, so the first turn waits less.
 			max := 12 * time.Second
@@ -400,14 +412,33 @@ func (c *Client) openSession(ctx context.Context, agentID string, body any, out 
 	for {
 		err := c.Do(ctx, "POST", fmt.Sprintf("/agents/%s/test-sessions", agentID), body, out)
 		var ae *APIError
-		if !errors.As(err, &ae) || ae.Status != http.StatusConflict || !strings.Contains(ae.Body, "TEST_SESSION_LIMIT") {
+		if !errors.As(err, &ae) {
 			return err
 		}
-		logf("studio test session limit reached; waiting for one to end")
+		wait := 5 * time.Second
+		switch {
+		case ae.Status == http.StatusConflict && strings.Contains(ae.Body, "TEST_SESSION_LIMIT"):
+			logf("studio test session limit reached; waiting for one to end")
+		case ae.Status == http.StatusTooManyRequests:
+			// Parallel tests can hit the per-account session rate limit; Studio says when to retry.
+			var b struct {
+				Error struct {
+					Details struct {
+						RetryAfterS int `json:"retry_after_s"`
+					} `json:"details"`
+				} `json:"error"`
+			}
+			if json.Unmarshal([]byte(ae.Body), &b) == nil && b.Error.Details.RetryAfterS > 0 && b.Error.Details.RetryAfterS <= 60 {
+				wait = time.Duration(b.Error.Details.RetryAfterS)*time.Second + time.Second
+			}
+			logf("studio rate-limited the test session; retrying in %s", wait)
+		default:
+			return err
+		}
 		select {
 		case <-ctx.Done():
 			return err
-		case <-time.After(5 * time.Second):
+		case <-time.After(wait):
 		}
 	}
 }
