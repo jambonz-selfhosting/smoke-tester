@@ -1,4 +1,4 @@
-.PHONY: help build test test-rest test-sip test-verbs test-release-gate test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio lint clean deps
+.PHONY: help build test test-rest test-sip test-verbs test-release-gate test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio test-studio list-studio lint clean deps
 
 # Parallelism: default to min(NumCPU, 4). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
@@ -67,6 +67,11 @@ help:
 	@echo "  make test-drachtio-uac   # shortcut: only the UAC-expiry (timeout BYE) test"
 	@echo "  make test-drachtio-uac-keepalive  # shortcut: only the UAC-keepalive (proactive refresh, call stays up) test"
 	@echo "  make test-drachtio-none  # shortcut: only the default-refresher=none (no timer armed, call survives) test"
+	@echo "  make test-studio  # Agent Studio agents, one call per realtime voice API vendor with a key"
+	@echo "                    # (studio build tag; never part of make test). Needs STUDIO_* in .env."
+	@echo "  make test-studio RUN='^TestStudio_S2S$$/xai'"
+	@echo "                    # one vendor; RUN is a regexp"
+	@echo "  make list-studio   # list the Studio tests"
 	@echo "  make lint         # go vet ./..."
 	@echo "  make clean        # remove build artifacts"
 	@echo
@@ -289,6 +294,16 @@ test-drachtio-none:
 # what to pass to RUN= instead of grepping the source.
 list-drachtio:
 	go test -tags drachtio -list '.*' ./tests/drachtio/
+
+# Agent Studio end-to-end calls (tests/studio). Gated behind the `studio` build tag like drachtio: they
+# cost vendor credit and take minutes, so make test / make test-report never run them. Each call is a
+# whole conversation, and Studio allows a login two open test sessions, so two run at once.
+STUDIO_PARALLEL ?= 2
+test-studio:
+	go test -tags studio -count=1 -timeout 40m -parallel $(STUDIO_PARALLEL) -v -run '$(value RUN)' ./tests/studio/
+
+list-studio:
+	go test -tags studio -list '.*' ./tests/studio/
 
 test-report:
 	@# `go test -json` streams NDJSON test events; cmd/testreport renders
