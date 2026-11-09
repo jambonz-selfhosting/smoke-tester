@@ -43,6 +43,7 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/studio: %v", err)
 	} else {
 		code = m.Run()
+		PrintFailureSummary()
 	}
 	if cleanup != nil {
 		cleanup()

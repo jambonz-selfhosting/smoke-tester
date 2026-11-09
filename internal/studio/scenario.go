@@ -15,6 +15,11 @@ type Turn struct {
 	Say string `json:"say"`
 	// WaitAgent: wait for the agent to finish speaking first (default true); false barges in once it starts.
 	WaitAgent *bool `json:"wait_agent,omitempty"`
+	// PauseSec: stay silent this long first, e.g. while the call is away on a detour or transfer.
+	PauseSec int `json:"pause_sec,omitempty"`
+	// WaitSec: how long to wait for the agent to speak before this turn (default 12), e.g. until it is back from a
+	// detour whose length varies.
+	WaitSec int `json:"wait_sec,omitempty"`
 }
 
 type Scenario struct {
@@ -77,6 +82,8 @@ type callDetail struct {
 }
 
 // Check returns one line per expectation that the call did not meet.
+var heardStamp = regexp.MustCompile(`(?m)^\[\s*[\d.]+s\]`)
+
 func Check(e *Expect, raw json.RawMessage, endedByAgent bool, heard string) []string {
 	var fails []string
 	var d callDetail
@@ -123,8 +130,10 @@ func Check(e *Expect, raw json.RawMessage, endedByAgent bool, heard string) []st
 			fails = append(fails, fmt.Sprintf("no event matches %q", re))
 		}
 	}
+	// One utterance per line, each with its time; a reply split across pauses ("four", "four", ...) must still match.
+	spoken := strings.Join(strings.Fields(heardStamp.ReplaceAllString(heard, " ")), " ")
 	for _, re := range e.Heard {
-		if !regexp.MustCompile(re).MatchString(heard) {
+		if !regexp.MustCompile(re).MatchString(spoken) {
 			fails = append(fails, fmt.Sprintf("caller did not hear %q", re))
 		}
 	}

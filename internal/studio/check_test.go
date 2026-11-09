@@ -46,3 +46,10 @@ func TestCheckWithoutRecord(t *testing.T) {
 		t.Fatalf("got %v", f)
 	}
 }
+
+func TestCheckHeardAcrossUtterances(t *testing.T) {
+	heard := "[  69.6s] Your reference number is\n[  75.6s] four\n[  76.5s] four\n[  77.4s] seven\n[  78.3s] one."
+	if f := Check(&Expect{Heard: []string{`four four seven one`}}, json.RawMessage(record), true, heard); len(f) > 0 {
+		t.Fatalf("want pass, got %v", f)
+	}
+}
