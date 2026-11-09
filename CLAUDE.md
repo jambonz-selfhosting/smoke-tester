@@ -49,6 +49,19 @@ When a test fails the first question is always *which test, which step, why?*. U
 
 If you find yourself reaching for raw `t.Errorf` / `t.Fatalf` in test code (not helpers), you're breaking the pattern — wrap the phase in a `Step` first.
 
+## Test quality and speed
+
+A test exists to find a bug in the feature it covers. The number of tests counts for nothing, and agents run this suite many times a day, so a slow test costs every run.
+
+- **Every assertion must fail when the feature is broken.** Before adding one, name the bug it catches. If you can't, drop it.
+- **No vacuous passes.** A check that passes when nothing happened (the model never tried, the call never transferred, the record has no text) proves nothing. First assert that the thing you check actually occurred, then check its outcome.
+- **Check the outcome, not the plumbing.** Assert what the caller hears or what the record shows. Checking internal state alone misses the bug: a test that read only the gateway's state passed while the restarted agent had lost its instructions.
+- **Never weaken a check to make it pass.** A failing check is either a product bug (report it) or a wrong check. Fix the check only when you can say why it was wrong, and say so in the commit.
+- **Live calls are for what only a live call shows:** real wiring across the API, the gateway, feature-server and the model. Rules, limits, ordering and persistence belong in the product's unit tests, not here.
+- **Few, combined, parallel.** Put several checks into one call scenario rather than one call per check, and mark independent tests `t.Parallel()`. A feature's live tests should finish in a few minutes in total. Budget each with `WithTimeout` and keep `MaxSec` tight.
+- **Model behaviour is not deterministic.** Write prompts and caller lines that leave the model one obvious action, and assert results that don't depend on its wording, for example a marker phrase the instructions require.
+- **No disruptive tests in the default run.** Anything that restarts shared services or changes host configuration stays out of the suite, or behind an explicit environment variable, and must fail rather than pass when its precondition did not happen.
+
 ## Canonical schema sources
 
 Two upstream repos publish the authoritative contracts. Read these directly; never guess at field names or paths.

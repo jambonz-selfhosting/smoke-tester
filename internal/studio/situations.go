@@ -78,18 +78,16 @@ func (c *Client) PipelineVoice(ctx context.Context, agentID string) (map[string]
 		if err != nil {
 			continue
 		}
-		out, ok := map[string]any{}, true
-		for _, k := range []string{"stt", "tts", "llm"} {
-			m, _ := v.Draft.Config[k].(map[string]any)
-			if m == nil || m["credential_sid"] == nil || m["credential_sid"] == "" {
-				ok = false
-				break
-			}
-			out[k] = m
+		stt, _ := v.Draft.Config["stt"].(map[string]any)
+		tts, _ := v.Draft.Config["tts"].(map[string]any)
+		llm, _ := v.Draft.Config["llm"].(map[string]any)
+		set := func(m map[string]any, k string) bool { x, ok := m[k].(string); return ok && x != "" }
+		if stt == nil || tts == nil || llm == nil || !set(stt, "credential_sid") || !set(tts, "credential_sid") ||
+			!set(llm, "credential_sid") || !set(tts, "voice") || !set(llm, "model") {
+			continue
 		}
-		lang, _ := out["stt"].(map[string]any)["language"].(string)
-		if ok && strings.HasPrefix(lang, "en") && out["tts"].(map[string]any)["voice"] != nil && out["llm"].(map[string]any)["model"] != nil {
-			return out, a.Name, nil
+		if lang, _ := stt["language"].(string); strings.HasPrefix(lang, "en") {
+			return map[string]any{"stt": stt, "tts": tts, "llm": llm}, a.Name, nil
 		}
 	}
 	return nil, "", nil
@@ -228,46 +226,6 @@ func sub(cfg map[string]any, k string) map[string]any {
 
 // Sub returns cfg[k] as a map, creating it when absent.
 func Sub(cfg map[string]any, k string) map[string]any { return sub(cfg, k) }
-
-// Publish makes the agent's current draft its live version.
-func (c *Client) Publish(ctx context.Context, id string) error {
-	a, err := c.agent(ctx, id)
-	if err != nil {
-		return err
-	}
-	return c.Do(ctx, http.MethodPost, "/agents/"+id+"/publish", map[string]any{"revision": a.Draft.Revision}, nil)
-}
-
-// AssignNumber routes a jambonz phone number to the agent; UnassignNumber undoes it.
-func (c *Client) AssignNumber(ctx context.Context, id, numberSID string) error {
-	return c.Do(ctx, http.MethodPut, "/agents/"+id+"/numbers", map[string]any{"phone_number_sid": numberSID, "replace_application": true}, nil)
-}
-
-func (c *Client) UnassignNumber(ctx context.Context, id, numberSID string) error {
-	return ignoreNotFound(c.Do(ctx, http.MethodDelete, "/agents/"+id+"/numbers/"+numberSID, nil, nil))
-}
-
-// CreateMcpServer adds an MCP server that allows all its tools and returns its id.
-func (c *Client) CreateMcpServer(ctx context.Context, name, url string) (string, error) {
-	var out struct {
-		ID     string `json:"id"`
-		Server *struct {
-			ID string `json:"id"`
-		} `json:"server"`
-	}
-	body := map[string]any{"name": name, "url": url, "transport": "streamable_http", "allow_new_tools": true}
-	if err := c.Do(ctx, http.MethodPost, "/mcp-servers", body, &out); err != nil {
-		return "", err
-	}
-	if out.Server != nil {
-		return out.Server.ID, nil
-	}
-	return out.ID, nil
-}
-
-func (c *Client) DeleteMcpServer(ctx context.Context, id string) error {
-	return ignoreNotFound(c.Do(ctx, http.MethodDelete, "/mcp-servers/"+id, nil, nil))
-}
 
 // CallEvent is one entry of a call's timeline.
 type CallEvent struct {
