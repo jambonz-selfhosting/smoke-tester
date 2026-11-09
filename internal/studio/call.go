@@ -26,7 +26,9 @@ type RunOptions struct {
 	OutDir   string // the scenario's audio, transcript and result.json go in OutDir/<scenario name>
 	SBC      string // host:port
 	FromHost string // inbound-did: From host (a whitelisted carrier IP)
-	Logf     func(format string, args ...any)
+	// BeforeTurn runs once the agent has finished, just before the caller says turn i.
+	BeforeTurn func(i int)
+	Logf       func(format string, args ...any)
 }
 
 type Result struct {
@@ -310,6 +312,9 @@ func Run(ctx context.Context, c *Client, sc Scenario, o RunOptions) (*Result, er
 		}
 		if !alive {
 			break
+		}
+		if o.BeforeTurn != nil {
+			o.BeforeTurn(i)
 		}
 		mark("caller", t.Say)
 		if err := call.SendWAV(wavs[i]); err != nil {
