@@ -9,7 +9,6 @@ import (
 
 // OrderStatusTool is the HTTP tool the order-desk scenarios expect the agent to call.
 var OrderStatusTool = map[string]any{
-	"type":        "http",
 	"name":        "get_order_status",
 	"description": "Look up an order by its id. Returns the order status in the status field.",
 	"method":      "GET",
