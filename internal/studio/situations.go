@@ -122,7 +122,9 @@ func (c *Client) CreatePipelineAgent(ctx context.Context, name string, p Pipelin
 		if p.Hangup {
 			sub(cfg, "hangup")["enabled"] = true
 		}
-		SetSituations(cfg, p.Situations)
+		if len(p.Situations) > 0 {
+			SetSituations(cfg, p.Situations)
+		}
 		if p.Edit != nil {
 			p.Edit(cfg)
 		}
