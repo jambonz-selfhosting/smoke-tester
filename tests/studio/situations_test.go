@@ -7,6 +7,7 @@ import (
 	"encoding/json"
 	"errors"
 	"fmt"
+	"io"
 	"net/http"
 	"os"
 	"regexp"
@@ -30,9 +31,17 @@ import (
 // --- customer server: one ngrok tunnel, a namespace per test so parallel tests keep separate logs ---
 
 type customerServer struct {
-	URL string
-	mu  sync.Mutex
-	log map[string][]string
+	URL   string
+	mu    sync.Mutex
+	log   map[string][]string
+	hooks map[string]func(raw []byte, sig string) any // POST /<ns>/events: a test's call-event webhook
+}
+
+// onEvents routes call events posted to /<ns>/events to fn; its return value is the reply body.
+func (s *customerServer) onEvents(ns string, fn func(raw []byte, sig string) any) {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	s.hooks[ns] = fn
 }
 
 var (
@@ -80,7 +89,7 @@ func openCustomerServer() (*customerServer, error) {
 	if r.err != nil {
 		return nil, r.err
 	}
-	s := &customerServer{URL: r.tun.URL(), log: map[string][]string{}}
+	s := &customerServer{URL: r.tun.URL(), log: map[string][]string{}, hooks: map[string]func([]byte, string) any{}}
 	digits := regexp.MustCompile(`\D`)
 	h := func(w http.ResponseWriter, req *http.Request) {
 		parts := strings.Split(strings.Trim(req.URL.Path, "/"), "/")
@@ -89,6 +98,19 @@ func openCustomerServer() (*customerServer, error) {
 			return
 		}
 		ns, tool := parts[0], parts[1]
+		if tool == "events" && req.Method == http.MethodPost {
+			s.mu.Lock()
+			fn := s.hooks[ns]
+			s.mu.Unlock()
+			raw, _ := io.ReadAll(io.LimitReader(req.Body, 1<<20))
+			if fn == nil {
+				http.NotFound(w, req)
+				return
+			}
+			w.Header().Set("Content-Type", "application/json")
+			_ = json.NewEncoder(w).Encode(fn(raw, req.Header.Get("X-Studio-Signature")))
+			return
+		}
 		q := req.URL.Query()
 		var body map[string]any
 		entry := tool

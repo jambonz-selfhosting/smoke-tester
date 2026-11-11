@@ -1,7 +1,10 @@
 package studio
 
 import (
+	"bytes"
 	"context"
+	"encoding/json"
+	"io"
 	"net/http"
 	"strings"
 )
@@ -261,4 +264,26 @@ func (c *Client) CallTurns(ctx context.Context, callSID string) ([]CallTurn, err
 	}
 	err := c.Do(ctx, http.MethodGet, "/calls/"+callSID, nil, &out)
 	return out.Turns, err
+}
+
+// PushActions posts actions into a live call with a Studio API key, as a customer's server does; it returns the
+// HTTP status.
+func (c *Client) PushActions(ctx context.Context, apiKey, callSID string, actions map[string]any) (int, error) {
+	body, err := json.Marshal(map[string]any{"actions": actions})
+	if err != nil {
+		return 0, err
+	}
+	req, err := http.NewRequestWithContext(ctx, http.MethodPost, c.apiBase+"/calls/"+callSID+"/actions", bytes.NewReader(body))
+	if err != nil {
+		return 0, err
+	}
+	req.Header.Set("Authorization", "Bearer "+apiKey)
+	req.Header.Set("Content-Type", "application/json")
+	res, err := http.DefaultClient.Do(req)
+	if err != nil {
+		return 0, err
+	}
+	defer res.Body.Close()
+	_, _ = io.Copy(io.Discard, res.Body)
+	return res.StatusCode, nil
 }
