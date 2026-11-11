@@ -44,6 +44,8 @@ func validSignature(secret string, raw []byte, header string) bool {
 // Steps:
 //   - setup: an API key, an agent with a server-only situation and a call-event webhook, its signing secret
 //   - call: ask for the account manager, say the bill is paid, goodbye
+//   - read-turns: the call's turns as Studio recorded them
+//   - check-record: the replies the server asked for are in Studio's turns
 //   - check-webhook: every event was signed with the agent's secret; call_start came first and call_end arrived
 //   - check-push: Studio accepted the push (202)
 func TestStudio_MidCallControl(t *testing.T) {
@@ -142,6 +144,20 @@ When the caller says goodbye, say goodbye and end the call with the hangup tool.
 			Heard: []string{`(?i)morgan`, `(?i)all settled`},
 		},
 	})
+
+	turns := turnsOf(t, ctx, r.CallSID)
+	s = Step(t, "check-record")
+	var said []string
+	for _, tn := range turns {
+		if tn.Role == "agent" {
+			said = append(said, tn.Text)
+		}
+	}
+	// The replies the server asked for must be in Studio's record, not only in the audio.
+	if !anyContains(said, "morgan") || !anyContains(said, "all settled") {
+		s.Errorf("Studio's turns miss the replies the server asked for: %q", said)
+	}
+	s.Done()
 
 	s = Step(t, "check-webhook")
 	deadline := time.Now().Add(20 * time.Second)
