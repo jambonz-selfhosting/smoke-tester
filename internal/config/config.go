@@ -84,6 +84,9 @@ type Settings struct {
 
 	// Optional — KugelAudio TTS API key. Unset = the kugelaudio tests skip.
 	KugelaudioAPIKey string
+	// Optional — set when the media server has an ai-coustics license
+	// (AIC_SDK_LICENSE on mediajam). Unset = aicoustics tests skip.
+	AicousticsEnabled bool
 
 	// Optional — AssemblyAI API key for the TTS tests. Unset = they skip.
 	AssemblyaiAPIKey string
@@ -399,6 +402,9 @@ func (s *Settings) HasElevenlabs() bool { return s.ElevenlabsAPIKey != "" }
 // HasKugelaudio reports whether the KugelAudio TTS tests can run.
 func (s *Settings) HasKugelaudio() bool { return s.KugelaudioAPIKey != "" }
 
+// HasAicoustics reports whether the media server can run ai-coustics noise isolation.
+func (s *Settings) HasAicoustics() bool { return s.AicousticsEnabled }
+
 // HasAssemblyai reports whether the AssemblyAI TTS tests can run.
 func (s *Settings) HasAssemblyai() bool { return s.AssemblyaiAPIKey != "" }
 
@@ -634,6 +640,7 @@ func parse() (*Settings, error) {
 		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
 		ElevenlabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
 		KugelaudioAPIKey:         os.Getenv("KUGELAUDIO_API_KEY"),
+		AicousticsEnabled:        os.Getenv("AICOUSTICS_ENABLED") == "true",
 		AssemblyaiAPIKey:         os.Getenv("ASSEMBLYAI_API_KEY"),
 		SpeechifyAPIKey:          os.Getenv("SPEECHIFY_API_KEY"),
 		SvaraAPIKey:              os.Getenv("SVARA_API_KEY"),
