@@ -88,6 +88,9 @@ var (
 	elevenlabsSID   string
 	// George, a premade voice; legacy voices such as Rachel reject audio tags on eleven_v3
 	elevenlabsVoice = "JBFqnCBsd6RMkjVDRZzb"
+	// separate STT credential so the TTS one keeps its own stt_model_id
+	elevenlabsSttLabel string
+	elevenlabsSttSID   string
 
 	// KugelAudio TTS credential, provisioned IF KUGELAUDIO_API_KEY is set.
 	kugelaudioLabel string
@@ -380,6 +383,10 @@ func TestMain(m *testing.M) {
 			log.Fatalf("tests/verbs: ElevenLabs credential provisioning failed: %v", err)
 		}
 		log.Printf("tests/verbs: ElevenLabs credential label=%s sid=%s", elevenlabsLabel, elevenlabsSID)
+		if err := provisionElevenlabsSttCredential(); err != nil {
+			log.Fatalf("tests/verbs: ElevenLabs STT credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: ElevenLabs STT credential label=%s sid=%s", elevenlabsSttLabel, elevenlabsSttSID)
 	} else {
 		log.Printf("tests/verbs: ELEVENLABS_API_KEY not set — ElevenLabs tests will skip")
 	}
@@ -745,6 +752,7 @@ func TestMain(m *testing.M) {
 	teardownDeepgramFluxCredential()
 	teardownMurfCredential()
 	teardownElevenlabsCredential()
+	teardownElevenlabsSttCredential()
 	teardownKugelaudioCredential()
 	teardownAssemblyaiCredential()
 	teardownSpeechifyCredential()
@@ -909,6 +917,36 @@ func provisionElevenlabsCredential() error {
 	}
 	elevenlabsSID = sid
 	return nil
+}
+
+func provisionElevenlabsSttCredential() error {
+	elevenlabsSttLabel = "it-elevenlabs-stt-" + provision.RunID()
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:     "elevenlabs",
+		Label:      elevenlabsSttLabel,
+		APIKey:     cfg.ElevenlabsAPIKey,
+		ModelID:    "eleven_flash_v2_5",
+		STTModelID: elevenlabsSttModel,
+		UseForSTT:  true,
+	})
+	if err != nil {
+		return err
+	}
+	elevenlabsSttSID = sid
+	return nil
+}
+
+func teardownElevenlabsSttCredential() {
+	if elevenlabsSttSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, elevenlabsSttSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete ElevenLabs STT credential %s: %v", elevenlabsSttSID, err)
+	}
 }
 
 func teardownElevenlabsCredential() {
