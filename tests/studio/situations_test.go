@@ -227,8 +227,8 @@ func anyContains(texts []string, word string) bool {
 	return slices.ContainsFunc(texts, func(x string) bool { return strings.Contains(strings.ToLower(x), word) })
 }
 
-func noRejectedUpdates(t *testing.T, ctx context.Context, callSID string) {
-	s := Step(t, "no-rejected-updates")
+func updatesApplied(t *testing.T, ctx context.Context, callSID string) {
+	s := Step(t, "updates-applied")
 	evs, err := ws.CallEvents(ctx, callSID)
 	if err != nil {
 		s.Fatalf("call events: %v", err)
@@ -236,6 +236,9 @@ func noRejectedUpdates(t *testing.T, ctx context.Context, callSID string) {
 	for _, e := range evs {
 		if strings.HasPrefix(e.Text, "Agent update rejected") {
 			s.Errorf("jambonz rejected an update: %s %s", e.Text, e.Sub)
+		}
+		if strings.HasPrefix(e.Text, "Agent update not acknowledged") {
+			s.Errorf("jambonz never acked an update (feature-server before 11.1.13, or a lost message): %s %s", e.Text, e.Sub)
 		}
 	}
 	s.Done()
@@ -398,7 +401,7 @@ func TestStudio_Situations_Config(t *testing.T) {
 //   - read-turns: the call's turns as Studio recorded them
 //   - check-gate: no plan before verification; hardship starts only after negotiation
 //   - check-server: record_agreement reached the customer only after a matching verify_identity
-//   - no-rejected-updates: jambonz applied every update
+//   - updates-applied: jambonz acked and applied every update
 func TestStudio_Situations_ServerCall(t *testing.T) {
 	ctx := WithTimeout(t, 6*time.Minute)
 	t.Parallel()
@@ -473,7 +476,7 @@ When the caller says goodbye, say goodbye and end the call with the hangup tool.
 		s.Errorf("record_agreement must follow a matching verify_identity: %v", got)
 	}
 	s.Done()
-	noRejectedUpdates(t, ctx, r.CallSID)
+	updatesApplied(t, ctx, r.CallSID)
 }
 
 // TestStudio_Situations_ModelCall: the model starts situations up to the cap, and stops following one it resolved.
@@ -482,7 +485,7 @@ When the caller says goodbye, say goodbye and end the call with the hangup tool.
 //   - call: four lines that each start a situation, then the new-job line, then a question
 //   - read-turns: the call's turns as Studio recorded them
 //   - check-resolved: the hardship marker is said while it is active and never after it is resolved
-//   - no-rejected-updates: jambonz applied every update
+//   - updates-applied: jambonz acked and applied every update
 func TestStudio_Situations_ModelCall(t *testing.T) {
 	ctx := WithTimeout(t, 6*time.Minute)
 	t.Parallel()
@@ -524,7 +527,7 @@ func TestStudio_Situations_ModelCall(t *testing.T) {
 		s.Errorf("after hardship was resolved the agent should reply without %q: %q", marker, after)
 	}
 	s.Done()
-	noRejectedUpdates(t, ctx, r.CallSID)
+	updatesApplied(t, ctx, r.CallSID)
 }
 
 // TestStudio_Situations_DetourCall: a situation active before a secure detour is still followed after the caller
@@ -534,7 +537,7 @@ func TestStudio_Situations_ModelCall(t *testing.T) {
 //   - call: the job-loss line, a card payment (the detour fails and comes back), a question, goodbye
 //   - read-turns: the call's turns as Studio recorded them
 //   - check-after-detour: the reply after the detour still carries the hardship marker
-//   - no-rejected-updates: jambonz applied every update
+//   - updates-applied: jambonz acked and applied every update
 func TestStudio_Situations_DetourCall(t *testing.T) {
 	ctx := WithTimeout(t, 6*time.Minute)
 	t.Parallel()
@@ -570,5 +573,5 @@ func TestStudio_Situations_DetourCall(t *testing.T) {
 		s.Errorf("after the detour the agent no longer follows hardship (no %q): %q", marker, after)
 	}
 	s.Done()
-	noRejectedUpdates(t, ctx, r.CallSID)
+	updatesApplied(t, ctx, r.CallSID)
 }
