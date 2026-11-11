@@ -640,7 +640,6 @@ func parse() (*Settings, error) {
 		MurfAPIKey:               os.Getenv("MURF_API_KEY"),
 		ElevenlabsAPIKey:         os.Getenv("ELEVENLABS_API_KEY"),
 		KugelaudioAPIKey:         os.Getenv("KUGELAUDIO_API_KEY"),
-		AicousticsEnabled:        os.Getenv("AICOUSTICS_ENABLED") == "true",
 		AssemblyaiAPIKey:         os.Getenv("ASSEMBLYAI_API_KEY"),
 		SpeechifyAPIKey:          os.Getenv("SPEECHIFY_API_KEY"),
 		SvaraAPIKey:              os.Getenv("SVARA_API_KEY"),
@@ -806,6 +805,14 @@ func parse() (*Settings, error) {
 		ttl = time.Duration(n) * time.Hour
 	}
 	s.OrphanTTL = ttl
+
+	if v := os.Getenv("AICOUSTICS_ENABLED"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("AICOUSTICS_ENABLED must be true/false: %w", err)
+		}
+		s.AicousticsEnabled = b
+	}
 
 	if v := os.Getenv("JAMBONZ_ALLOW_SP_POLICY_CHANGES"); v != "" {
 		b, err := strconv.ParseBool(v)
