@@ -222,13 +222,22 @@ var (
 	humeLabel string
 	humeSID   string
 
-	// inworld STT-only speech credential, provisioned only when INWORLD_API_KEY is set.
+	// inworld STT+TTS speech credential, provisioned only when INWORLD_API_KEY is set.
 	inworldLabel string
 	inworldSID   string
 
 	// soniox STT+TTS speech credential, provisioned only when SONIOX_API_KEY is set.
 	sonioxLabel string
 	sonioxSID   string
+
+	// cartesia and fishaudio TTS-only, modulate STT-only credentials, each
+	// provisioned only when its key is set.
+	cartesiaLabel  string
+	cartesiaSID    string
+	fishaudioLabel string
+	fishaudioSID   string
+	modulateLabel  string
+	modulateSID    string
 
 	// saidwire STT-only speech credential, provisioned only when SAIDWIRE_API_KEY is set.
 	saidwireLabel string
@@ -656,7 +665,7 @@ func TestMain(m *testing.M) {
 	} else {
 		log.Printf("tests/verbs: HUME_API_KEY not set — hume tests will pass without exercising hume")
 	}
-	// inworld STT-only speech credential — optional, same pattern as paxa.
+	// inworld STT+TTS speech credential — optional, same pattern as paxa.
 	if cfg.HasInworld() {
 		if err := provisionInworldCredential(); err != nil {
 			log.Fatalf("tests/verbs: inworld credential provisioning failed: %v", err)
@@ -673,6 +682,33 @@ func TestMain(m *testing.M) {
 		log.Printf("tests/verbs: soniox credential label=%s sid=%s", sonioxLabel, sonioxSID)
 	} else {
 		log.Printf("tests/verbs: SONIOX_API_KEY not set — soniox tests will pass without exercising soniox")
+	}
+	// cartesia TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasCartesia() {
+		if err := provisionCartesiaCredential(); err != nil {
+			log.Fatalf("tests/verbs: cartesia credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: cartesia credential label=%s sid=%s", cartesiaLabel, cartesiaSID)
+	} else {
+		log.Printf("tests/verbs: CARTESIA_API_KEY not set — cartesia tests will pass without exercising cartesia")
+	}
+	// fishaudio TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasFishaudio() {
+		if err := provisionFishaudioCredential(); err != nil {
+			log.Fatalf("tests/verbs: fishaudio credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: fishaudio credential label=%s sid=%s", fishaudioLabel, fishaudioSID)
+	} else {
+		log.Printf("tests/verbs: FISHAUDIO_API_KEY not set — fishaudio tests will pass without exercising fishaudio")
+	}
+	// modulate STT-only speech credential — optional, same pattern as paxa.
+	if cfg.HasModulate() {
+		if err := provisionModulateCredential(); err != nil {
+			log.Fatalf("tests/verbs: modulate credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: modulate credential label=%s sid=%s", modulateLabel, modulateSID)
+	} else {
+		log.Printf("tests/verbs: MODULATE_API_KEY not set — modulate tests will pass without exercising modulate")
 	}
 	// 3c'''''. saidwire STT speech credential — optional, same pattern as gradium.
 	if cfg.HasSaidwire() {
@@ -796,6 +832,9 @@ func TestMain(m *testing.M) {
 	teardownHumeCredential()
 	teardownInworldCredential()
 	teardownSonioxCredential()
+	teardownCartesiaCredential()
+	teardownFishaudioCredential()
+	teardownModulateCredential()
 	teardownSaidwireCredential()
 	teardownSpeechmaticsCredential()
 	teardownSpeechmaticsTtsCredential()
@@ -859,7 +898,8 @@ func provisionDeepgramFluxCredential() error {
 		Label:     deepgramFluxLabel,
 		APIKey:    cfg.DeepgramAPIKey,
 		UseForTTS: true,
-		UseForSTT: false,
+		// STT too, for the agent emotion preflight case on Flux
+		UseForSTT: true,
 	})
 	if err != nil {
 		return err
@@ -1923,7 +1963,9 @@ func provisionInworldCredential() error {
 		Vendor:     "inworld",
 		Label:      inworldLabel,
 		APIKey:     cfg.InworldAPIKey,
+		ModelID:    inworldTTSModel,
 		STTModelID: inworldSTTModel,
+		UseForTTS:  true,
 		UseForSTT:  true,
 	})
 	if err != nil {
@@ -1973,6 +2015,99 @@ func teardownSonioxCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, sonioxSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete soniox credential %s: %v", sonioxSID, err)
+	}
+}
+
+// provisionCartesiaCredential creates a TTS-only cartesia speech credential under
+// the suite account. Called only when its API key is set.
+func provisionCartesiaCredential() error {
+	cartesiaLabel = provision.Name("cartesia")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "cartesia",
+		Label:     cartesiaLabel,
+		APIKey:    cfg.CartesiaAPIKey,
+		ModelID:   cartesiaTTSModel,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	cartesiaSID = sid
+	return nil
+}
+
+func teardownCartesiaCredential() {
+	if cartesiaSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, cartesiaSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete cartesia credential %s: %v", cartesiaSID, err)
+	}
+}
+
+// provisionFishaudioCredential creates a TTS-only fishaudio speech credential under
+// the suite account. Called only when its API key is set.
+func provisionFishaudioCredential() error {
+	fishaudioLabel = provision.Name("fishaudio")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "fishaudio",
+		Label:     fishaudioLabel,
+		APIKey:    cfg.FishaudioAPIKey,
+		ModelID:   fishaudioTTSModel,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	fishaudioSID = sid
+	return nil
+}
+
+func teardownFishaudioCredential() {
+	if fishaudioSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, fishaudioSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete fishaudio credential %s: %v", fishaudioSID, err)
+	}
+}
+
+// provisionModulateCredential creates a STT-only modulate speech credential under
+// the suite account. Called only when its API key is set.
+func provisionModulateCredential() error {
+	modulateLabel = provision.Name("modulate")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "modulate",
+		Label:     modulateLabel,
+		APIKey:    cfg.ModulateAPIKey,
+		ModelID:   modulateSTTModel,
+		UseForSTT: true,
+	})
+	if err != nil {
+		return err
+	}
+	modulateSID = sid
+	return nil
+}
+
+func teardownModulateCredential() {
+	if modulateSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, modulateSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete modulate credential %s: %v", modulateSID, err)
 	}
 }
 

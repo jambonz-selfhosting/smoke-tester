@@ -14,7 +14,10 @@ import (
 	"github.com/jambonz-selfhosting/smoke-tester/internal/webhook"
 )
 
-const inworldSTTModel = "inworld/inworld-stt-1"
+const (
+	inworldSTTModel = "inworld/inworld-stt-1"
+	inworldTTSModel = "inworld-tts-2"
+)
 
 // requireInworld logs and reports false when the key is unset; callers return.
 func requireInworld(t *testing.T) bool {
