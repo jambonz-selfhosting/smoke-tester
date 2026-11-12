@@ -262,3 +262,12 @@ func (c *Client) CallTurns(ctx context.Context, callSID string) ([]CallTurn, err
 	err := c.Do(ctx, http.MethodGet, "/calls/"+callSID, nil, &out)
 	return out.Turns, err
 }
+
+// Publish makes the agent's current draft its live version.
+func (c *Client) Publish(ctx context.Context, id string) error {
+	a, err := c.agent(ctx, id)
+	if err != nil {
+		return err
+	}
+	return c.Do(ctx, http.MethodPost, "/agents/"+id+"/publish", map[string]any{"revision": a.Draft.Revision}, nil)
+}
