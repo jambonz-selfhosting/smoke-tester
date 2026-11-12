@@ -238,6 +238,12 @@ type Settings struct {
 	// the inworld tests pass without exercising it — see HasInworld.
 	InworldAPIKey string
 
+	// Optional — Cartesia, Fish Audio and Modulate API keys (agent emotion
+	// matrix). Unset = those cases pass without exercising the vendor.
+	CartesiaAPIKey  string
+	FishaudioAPIKey string
+	ModulateAPIKey  string
+
 	// Optional — Soniox API key (realtime TTS; the same key serves STT). Unset =
 	// the soniox tests pass without exercising it — see HasSoniox.
 	SonioxAPIKey string
@@ -520,6 +526,15 @@ func (s *Settings) HasHume() bool { return s.HumeAPIKey != "" }
 // Optional: when the key is unset those tests pass without exercising inworld.
 func (s *Settings) HasInworld() bool { return s.InworldAPIKey != "" }
 
+// HasCartesia reports whether the cartesia TTS cases can run.
+func (s *Settings) HasCartesia() bool { return s.CartesiaAPIKey != "" }
+
+// HasFishaudio reports whether the fishaudio TTS cases can run.
+func (s *Settings) HasFishaudio() bool { return s.FishaudioAPIKey != "" }
+
+// HasModulate reports whether the modulate STT cases can run.
+func (s *Settings) HasModulate() bool { return s.ModulateAPIKey != "" }
+
 // HasSoniox reports whether the soniox TTS tests can run.
 // Optional: when the key is unset those tests pass without exercising soniox.
 func (s *Settings) HasSoniox() bool { return s.SonioxAPIKey != "" }
@@ -698,6 +713,9 @@ func parse() (*Settings, error) {
 		HumeVoiceID:              firstNonEmpty(os.Getenv("HUME_VOICE_ID"), "Ava Song"),
 		InworldAPIKey:            os.Getenv("INWORLD_API_KEY"),
 		SonioxAPIKey:             os.Getenv("SONIOX_API_KEY"),
+		CartesiaAPIKey:           os.Getenv("CARTESIA_API_KEY"),
+		FishaudioAPIKey:          os.Getenv("FISHAUDIO_API_KEY"),
+		ModulateAPIKey:           os.Getenv("MODULATE_API_KEY"),
 		SaidwireAPIKey:           os.Getenv("SAIDWIRE_API_KEY"),
 		GptLiveAPIKey:            os.Getenv("GPTLIVE_API_KEY"),
 		StudioAPIURL:             strings.TrimRight(os.Getenv("STUDIO_API_URL"), "/"),
