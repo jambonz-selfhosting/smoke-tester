@@ -109,6 +109,7 @@ type agentVerbOpts struct {
 	LLMApiKey         string         // default cfg.DeepseekAPIKey when empty
 	STT               map[string]any // default deepgram when nil
 	TTS               map[string]any // default deepgram when nil
+	Emotion           map[string]any // agent emotion option; nil = not set
 }
 
 // buildAgentVerb builds the verb-map jambonz will run. Centralised here so
@@ -169,6 +170,9 @@ func buildAgentVerb(opts agentVerbOpts) map[string]any {
 	}
 	if opts.NoiseIsolation != "" {
 		verb["noiseIsolation"] = opts.NoiseIsolation
+	}
+	if opts.Emotion != nil {
+		verb["emotion"] = opts.Emotion
 	}
 	return verb
 }
