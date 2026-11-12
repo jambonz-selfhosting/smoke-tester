@@ -202,6 +202,10 @@ var (
 	spitchLabel string
 	spitchSID   string
 
+	// phonic TTS-only speech credential, provisioned only when PHONIC_API_KEY is set.
+	phonicLabel string
+	phonicSID   string
+
 	// kokoro TTS-only speech credential, provisioned only when KOKORO_API_URI is set.
 	kokoroLabel string
 	kokoroSID   string
@@ -607,6 +611,15 @@ func TestMain(m *testing.M) {
 	} else {
 		log.Printf("tests/verbs: SPITCH_API_KEY not set — spitch tests will pass without exercising spitch")
 	}
+	// phonic TTS-only speech credential — optional, same pattern as paxa.
+	if cfg.HasPhonic() {
+		if err := provisionPhonicCredential(); err != nil {
+			log.Fatalf("tests/verbs: phonic credential provisioning failed: %v", err)
+		}
+		log.Printf("tests/verbs: phonic credential label=%s sid=%s", phonicLabel, phonicSID)
+	} else {
+		log.Printf("tests/verbs: PHONIC_API_KEY not set — phonic tests will pass without exercising phonic")
+	}
 	// kokoro TTS-only speech credential — optional, same pattern as paxa.
 	if cfg.HasKokoro() {
 		if err := provisionKokoroCredential(); err != nil {
@@ -776,6 +789,7 @@ func TestMain(m *testing.M) {
 	teardownBlandCredential()
 	teardownSimplismartCredential()
 	teardownSpitchCredential()
+	teardownPhonicCredential()
 	teardownKokoroCredential()
 	teardownVakyamCredential()
 	teardownGroqCredential()
@@ -1745,6 +1759,36 @@ func teardownSpitchCredential() {
 	defer cancel()
 	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, spitchSID); err != nil {
 		log.Printf("tests/verbs: cleanup: delete spitch credential %s: %v", spitchSID, err)
+	}
+}
+
+// provisionPhonicCredential creates a TTS-only phonic speech credential
+// under the suite account (default host: no api_uri).
+func provisionPhonicCredential() error {
+	phonicLabel = provision.Name("phonic")
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	sid, err := client.CreateAccountSpeechCredential(ctx, suite.AccountSID, provision.SpeechCredentialCreate{
+		Vendor:    "phonic",
+		Label:     phonicLabel,
+		APIKey:    cfg.PhonicAPIKey,
+		UseForTTS: true,
+	})
+	if err != nil {
+		return err
+	}
+	phonicSID = sid
+	return nil
+}
+
+func teardownPhonicCredential() {
+	if phonicSID == "" {
+		return
+	}
+	ctx, cancel := context.WithTimeout(context.Background(), 15*time.Second)
+	defer cancel()
+	if err := client.DeleteAccountSpeechCredential(ctx, suite.AccountSID, phonicSID); err != nil {
+		log.Printf("tests/verbs: cleanup: delete phonic credential %s: %v", phonicSID, err)
 	}
 }
 

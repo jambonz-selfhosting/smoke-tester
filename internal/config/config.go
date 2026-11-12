@@ -202,6 +202,11 @@ type Settings struct {
 	SpitchAPIKey string
 	// Spitch voice; defaults to lina (English).
 	SpitchVoiceID string
+	// Optional — Phonic TTS API key. Unset = the phonic tests pass without
+	// exercising it — see HasPhonic.
+	PhonicAPIKey string
+	// Phonic voice; defaults to sabrina.
+	PhonicVoiceID string
 
 	// Optional — self-hosted Kokoro-FastAPI base URL (required by the vendor).
 	// Unset = the kokoro tests pass without exercising it — see HasKokoro.
@@ -491,6 +496,10 @@ func (s *Settings) HasSimplismart() bool { return s.SimplismartAPIKey != "" }
 // Optional: when the key is unset those tests pass without exercising spitch.
 func (s *Settings) HasSpitch() bool { return s.SpitchAPIKey != "" }
 
+// HasPhonic reports whether the phonic TTS tests can run.
+// Optional: when the key is unset those tests pass without exercising phonic.
+func (s *Settings) HasPhonic() bool { return s.PhonicAPIKey != "" }
+
 // HasKokoro reports whether the kokoro TTS tests can run. Gated on the
 // server URL: Kokoro is self-hosted and the api key is optional.
 func (s *Settings) HasKokoro() bool { return s.KokoroAPIURI != "" }
@@ -676,6 +685,8 @@ func parse() (*Settings, error) {
 		SimplismartVoiceID:       firstNonEmpty(os.Getenv("SIMPLISMART_VOICE_ID"), "tara"),
 		SpitchAPIKey:             os.Getenv("SPITCH_API_KEY"),
 		SpitchVoiceID:            firstNonEmpty(os.Getenv("SPITCH_VOICE_ID"), "lina"),
+		PhonicAPIKey:             os.Getenv("PHONIC_API_KEY"),
+		PhonicVoiceID:            firstNonEmpty(os.Getenv("PHONIC_VOICE_ID"), "sabrina"),
 		KokoroAPIURI:             os.Getenv("KOKORO_API_URI"),
 		KokoroAPIKey:             os.Getenv("KOKORO_API_KEY"),
 		KokoroVoiceID:            firstNonEmpty(os.Getenv("KOKORO_VOICE_ID"), "af_heart"),
