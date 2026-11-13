@@ -53,6 +53,9 @@ func s2sVendors() []s2sVendor {
 		{key: "qwen", credVendor: "qwen_s2s", model: env("QWEN_MODEL"),
 			cred: ifSet(env("QWEN_API_KEY") != "" && env("QWEN_HOST") != "",
 				map[string]any{"api_key": env("QWEN_API_KEY"), "host": env("QWEN_HOST")})},
+		{key: "kugel-fluid", credVendor: "kugelaudio_s2s", model: "fluid-1", voice: "973",
+			cred: ifSet(cfg.HasKugelaudio(), map[string]any{"api_key": cfg.KugelaudioAPIKey,
+				"region": firstSet(env("KUGELAUDIO_S2S_REGION"), "global")})},
 		// The model of an Azure OpenAI agent is the deployment name.
 		{key: "azure-openai", credVendor: "azure_openai_s2s", model: env("AZURE_OPENAI_REALTIME_DEPLOYMENT"),
 			cred: ifSet(env("AZURE_OPENAI_REALTIME_API_KEY") != "" && env("AZURE_OPENAI_REALTIME_HOST") != "",
