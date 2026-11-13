@@ -22,6 +22,7 @@ type s2sVendor struct {
 	credVendor   string
 	cred         func() map[string]any // nil: no key in .env, the vendor is not called
 	model, voice string                // empty: Studio's starting value for the vendor
+	delegate     string                // GPT-Live's delegation model
 }
 
 func ifSet(ok bool, body map[string]any) func() map[string]any {
@@ -53,6 +54,10 @@ func s2sVendors() []s2sVendor {
 		{key: "qwen", credVendor: "qwen_s2s", model: env("QWEN_MODEL"),
 			cred: ifSet(env("QWEN_API_KEY") != "" && env("QWEN_HOST") != "",
 				map[string]any{"api_key": env("QWEN_API_KEY"), "host": env("QWEN_HOST")})},
+		// KugelAudio Fluid speaks the GPT-Live API: a gptlive_s2s credential whose base URL is KugelAudio's.
+		{key: "kugel-fluid", credVendor: "gptlive_s2s", model: "fluid-1", voice: "973", delegate: "gpt-6.1-terra",
+			cred: ifSet(cfg.HasKugelaudio(), map[string]any{"api_key": cfg.KugelaudioAPIKey,
+				"api_url": firstSet(env("KUGELAUDIO_S2S_BASE_URL"), "https://api.kugelaudio.com/v1")})},
 		// The model of an Azure OpenAI agent is the deployment name.
 		{key: "azure-openai", credVendor: "azure_openai_s2s", model: env("AZURE_OPENAI_REALTIME_DEPLOYMENT"),
 			cred: ifSet(env("AZURE_OPENAI_REALTIME_API_KEY") != "" && env("AZURE_OPENAI_REALTIME_HOST") != "",
@@ -100,7 +105,7 @@ func newAgent(t *testing.T, ctx context.Context, v s2sVendor) (agentID string, d
 	})
 	name := "smoke " + provision.RunID() + " " + v.key
 	agentID, err = ws.CreateS2sAgent(ctx, name, studio.S2s{Vendor: v.credVendor, CredentialSID: credSID, Label: label,
-		Model: v.model, Voice: v.voice}, desk)
+		Model: v.model, Voice: v.voice, DelegateModel: v.delegate}, desk)
 	if agentID != "" {
 		t.Cleanup(func() {
 			cctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)

@@ -91,6 +91,7 @@ type S2s struct {
 	CredentialSID string
 	Label         string // the credential's label; empty for an unlabelled one
 	Model, Voice  string
+	DelegateModel string // GPT-Live: the model that runs tools; Studio refuses a test without it
 }
 
 // OrderDesk is what CreateS2sAgent puts in the draft besides the s2s settings.
@@ -171,6 +172,9 @@ func (c *Client) CreateS2sAgent(ctx context.Context, name string, s S2s, d Order
 	}
 	if s.Voice != "" {
 		ss["voice"] = s.Voice
+	}
+	if s.DelegateModel != "" {
+		ss["delegate_model"] = s.DelegateModel
 	}
 	err = c.Do(ctx, http.MethodPut, "/agents/"+id+"/draft", map[string]any{"revision": a.Draft.Revision, "config": cfg}, nil)
 	return id, err

@@ -7,6 +7,10 @@ One scenario per realtime voice API vendor, all on the same order-desk agent:
 - a transfer for billing to a number that never answers, so it returns to the agent;
 - the hangup tool.
 
+`kugel-fluid` is KugelAudio Fluid through a `gptlive_s2s` credential with KugelAudio's base URL. Studio records a
+GPT-Live tool call as a system row, not on the agent turn, so the order tool is checked by its "get_order_status ran"
+event instead of `tools_ok`; there is no `agent_hangup`, since Fluid sometimes says goodbye without the hangup tool.
+
 ## Every vendor, automatically
 
 ```bash
