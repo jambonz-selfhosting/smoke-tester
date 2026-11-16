@@ -153,11 +153,13 @@ func benchOneCall(t *testing.T, config, wav string, turn benchTurn) (float64, er
 	// moment TTS connects until its first utterance ends, which keeps krisp reset until then
 	overrides := benchTurnDetection(config)
 	if turn.Lang != "" {
-		stt := map[string]any{"vendor": "deepgram", "label": deepgramLabel, "language": turn.Lang}
-		if turn.Lang == "ar" { // jambonz's default deepgram model for ar ("base") is rejected
-			stt["deepgramOptions"] = map[string]any{"model": "nova-3"}
+		// name the model: jambonz falls back to deepgram "base" for languages it has no default for, which is rejected
+		model := "nova-2"
+		if turn.Lang == "ar" {
+			model = "nova-3"
 		}
-		overrides["stt"] = stt
+		overrides["stt"] = map[string]any{"vendor": "deepgram", "label": deepgramLabel, "language": turn.Lang,
+			"deepgramOptions": map[string]any{"model": model}}
 	}
 	scriptKrispAgent(sess, krispAgentVerb(sess, agentVerbOpts{SystemPrompt: benchPrompt, NoResponseTimeout: &off,
 		BargeIn: true, Greeting: true}, overrides))
