@@ -56,7 +56,39 @@ const benchPrompt = "You are a phone agent in an automated test. Start the call 
 // listening before calling the turn missed.
 const benchListenAfterEot = 6 * time.Second
 
+// Steps:
+//  1. load-bench
+//  2. one subtest per turn and config: greet, play the turn, measure the agent's first audio
 func TestBench_TurnDetection(t *testing.T) {
+	turns, configs, write := benchLoad(t, []string{"stt", "jambonz"}, "results.jsonl")
+	if turns == nil {
+		return
+	}
+	dir := os.Getenv("TT_BENCH_DIR")
+	// interleave configs per turn so time-of-day drift hits both alike
+	for _, turn := range turns {
+		for _, c := range configs {
+			turn, c := turn, c
+			t.Run(c+"/"+turn.Key, func(t *testing.T) {
+				t.Parallel()
+				r := benchResult{Config: c, Key: turn.Key, ID: turn.ID, Cohort: turn.Cohort, Lang: turn.Lang,
+					EotStart: turn.EotStart, Holds: turn.Holds}
+				onset, err := benchOneCall(t, c, filepath.Join(dir, "wav", turn.Key+".wav"), turn)
+				if err != nil {
+					r.Error = err.Error()
+				} else if onset >= 0 {
+					r.Onset = &onset
+				}
+				writeBench(write, r)
+			})
+		}
+	}
+}
+
+// benchLoad reads the bench manifest (TT_BENCH_DIR, TT_BENCH_LIMIT, TT_BENCH_KEYS),
+// the configs (TT_BENCH_CONFIGS) and opens the results file (TT_BENCH_OUT).
+// It returns nil turns when the bench is not configured.
+func benchLoad(t *testing.T, defConfigs []string, defOut string) ([]benchTurn, []string, func([]byte)) {
 	dir := os.Getenv("TT_BENCH_DIR")
 	if dir == "" {
 		t.Skip("TT_BENCH_DIR not set")
@@ -89,11 +121,11 @@ func TestBench_TurnDetection(t *testing.T) {
 	}
 	configs := strings.Split(os.Getenv("TT_BENCH_CONFIGS"), ",")
 	if configs[0] == "" {
-		configs = []string{"stt", "jambonz"}
+		configs = defConfigs
 	}
 	outPath := os.Getenv("TT_BENCH_OUT")
 	if outPath == "" {
-		outPath = filepath.Join(dir, "results.jsonl")
+		outPath = filepath.Join(dir, defOut)
 	}
 	out, err := os.OpenFile(outPath, os.O_CREATE|os.O_APPEND|os.O_WRONLY, 0o644)
 	if err != nil {
@@ -103,31 +135,16 @@ func TestBench_TurnDetection(t *testing.T) {
 	s.Logf("%d turns x %d configs -> %s", len(turns), len(configs), outPath)
 	s.Done()
 	var mu sync.Mutex
-	write := func(r benchResult) {
-		b, _ := json.Marshal(r)
+	return turns, configs, func(line []byte) {
 		mu.Lock()
 		defer mu.Unlock()
-		_, _ = out.Write(append(b, '\n'))
+		_, _ = out.Write(append(line, '\n'))
 	}
+}
 
-	// interleave configs per turn so time-of-day drift hits both alike
-	for _, turn := range turns {
-		for _, c := range configs {
-			turn, c := turn, c
-			t.Run(c+"/"+turn.Key, func(t *testing.T) {
-				t.Parallel()
-				r := benchResult{Config: c, Key: turn.Key, ID: turn.ID, Cohort: turn.Cohort, Lang: turn.Lang,
-					EotStart: turn.EotStart, Holds: turn.Holds}
-				onset, err := benchOneCall(t, c, filepath.Join(dir, "wav", turn.Key+".wav"), turn)
-				if err != nil {
-					r.Error = err.Error()
-				} else if onset >= 0 {
-					r.Onset = &onset
-				}
-				write(r)
-			})
-		}
-	}
+func writeBench(write func([]byte), r any) {
+	b, _ := json.Marshal(r)
+	write(b)
 }
 
 func benchTurnDetection(c string) map[string]any {
@@ -137,6 +154,20 @@ func benchTurnDetection(c string) map[string]any {
 	default:
 		return map[string]any{"turnDetection": c}
 	}
+}
+
+// benchSTT sets the recognizer for a non-English turn.
+func benchSTT(overrides map[string]any, lang string) {
+	if lang == "" {
+		return
+	}
+	// name the model: jambonz falls back to deepgram "base" for languages it has no default for, which is rejected
+	model := "nova-2"
+	if lang == "ar" {
+		model = "nova-3"
+	}
+	overrides["stt"] = map[string]any{"vendor": "deepgram", "label": deepgramLabel, "language": lang,
+		"deepgramOptions": map[string]any{"model": model}}
 }
 
 // benchOneCall plays one caller turn into a fresh agent call and returns
@@ -152,15 +183,7 @@ func benchOneCall(t *testing.T, config, wav string, turn benchTurn) (float64, er
 	// greeting first, as production agents run: mediajam reports the bot as speaking from the
 	// moment TTS connects until its first utterance ends, which keeps krisp reset until then
 	overrides := benchTurnDetection(config)
-	if turn.Lang != "" {
-		// name the model: jambonz falls back to deepgram "base" for languages it has no default for, which is rejected
-		model := "nova-2"
-		if turn.Lang == "ar" {
-			model = "nova-3"
-		}
-		overrides["stt"] = map[string]any{"vendor": "deepgram", "label": deepgramLabel, "language": turn.Lang,
-			"deepgramOptions": map[string]any{"model": model}}
-	}
+	benchSTT(overrides, turn.Lang)
 	scriptKrispAgent(sess, krispAgentVerb(sess, agentVerbOpts{SystemPrompt: benchPrompt, NoResponseTimeout: &off,
 		BargeIn: true, Greeting: true}, overrides))
 	call := placeWebhookCallTo(ctx, t, uas, sess, withTimeLimit(60))
