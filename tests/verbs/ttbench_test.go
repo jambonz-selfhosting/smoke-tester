@@ -7,7 +7,7 @@ package verbs
 // took to answer. Off unless TT_BENCH_DIR is set; results go to TT_BENCH_OUT.
 //
 //	TT_BENCH_DIR=<dir with manifest.json + wav/> TT_BENCH_OUT=bench.jsonl \
-//	TT_BENCH_CONFIGS=stt,jambonz [TT_BENCH_KEYS=000,001,...] \
+//	TT_BENCH_CONFIGS=stt,jambonz,jambonz+ip [TT_BENCH_KEYS=000,001,...] \
 //	go test -run TestBench_TurnDetection -parallel 4 ./tests/verbs/
 
 import (
@@ -147,13 +147,14 @@ func writeBench(write func([]byte), r any) {
 	write(b)
 }
 
+// benchTurnDetection maps a config to agent fields: a turnDetection value, or
+// "<vendor>+ip" for that vendor's turn detection with interruptPrediction barge-in.
 func benchTurnDetection(c string) map[string]any {
-	switch c {
-	case "stt":
-		return map[string]any{"turnDetection": "stt"}
-	default:
-		return map[string]any{"turnDetection": c}
+	if v, ok := strings.CutSuffix(c, "+ip"); ok {
+		return map[string]any{"turnDetection": v, "bargeIn": map[string]any{
+			"enable": true, "strategy": "interruptPrediction", "vendor": v}}
 	}
+	return map[string]any{"turnDetection": c}
 }
 
 // benchSTT sets the recognizer for a non-English turn.
