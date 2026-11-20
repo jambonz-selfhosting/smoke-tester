@@ -43,22 +43,6 @@ func TestFive9_Voicestream_ListenGetsAudio(t *testing.T) {
 	runFive9ListenTest(t, "sendonly")
 }
 
-// TestFive9_Voicestream_ReverseBlocked — same flow with a sendrecv offer, so
-// the SBC's feature-server -> Five9 block is observable at the caller.
-//
-// Steps:
-//   - script-listen
-//   - provision-application
-//   - invite-as-five9
-//   - send-speech
-//   - hangup-and-wait-ws-close
-//   - assert-ws-audio
-//   - assert-reverse-blocked
-func TestFive9_Voicestream_ReverseBlocked(t *testing.T) {
-	t.Parallel()
-	runFive9ListenTest(t, "sendrecv")
-}
-
 func runFive9ListenTest(t *testing.T, sdpMode string) {
 	t.Helper()
 	requireWebhook(t)
@@ -180,26 +164,6 @@ func runFive9ListenTest(t *testing.T, sdpMode string) {
 func TestMute_ParentLeg_Directional(t *testing.T) {
 	t.Parallel()
 	runMuteDirectionalTest(t, false)
-}
-
-// TestMute_ChildLeg_Directional — mute_status on the dial child leg is
-// handled by sbc-outbound: the callee must go unheard while still hearing the caller.
-//
-// Steps:
-//   - script-dial-to-callee
-//   - provision-application
-//   - invite-caller
-//   - resolve-call-sids
-//   - baseline-audio-both-ways
-//   - mute
-//   - assert-muted-leg-silenced
-//   - assert-muted-leg-still-hears
-//   - assert-dtmf-directional
-//   - unmute
-//   - assert-unmute-restores-audio
-func TestMute_ChildLeg_Directional(t *testing.T) {
-	t.Parallel()
-	runMuteDirectionalTest(t, true)
 }
 
 // Caller --INVITE--> SBC-inbound --> app [dial anchorMedia -> callee] --> SBC-outbound --> Callee

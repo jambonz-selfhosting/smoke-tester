@@ -66,13 +66,26 @@ See [.env.example](.env.example) for the full annotated template.
 ### Run the whole suite
 
 ```bash
-make test           # everything: REST + verbs + contract layer (~90s)
-make test-rest      # REST CRUD only (~22s)
-make test-verbs     # call-flow verb tests only (~80s)
-make test-sip       # SIP tests only
-make test-report    # write self-contained report.html
+make test-report    # suite: <=2 tests per feature, write report.html
+make full           # every test (suite + *_detail_test.go), write report.html
+make test           # suite, plain go test output
+make test-rest      # REST suite only
+make test-verbs     # verb suite only
+make test-verbs TAGS=detail   # every verb test
 make help           # all targets, current parallelism setting
 ```
+
+### Suite and detail tests
+
+Each feature has `<feature>_test.go` with at most 2 tests that show it works
+end to end, and `<feature>_detail_test.go` (`//go:build detail`) with the rest
+(options, languages, regressions). Add a new test to the detail file unless it
+is one of the feature's two best; no list to edit. Offline unit tests go in
+`*_unit_test.go` and always run. `make lint` enforces the layout.
+
+Raw `go test` and IDE run buttons skip detail tests silently (`[no tests to
+run]`): pass `-tags detail`, or set `"gopls": {"buildFlags": ["-tags=detail"]}`
+in your editor. The make targets for one test or one file add it for you. See [ADR-0017](docs/adr/0017-suite-and-detail-test-split.md).
 
 ### Run a single test
 

@@ -450,6 +450,14 @@ None.
 
 ## Session log (reverse-chronological)
 
+### 2026-11-20 — Suite/detail split: `make test-report` runs ≤2 tests per feature, `make full` runs all
+
+- **Why:** 533 tests made `make test-report` take 24+ min and spend vendor credit on per-feature detail.
+- **What:** each `<feature>_test.go` keeps ≤2 representative tests; the rest moved to `<feature>_detail_test.go` under `//go:build detail` (76 files split by a one-off go/ast script; bodies moved unchanged). Offline unit tests go in `*_unit_test.go`. `scripts/check-test-layout.sh` enforces the cap and tags (run by `make lint`/`test-report`/`full`). ADR-0017.
+- **Targets:** `make test-report` (suite, 196 tests), `make full` (all + report.html), `TAGS=detail` on `test`/`test-rest`/`test-verbs`. `make TestX`, `make file_test.go` and the release gate always build with `-tags detail`.
+- **Live run (jambonz.me, -parallel 4):** suite took 10m17s. 189 pass, 8 fail, 4 skip. Hume, Mistral and Camb TTS returned silence and Mistral STT returned an empty transcript, and all of these failed again when rerun one at a time: a persistent vendor/account problem, not yet diagnosed. Speechmatics passthrough and KugelAudio agent noise isolation passed on the serial rerun (load flakes).
+- **Gotcha:** raw `go test -run <detail test>` without `-tags detail` prints `[no tests to run]`, which looks like a pass.
+
 ### 2026-10-12 — `TestVerb_LLM_ElevenLabs_DTMF`: caller DTMF to an ElevenLabs agent
 
 - **Feature:** feature-server `feat/elevenlabs-dtmf` buffers caller digits behind `llmOptions.dtmf` and sends each entry as one `user_message` with `source_medium: "dtmf"`; `llm:update` now forwards `user_message`/`user_activity`/`contextual_update`.

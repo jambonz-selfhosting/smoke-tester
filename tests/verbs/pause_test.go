@@ -17,9 +17,6 @@ import (
 //  3. assert-duration-and-silence — duration ≈ N seconds, RMS is low (silent)
 func TestVerb_Pause_1s(t *testing.T) { runPauseTest(t, 1) }
 
-// TestVerb_Pause_3s — longer pause to be sure duration is actually honored.
-func TestVerb_Pause_3s(t *testing.T) { runPauseTest(t, 3) }
-
 func runPauseTest(t *testing.T, seconds int) {
 	t.Helper()
 	ctx := WithTimeout(t, time.Duration(seconds+20)*time.Second)

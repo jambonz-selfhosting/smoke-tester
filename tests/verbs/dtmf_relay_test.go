@@ -59,10 +59,6 @@ func requirePublicRTPAddress(t *testing.T) {
 	}
 }
 
-func TestVerb_Dial_DTMFRelay_AnchorMedia(t *testing.T) {
-	expectDTMFRelay(t, "dtmf-relay-anchored", []any{"anchorMedia", true})
-}
-
 // expectDTMFRelay bridges two UASes via `dial`, sends RFC 2833 from the
 // caller leg, and reports what the callee leg actually received.
 //
