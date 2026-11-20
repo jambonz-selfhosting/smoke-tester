@@ -5,6 +5,8 @@ import (
 	"os"
 	"path/filepath"
 	"testing"
+
+	"github.com/jambonz-selfhosting/smoke-tester/internal/wav"
 )
 
 // writePCM drops a raw LPCM fixture and returns its path.
@@ -43,8 +45,8 @@ func TestArchive_WritesPlayableWAV(t *testing.T) {
 	if string(blob[0:4]) != "RIFF" || string(blob[8:12]) != "WAVE" {
 		t.Fatalf("not a RIFF/WAVE header: % x", blob[:12])
 	}
-	if got := binary.LittleEndian.Uint32(blob[24:28]); got != sampleRate {
-		t.Errorf("sample rate = %d, want %d", got, sampleRate)
+	if got := binary.LittleEndian.Uint32(blob[24:28]); got != wav.SampleRate {
+		t.Errorf("sample rate = %d, want %d", got, wav.SampleRate)
 	}
 	if got := binary.LittleEndian.Uint32(blob[40:44]); got != uint32(len(pcm)) {
 		t.Errorf("data length = %d, want %d", got, len(pcm))

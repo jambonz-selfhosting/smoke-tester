@@ -1,0 +1,108 @@
+{
+  "$schema": "https://json-schema.org/draft/2020-12/schema",
+  "$id": "https://jambonz.org/schema/callbacks/llm-gptlive-event",
+  "$comment": "TODO: upstream — not in @jambonz/schema callbacks/. Shapes taken from live GPT-Live GA traffic (2026-09-30) plus mediajam's playout events.",
+  "title": "LLM gptlive eventHook payload",
+  "description": "A GPT-Live server event forwarded verbatim by the llm verb (vendor gptlive) to its eventHook, or an output_audio.playback_* event emitted by the media server.",
+  "type": "object",
+  "required": ["type"],
+  "properties": {
+    "type": {"type": "string", "minLength": 1}
+  },
+  "additionalProperties": true,
+  "allOf": [
+    {
+      "if": {"properties": {"type": {"enum": ["session.input_transcript.delta", "session.output_transcript.delta"]}}},
+      "then": {
+        "required": ["delta", "start_ms", "end_ms"],
+        "properties": {
+          "delta": {"type": "string"},
+          "start_ms": {"type": "integer", "minimum": 0},
+          "end_ms": {"type": "integer", "minimum": 0}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "session.started"}}},
+      "then": {
+        "required": ["session"],
+        "properties": {
+          "session": {
+            "type": "object",
+            "required": ["id", "model"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "model": {"type": "string", "minLength": 1}
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "output_audio.playback_stopped"}}},
+      "then": {
+        "required": ["completion_reason"],
+        "properties": {
+          "completion_reason": {"enum": ["interrupted", "playout_complete"]}
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "session.delegation.created"}}},
+      "then": {
+        "required": ["delegation"],
+        "properties": {
+          "delegation": {
+            "type": "object",
+            "required": ["id", "target"],
+            "properties": {
+              "id": {"type": "string", "minLength": 1},
+              "target": {"enum": ["client", "responses"]}
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "response.event"}}},
+      "then": {
+        "required": ["event"],
+        "properties": {
+          "delegation_id": {"type": "string"},
+          "event": {
+            "type": "object",
+            "required": ["type"],
+            "properties": {"type": {"type": "string", "minLength": 1}},
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "error"}}},
+      "then": {
+        "required": ["error"],
+        "properties": {
+          "error": {
+            "type": "object",
+            "required": ["message"],
+            "properties": {
+              "code": {"type": ["string", "null"]},
+              "message": {"type": "string"}
+            },
+            "additionalProperties": true
+          }
+        }
+      }
+    },
+    {
+      "if": {"properties": {"type": {"const": "session.closed"}}},
+      "then": {
+        "required": ["reason"],
+        "properties": {"reason": {"type": "string"}}
+      }
+    }
+  ]
+}

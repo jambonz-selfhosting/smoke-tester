@@ -1,0 +1,39 @@
+{
+  "name": "s2s-kugel-fluid",
+  "agent_id": "REPLACE_WITH_KUGEL_FLUID_AGENT_ID",
+  "direction": "inbound",
+  "language": "en",
+  "voice": "aura-2-thalia-en",
+  "turns": [
+    {
+      "say": "Hi, can you check the status of order 4 1 7 2 for me?"
+    },
+    {
+      "say": "Can you put me through to someone in billing?"
+    },
+    {
+      "say": "One more thing. Can you tell me how returns work, step by step?"
+    },
+    {
+      "say": "Sorry, actually, wait, never mind that.",
+      "wait_agent": false
+    },
+    {
+      "say": "Thanks, that answered it. That's all, goodbye."
+    }
+  ],
+  "max_sec": 180,
+  "tail_sec": 20,
+  "expect": {
+    "caller_turns": 2,
+    "latency_turns": 2,
+    "events": [
+      "(?i)transfer",
+      "get_order_status ran"
+    ],
+    "heard": [
+      "(?i)shipped|deliver"
+    ],
+    "interrupted": true
+  }
+}

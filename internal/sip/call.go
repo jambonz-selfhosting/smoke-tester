@@ -17,6 +17,8 @@ import (
 	"github.com/emiago/diago/audio"
 	"github.com/emiago/diago/media"
 	"github.com/emiago/sipgo/sip"
+
+	"github.com/jambonz-selfhosting/smoke-tester/internal/wav"
 )
 
 // Call is the harness-side handle for a single call leg. Both UAS (inbound)
@@ -138,7 +140,8 @@ func newOutboundCall(d *diago.DialogClientSession, owner string) *Call {
 
 func (c *Call) setState(s State, reason string) {
 	c.mu.Lock()
-	if s == c.state {
+	// Ended is terminal: a BYE can land while Answer() still waits for the ACK.
+	if s == c.state || c.state == StateEnded {
 		c.mu.Unlock()
 		return
 	}
@@ -747,6 +750,32 @@ func (c *Call) AnsweredStatus() int {
 	return 0
 }
 
+// AnswerWithoutTelephoneEvent answers an inbound call offering PCMU only, so
+// the far end sees a leg that cannot carry RFC 2833 and must fall back to
+// inband tones. Real endpoints of that kind are common (older gateways, some
+// WebRTC bridges) and they are the half of the DTMF matrix a telephone-event
+// capable UAS cannot exercise.
+func (c *Call) AnswerWithoutTelephoneEvent() error {
+	if s := c.State(); s == StateAnswered || s == StateEnded {
+		return invalidState("AnswerWithoutTelephoneEvent", s, StateInit, StateTrying, StateRinging)
+	}
+	if c.direction != Inbound {
+		return fmt.Errorf("AnswerWithoutTelephoneEvent: only valid on an inbound call")
+	}
+	if err := c.in.AnswerOptions(diago.AnswerOptions{
+		Codecs: []media.Codec{media.CodecAudioUlaw},
+	}); err != nil {
+		return fmt.Errorf("AnswerWithoutTelephoneEvent: %w", err)
+	}
+	c.setState(StateAnswered, "")
+	m := diago.MediaProps{}
+	_, _ = c.in.AudioReader(diago.WithAudioReaderMediaProps(&m))
+	c.mediaMu.Lock()
+	c.codec = m.Codec.Name
+	c.mediaMu.Unlock()
+	return nil
+}
+
 // AwaitReceivedRequest polls the recorded-received-messages slice every
 // 200ms (under the same mutex the other recording accessors use) until a
 // recorded message matches one of `methods`, or ctx is cancelled/expires.
@@ -1044,6 +1073,24 @@ func (c *Call) SendDTMFWithDuration(digits string, perTone time.Duration) error 
 		return fmt.Errorf("SendDTMF: no RTP packet writer")
 	}
 
+	// Stop the silence loop, exactly as SendWAV does, and only once the call is
+	// known to be sendable. Both write to the same diago RTPPacketWriter, whose
+	// WriteSamples takes only an RLock while mutating the shared packet and
+	// nextTimestamp — a concurrent silence frame lands between a digit's
+	// packets and advances the timestamp the whole event is supposed to share.
+	// On the wire that turned 16 digits into 96 single-packet events, nothing
+	// like what a real phone sends.
+	//
+	// The loop does not come back: like SendWAV, this leaves the leg quiet
+	// afterwards. Call SendSilence again if the test needs outbound RTP to keep
+	// flowing (NAT bindings are already latched by the digits themselves).
+	c.mediaMu.Lock()
+	if c.silenceCancel != nil {
+		c.silenceCancel()
+		c.silenceCancel = nil
+	}
+	c.mediaMu.Unlock()
+
 	const (
 		sampleRate   = 8000
 		samplesPer20 = 160 // 20ms @ 8kHz
@@ -1193,59 +1240,7 @@ func (c *Call) SendWAV(path string) error {
 // PCM / 1 channel / 8000 Hz / 16-bit — telephony tests shouldn't be
 // silently resampling or down-mixing.
 func readTelephonyWAV(path string) ([]byte, error) {
-	blob, err := os.ReadFile(path)
-	if err != nil {
-		return nil, err
-	}
-	if len(blob) < 44 || string(blob[0:4]) != "RIFF" || string(blob[8:12]) != "WAVE" {
-		return nil, errors.New("not a RIFF/WAVE file")
-	}
-	// Walk the sub-chunks: find fmt (validate) + data (extract payload).
-	var (
-		haveFmt     bool
-		numChannels uint16
-		sampleRate  uint32
-		bitsPer     uint16
-		data        []byte
-	)
-	i := 12
-	for i+8 <= len(blob) {
-		id := string(blob[i : i+4])
-		size := int(binary.LittleEndian.Uint32(blob[i+4 : i+8]))
-		body := blob[i+8 : i+8+size]
-		switch id {
-		case "fmt ":
-			if size < 16 {
-				return nil, fmt.Errorf("fmt chunk too small (%d bytes)", size)
-			}
-			format := binary.LittleEndian.Uint16(body[0:2])
-			if format != 1 {
-				return nil, fmt.Errorf("WAV format %d not PCM", format)
-			}
-			numChannels = binary.LittleEndian.Uint16(body[2:4])
-			sampleRate = binary.LittleEndian.Uint32(body[4:8])
-			bitsPer = binary.LittleEndian.Uint16(body[14:16])
-			haveFmt = true
-		case "data":
-			data = body
-		}
-		i += 8 + size
-		// RIFF chunks pad to even length.
-		if size%2 == 1 {
-			i++
-		}
-	}
-	if !haveFmt {
-		return nil, errors.New("fmt chunk not found")
-	}
-	if data == nil {
-		return nil, errors.New("data chunk not found")
-	}
-	if numChannels != 1 || sampleRate != 8000 || bitsPer != 16 {
-		return nil, fmt.Errorf("WAV must be mono 8000 Hz 16-bit; got %d ch / %d Hz / %d-bit",
-			numChannels, sampleRate, bitsPer)
-	}
-	return data, nil
+	return wav.Read(path)
 }
 
 // SendSilence starts sending 20 ms PCMU silence frames (50 Hz). Needed for

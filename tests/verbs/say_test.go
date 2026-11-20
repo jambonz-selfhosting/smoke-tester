@@ -222,6 +222,12 @@ func TestVerb_Say_Stream_Murf(t *testing.T) {
 //  5. assert-transcript — Deepgram transcript contains the spoken words
 func runStreamingSay(t *testing.T, tag string, synth map[string]any) {
 	t.Helper()
+	runStreamingSayMax(t, tag, synth, 9*time.Second)
+}
+
+// runStreamingSayMax is runStreamingSay for a vendor whose normal first-audio latency needs more headroom.
+func runStreamingSayMax(t *testing.T, tag string, synth map[string]any, maxDur time.Duration) {
+	t.Helper()
 	ctx := WithTimeout(t, 30*time.Second)
 	uas := claimUAS(t, ctx)
 	_, sess := claimSession(t)
@@ -248,8 +254,8 @@ func runStreamingSay(t *testing.T, tag string, synth map[string]any) {
 	s.Done()
 
 	s = Step(t, "assert-audio-duration")
-	// ~2s spoken + ~1.5s streaming-TTS startup overhead; 9s headroom.
-	AssertAudioDuration(s, call, 1*time.Second, 9*time.Second, tag)
+	// ~2s spoken + ~1.5s streaming-TTS startup overhead
+	AssertAudioDuration(s, call, 1*time.Second, maxDur, tag)
 	s.Done()
 
 	if wav != "" {

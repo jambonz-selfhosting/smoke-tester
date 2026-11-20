@@ -39,16 +39,12 @@ func TestVerb_Deepgram_S2S_Basic(t *testing.T) {
 	t.Skip("deepgram_s2s needs a Deepgram AGENT credential (not our DG STT key) (Tier 5)")
 }
 
-// elevenlabs_s2s — ElevenLabs model shortcut. Needs ELEVENLABS credential.
-func TestVerb_ElevenLabs_S2S_Basic(t *testing.T) {
-	t.Skip("elevenlabs_s2s needs an ElevenLabs credential (Tier 5)")
-}
+// elevenlabs_s2s — the llm verb's elevenlabs path is covered for real by
+// TestVerb_LLM_ElevenLabs_DTMF in elevenlabs_llm_s2s_test.go, gated on
+// ELEVENLABS_API_KEY.
 
-// google_s2s — Google model shortcut. Needs a Google GenAI/Gemini
-// credential (distinct from Google TTS/STT).
-func TestVerb_Google_S2S_Basic(t *testing.T) {
-	t.Skip("google_s2s needs a Google GenAI/Gemini credential (Tier 5)")
-}
+// google_s2s — covered for real by TestVerb_LLM_Google_ToolHook in
+// google_llm_s2s_test.go, gated on GEMINI_API_KEY.
 
 // ultravox_s2s — Ultravox model shortcut. Needs ULTRAVOX credential.
 func TestVerb_Ultravox_S2S_Basic(t *testing.T) {
