@@ -1,3 +1,5 @@
+//go:build detail
+
 package verbs
 
 // Multi-turn variant of TestBench_TurnDetection: several eot-bench caller
@@ -8,7 +10,7 @@ package verbs
 //
 //	TT_BENCH_DIR=<dir> TT_BENCH_OUT=multi.jsonl TT_BENCH_CONFIGS=krisp,jambonz \
 //	TT_BENCH_MULTI=4 [TT_BENCH_BARGE=1] [TT_BENCH_KEYS=...] \
-//	go test -run '^TestBench_TurnDetectionMulti$' -parallel 2 ./tests/verbs/
+//	go test -tags detail -run '^TestBench_TurnDetectionMulti$' -parallel 2 ./tests/verbs/
 
 import (
 	"context"

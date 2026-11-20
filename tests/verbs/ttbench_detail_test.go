@@ -1,3 +1,5 @@
+//go:build detail
+
 package verbs
 
 // End-to-end turn-detection benchmark: real eot-bench caller turns streamed
@@ -8,7 +10,7 @@ package verbs
 //
 //	TT_BENCH_DIR=<dir with manifest.json + wav/> TT_BENCH_OUT=bench.jsonl \
 //	TT_BENCH_CONFIGS=stt,jambonz,jambonz+ip [TT_BENCH_KEYS=000,001,...] \
-//	go test -run TestBench_TurnDetection -parallel 4 ./tests/verbs/
+//	go test -tags detail -run TestBench_TurnDetection -parallel 4 ./tests/verbs/
 
 import (
 	"context"

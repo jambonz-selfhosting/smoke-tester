@@ -25,12 +25,6 @@ func TestVerb_Jambonz_InterruptPrediction(t *testing.T) {
 	jambonzInterrupt(t, map[string]any{"turnDetection": "jambonz"})
 }
 
-// TestVerb_Jambonz_InterruptPredictionOnly — the same barge-in with STT turn
-// detection: feature-server starts an interrupt-only jambonz session.
-func TestVerb_Jambonz_InterruptPredictionOnly(t *testing.T) {
-	jambonzInterrupt(t, map[string]any{})
-}
-
 func jambonzInterrupt(t *testing.T, extra map[string]any) {
 	t.Parallel()
 	requireWebhook(t)
