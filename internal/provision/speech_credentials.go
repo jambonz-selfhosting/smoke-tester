@@ -40,6 +40,9 @@ type SpeechCredentialCreate struct {
 	// API: a gemini-* model routes recognition to the Gemini Live API
 	// instead of Cloud Speech-to-Text.
 	STTModelID string `json:"stt_model_id,omitempty"`
+	// SpeechModel is the default STT model for vendors that store it as
+	// speech_model (assemblyai).
+	SpeechModel string `json:"speech_model,omitempty"`
 	// APIURI is the vendor's API base URL where it has regional hosts
 	// (gradium: https://eu.api.gradium.ai).
 	APIURI string `json:"api_uri,omitempty"`
