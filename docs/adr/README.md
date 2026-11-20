@@ -61,6 +61,7 @@ Once an ADR is Accepted, **do not edit its decision body.** If the decision chan
 | 0014 | [Symmetric RTP / media latch — no `PUBLIC_IP` required for UAC](0014-symmetric-rtp-media-latch.md) | Accepted |
 | 0015 | [Contract-test every jambonz response against the canonical spec](0015-contract-testing.md) | Accepted |
 | 0016 | [Per-leg call recording as playable WAV, env-gated](0016-per-leg-call-recording.md) | Accepted |
+| 0017 | [Split tests into a suite and a detail set with a build tag](0017-suite-and-detail-test-split.md) | Accepted |
 
 ## References
 

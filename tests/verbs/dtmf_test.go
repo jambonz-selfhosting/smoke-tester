@@ -29,9 +29,6 @@ func TestVerb_Dtmf_SingleDigit(t *testing.T) { expectDTMF(t, "5", "5", "dtmf-sin
 // TestVerb_Dtmf_MultiDigit — sends "1234"; the receiver should observe "1234".
 func TestVerb_Dtmf_MultiDigit(t *testing.T) { expectDTMF(t, "1234", "1234", "dtmf-multi", 5) }
 
-// TestVerb_Dtmf_Symbols — non-numeric digits "*#0".
-func TestVerb_Dtmf_Symbols(t *testing.T) { expectDTMF(t, "*#0", "*#0", "dtmf-symbols", 3) }
-
 // expectDTMF dials, sends the given digits via the dtmf verb, and asserts
 // the receiver observed at least the expected sequence.
 //

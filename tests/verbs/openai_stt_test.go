@@ -61,12 +61,6 @@ func TestVerb_Gather_Speech_OpenAI_LiveTranscribe(t *testing.T) {
 	gatherWithOpenaiRecognizer(t, liveTranscribeRecognizer)
 }
 
-// Same flow on gpt-4o-transcribe, which endpoints server-side: pins that adding
-// the client-endpointed family did not disturb it.
-func TestVerb_Gather_Speech_OpenAI_ServerVad(t *testing.T) {
-	gatherWithOpenaiRecognizer(t, serverEndpointedRecognizer)
-}
-
 func gatherWithOpenaiRecognizer(t *testing.T, buildRecognizer func() map[string]any) {
 	t.Helper()
 	if !cfg.HasOpenAI() || openaiLabel == "" {

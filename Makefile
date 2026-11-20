@@ -1,4 +1,4 @@
-.PHONY: help build test test-rest test-sip test-verbs test-release-gate test-report test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio test-studio list-studio lint clean deps
+.PHONY: help build test test-rest test-sip test-verbs test-release-gate test-report full check-test-layout test-drachtio test-drachtio-uas test-drachtio-uac test-drachtio-uac-keepalive test-drachtio-none list-drachtio test-studio list-studio lint clean deps
 
 # Parallelism: default to min(NumCPU, 4). Go's `go test -parallel N`
 # controls how many t.Parallel() tests run concurrently within a package.
@@ -36,7 +36,10 @@ help:
 	@echo
 	@echo "  make deps         # go mod tidy"
 	@echo "  make build        # compile all packages"
-	@echo "  make test         # go test ./...  (parallel=$(PARALLEL))"
+	@echo "  make test-report  # suite: <=2 tests per feature, write report.html"
+	@echo "  make full         # every test incl. *_detail_test.go, write report.html"
+	@echo "  make test         # suite only, plain go test output (parallel=$(PARALLEL))"
+	@echo "                    # add TAGS=detail to test/test-rest/test-verbs for every test"
 	@echo "  make test-rest    # Tier 1/2 REST tests only"
 	@echo "  make test-sip     # Tier 3+ SIP tests only"
 	@echo "  make test-verbs   # per-verb tests (outbound calls via app_json)"
@@ -44,7 +47,6 @@ help:
 	@echo "                    # run a single test by name (anchored ^NAME$$)"
 	@echo "  make builtin_hangup_test.go"
 	@echo "                    # run every TestXxx defined in one _test.go file"
-	@echo "  make test-report  # run all tests, write self-contained report.html"
 	@echo "  make test-drachtio"
 	@echo "                    # run-all: every drachtio test (drachtio build tag)"
 	@echo "                    # NOTE: the generic 'make Test%' pattern rule does"
@@ -72,7 +74,7 @@ help:
 	@echo "  make test-studio RUN='^TestStudio_S2S$$/xai'"
 	@echo "                    # one vendor; RUN is a regexp"
 	@echo "  make list-studio   # list the Studio tests"
-	@echo "  make lint         # go vet ./..."
+	@echo "  make lint         # layout check + go vet (suite and detail builds)"
 	@echo "  make clean        # remove build artifacts"
 	@echo
 	@echo "Override parallelism: make test PARALLEL=4"
@@ -90,6 +92,10 @@ build:
 # the non-test packages compile; here we only want to run real tests.
 TEST_PACKAGES := ./tests/... ./internal/contract/... ./internal/provision/...
 
+# Suite by default; TAGS=detail adds *_detail_test.go (ADR-0017).
+TAGS ?=
+TAGS_FLAG = $(if $(TAGS),-tags $(TAGS))
+
 # Per-package timeouts. Sized to ~2× the observed parallel runtime, so
 # one wedged test can hang past its in-test watchdog without the suite
 # binary getting nuked at Go's 10-minute alarm. The per-test
@@ -106,25 +112,25 @@ TEST_PACKAGES := ./tests/... ./internal/contract/... ./internal/provision/...
 # TIMEOUT, e.g.:  make test-verbs TIMEOUT=600s
 TIMEOUT ?= 300s
 TIMEOUT_VERBS ?= $(TIMEOUT)
-# test-report runs the WHOLE suite (~320 tests and growing) in one go test
-# invocation, so it needs a far larger budget than any single package: at
-# -parallel 4 the full suite is ~24 minutes wall-clock. When the go-test
+# test-report and full run every package in one go test invocation, so they
+# need a far larger budget than any single package: at -parallel 4 `make full`
+# (~530 tests) takes well over 20 minutes wall-clock. When the go-test
 # timeout fires mid-run it kills every in-flight test, which reads as a
 # mass failure — if report.html shows dozens of tests cut off mid-step,
 # raise this before suspecting the cluster.
 TIMEOUT_REPORT ?= 2400s
 
 test:
-	go test -count=1 -timeout $(TIMEOUT) -parallel $(PARALLEL) $(TEST_PACKAGES)
+	go test $(TAGS_FLAG) -count=1 -timeout $(TIMEOUT) -parallel $(PARALLEL) $(TEST_PACKAGES)
 
 test-rest:
-	go test -count=1 -timeout 120s -parallel $(PARALLEL) ./tests/rest/...
+	go test $(TAGS_FLAG) -count=1 -timeout 120s -parallel $(PARALLEL) ./tests/rest/...
 
 test-sip:
 	go test -count=1 -timeout 180s -parallel $(PARALLEL) ./tests/sip/...
 
 test-verbs:
-	go test -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) ./tests/verbs/...
+	go test $(TAGS_FLAG) -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) ./tests/verbs/...
 
 # Release-gate subset: platform-path tests with DETERMINISTIC pass
 # conditions, for smoke testing a freshly built image/deployment (the fatp
@@ -194,12 +200,12 @@ release_gate_pattern = $(shell echo "$(strip $(RELEASE_GATE_VERBS))" | tr ' ' '|
 report_only_pattern  = $(shell echo "$(strip $(RELEASE_GATE_REPORT_ONLY))" | tr ' ' '|')
 
 test-release-gate:
-	go test -count=1 -timeout 120s -parallel $(PARALLEL) ./tests/rest/...
-	go test -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) \
+	go test -tags detail -count=1 -timeout 120s -parallel $(PARALLEL) ./tests/rest/...
+	go test -tags detail -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) \
 		-run "^($(release_gate_pattern))$$" ./tests/verbs/...
 	@echo
 	@echo "=== REPORT-ONLY (known-flaky; does NOT gate the release) ==="
-	@go test -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) \
+	@go test -tags detail -count=1 -timeout $(TIMEOUT_VERBS) -parallel $(PARALLEL) \
 		-run "^($(report_only_pattern))$$" ./tests/verbs/... \
 		&& echo "report-only: PASS" \
 		|| echo "report-only: FAIL — see above. Not blocking; see RELEASE_GATE_REPORT_ONLY in the Makefile."
@@ -217,7 +223,7 @@ Test%:
 	pkg=$$(grep -rl "func $$name(" --include='*_test.go' tests | head -1 | xargs -I{} dirname {}); \
 	test -n "$$pkg" || { echo "test $$name not found"; exit 1; }; \
 	echo "running $$name in ./$$pkg/"; \
-	go test -count=1 -timeout 300s -v -run "^$$name$$" "./$$pkg/"
+	go test -tags detail -count=1 -timeout 300s -v -run "^$$name$$" "./$$pkg/"
 
 # Run every test defined in ONE _test.go file by typing the file as the goal:
 #
@@ -246,7 +252,7 @@ Test%:
 	pattern=$$(echo "$$tests" | paste -sd '|' -); \
 	echo "running $$(echo "$$tests" | wc -l | tr -d ' ') test(s) from $$file in ./$$pkg/"; \
 	echo "  -run '^($$pattern)$$'"; \
-	go test -count=1 -timeout 300s -v -parallel $(PARALLEL) -run "^($$pattern)$$" "./$$pkg/"
+	go test -tags detail -count=1 -timeout 300s -v -parallel $(PARALLEL) -run "^($$pattern)$$" "./$$pkg/"
 
 # RFC 4028 session-timer tests, exercised against a live sbc-inbound
 # (drachtio). Long-running (~90-120s per test), so they are EXCLUDED from
@@ -305,19 +311,25 @@ test-studio:
 list-studio:
 	go test -tags studio -list '.*' ./tests/studio/
 
-test-report:
+check-test-layout:
+	@scripts/check-test-layout.sh
+
+# test-report runs the suite; full adds every *_detail_test.go. Both write report.html.
+full: REPORT_TAGS := -tags detail
+test-report full: check-test-layout
 	@# `go test -json` streams NDJSON test events; cmd/testreport renders
 	@# them into a self-contained HTML file. The two steps are separated on
 	@# purpose: a red suite must still produce a report (hence `|| true` on
 	@# the test run), but a broken renderer must NOT — piping them together
 	@# hid a missing cmd/testreport behind a 0-byte report.html and an echo
 	@# claiming success.
-	go test -json -count=1 -timeout $(TIMEOUT_REPORT) -parallel $(PARALLEL) $(TEST_PACKAGES) > report.ndjson || true
+	go test $(REPORT_TAGS) -json -count=1 -timeout $(TIMEOUT_REPORT) -parallel $(PARALLEL) $(TEST_PACKAGES) > report.ndjson || true
 	go run ./cmd/testreport < report.ndjson > report.html
 	@echo "wrote report.html (open it in your browser)"
 
-lint:
+lint: check-test-layout
 	go vet ./...
+	go vet -tags detail ./tests/...
 
 clean:
 	rm -rf bin/ coverage.out report.xml report.html report.ndjson

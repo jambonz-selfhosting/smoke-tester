@@ -26,6 +26,7 @@ recordings/
 coverage.out
 report.xml
 report.html
+report.ndjson
 
 # generated binaries. Anchored: an unanchored `testreport` also matches the
 # cmd/testreport SOURCE directory, which is how that tool stayed uncommitted

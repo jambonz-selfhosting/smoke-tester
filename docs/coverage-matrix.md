@@ -6,6 +6,7 @@
 
 - **Tier 1 → Tier 7** organises work from broad-but-shallow to narrow-but-deep.
 - Each row has two statuses: **Feature** (does the harness exercise it?) and **Contract** (do we validate its JSON Schema? see [ADR-0015](adr/0015-contract-testing.md)).
+- Test files are split per [ADR-0017](adr/0017-suite-and-detail-test-split.md): a row's `<feature>_test.go` tests run in `make test-report`, its `<feature>_detail_test.go` tests only in `make full`. A ☑ means the feature is covered by `make full`.
 - Status values: ☐ not started · ◐ partial · ☑ done · ⊘ deliberately out of scope for v1.
 - **Schema source** indicates where the JSON Schema comes from: `fern` (authoritative, in `jambonz-fern-config`), `local` (hand-rolled in `smoke-tester/schemas/`, with `TODO: upstream` marker), or `missing` (gap; blocks the row from contract ☑).
 
