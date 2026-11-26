@@ -88,6 +88,10 @@ type Settings struct {
 	// (AIC_SDK_LICENSE on mediajam). Unset = aicoustics tests skip.
 	AicousticsEnabled bool
 
+	// Optional — set when the media server has the jambonz noise-isolation
+	// model installed. Unset = jambonz noise tests skip.
+	JambonzNcEnabled bool
+
 	// Optional — AssemblyAI API key for the TTS tests. Unset = they skip.
 	AssemblyaiAPIKey string
 
@@ -409,6 +413,9 @@ func (s *Settings) HasKugelaudio() bool { return s.KugelaudioAPIKey != "" }
 
 // HasAicoustics reports whether the media server can run ai-coustics noise isolation.
 func (s *Settings) HasAicoustics() bool { return s.AicousticsEnabled }
+
+// HasJambonzNc reports whether the media server has the jambonz noise-isolation model installed.
+func (s *Settings) HasJambonzNc() bool { return s.JambonzNcEnabled }
 
 // HasAssemblyai reports whether the AssemblyAI TTS tests can run.
 func (s *Settings) HasAssemblyai() bool { return s.AssemblyaiAPIKey != "" }
@@ -823,6 +830,14 @@ func parse() (*Settings, error) {
 			return nil, fmt.Errorf("AICOUSTICS_ENABLED must be true/false: %w", err)
 		}
 		s.AicousticsEnabled = b
+	}
+
+	if v := os.Getenv("JAMBONZ_NC_ENABLED"); v != "" {
+		b, err := strconv.ParseBool(v)
+		if err != nil {
+			return nil, fmt.Errorf("JAMBONZ_NC_ENABLED must be true/false: %w", err)
+		}
+		s.JambonzNcEnabled = b
 	}
 
 	if v := os.Getenv("JAMBONZ_ALLOW_SP_POLICY_CHANGES"); v != "" {
