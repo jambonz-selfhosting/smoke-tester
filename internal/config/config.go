@@ -87,7 +87,10 @@ type Settings struct {
 	// Optional — set when the media server has an ai-coustics license
 	// (AIC_SDK_LICENSE on mediajam). Unset = aicoustics tests skip.
 	AicousticsEnabled bool
-	JambonzNcEnabled  bool
+
+	// Optional — set when the media server has the jambonz noise-isolation
+	// model installed. Unset = jambonz noise tests skip.
+	JambonzNcEnabled bool
 
 	// Optional — AssemblyAI API key for the TTS tests. Unset = they skip.
 	AssemblyaiAPIKey string

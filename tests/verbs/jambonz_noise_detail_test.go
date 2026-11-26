@@ -22,6 +22,7 @@ import (
 // JAMBONZ_NC_LISTEN_VENDOR another vendor.
 //
 // Steps:
+//   - setup
 //   - <name>:fork-noisy-prompt (per clip)
 //   - <name>:save-pair (per clip)
 func TestVerb_NoiseIsolation_Jambonz_ListenPairs(t *testing.T) {
@@ -32,11 +33,13 @@ func TestVerb_NoiseIsolation_Jambonz_ListenPairs(t *testing.T) {
 	}
 	clips, _ := filepath.Glob(filepath.Join(in, "*.wav"))
 	sort.Strings(clips)
+	ctx := WithTimeout(t, time.Duration(len(clips)+1)*40*time.Second)
+	s := Step(t, "setup")
 	if len(clips) == 0 {
-		t.Fatalf("no WAVs in %s", in)
+		s.Fatalf("no WAVs in %s", in)
 	}
 	if err := os.MkdirAll(out, 0o755); err != nil {
-		t.Fatal(err)
+		s.Fatal(err)
 	}
 	vendor := "jambonz"
 	if v := os.Getenv("JAMBONZ_NC_LISTEN_VENDOR"); v != "" {
@@ -49,11 +52,11 @@ func TestVerb_NoiseIsolation_Jambonz_ListenPairs(t *testing.T) {
 	if l := os.Getenv("JAMBONZ_NC_LISTEN_LEVEL"); l != "" {
 		lv, err := strconv.Atoi(l)
 		if err != nil {
-			t.Fatalf("JAMBONZ_NC_LISTEN_LEVEL: %v", err)
+			s.Fatalf("JAMBONZ_NC_LISTEN_LEVEL: %v", err)
 		}
 		noise["level"] = lv
 	}
-	ctx := WithTimeout(t, time.Duration(len(clips))*40*time.Second)
+	s.Done()
 	for _, clip := range clips {
 		name := strings.TrimSuffix(filepath.Base(clip), ".wav")
 		f := forkNoisyPrompt(t, ctx, name, clip, noise)
@@ -88,6 +91,9 @@ func alignedFork(f forkResult, n int) []int16 {
 	}
 	start := len(all) - int(last.Sub(f.sent)*wav.SampleRate/time.Second)
 	out := make([]int16, n)
+	if -start >= n { // the fork carried less audio than the time elapsed
+		return out
+	}
 	if start < 0 {
 		copy(out[-start:], all)
 	} else if start < len(all) {

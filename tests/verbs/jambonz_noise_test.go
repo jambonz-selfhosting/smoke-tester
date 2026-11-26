@@ -7,8 +7,11 @@ import (
 	"time"
 )
 
-// level 100 keeps 30% of each bin at minimum (about 10 dB), so white noise drops well below this
+// even a model shipped with a 0.3 default floor drops white noise well below this
 const maxJambonzNcRMSRatio = 0.6
+
+// an uninstalled model must leave the lead as loud as the control call
+const minBadModelRMSRatio = 0.9
 
 func requireJambonzNc(t *testing.T) {
 	t.Helper()
@@ -44,8 +47,11 @@ func TestVerb_NoiseIsolation_Jambonz_Listen(t *testing.T) {
 	}
 	leadLoudShare(s, "jambonz", filtered.msgs, filtered.sent, np)
 	cRMS, fRMS := leadRMS(control.msgs, control.sent, np), leadRMS(filtered.msgs, filtered.sent, np)
+	if cRMS == 0 {
+		s.Fatalf("control lead RMS is 0: the control fork carried no lead audio")
+	}
 	s.Logf("lead RMS control=%.0f jambonz=%.0f ratio=%.2f", cRMS, fRMS, fRMS/cRMS)
-	if cRMS == 0 || fRMS/cRMS > maxJambonzNcRMSRatio {
+	if fRMS/cRMS > maxJambonzNcRMSRatio {
 		s.Errorf("jambonz lead RMS ratio %.2f (want <= %.2f): the model did not run", fRMS/cRMS, maxJambonzNcRMSRatio)
 	}
 	s.Done()
@@ -63,7 +69,8 @@ func TestVerb_NoiseIsolation_Jambonz_Listen(t *testing.T) {
 }
 
 // TestVerb_NoiseIsolation_Jambonz_LevelAndBadModel — level 50 mixes back more of the input than
-// the default, and a model name that is not installed leaves the call unfiltered but working.
+// level 100 while level 100 still keeps the speech, and a model name that is not installed leaves
+// the call unfiltered but working.
 //
 // Steps:
 //   - build-noisy-prompt
@@ -72,6 +79,7 @@ func TestVerb_NoiseIsolation_Jambonz_Listen(t *testing.T) {
 //   - level50:fork-noisy-prompt
 //   - badmodel:fork-noisy-prompt
 //   - assert-level-orders-suppression
+//   - assert-level100-speech-kept
 //   - assert-bad-model-passes-audio
 func TestVerb_NoiseIsolation_Jambonz_LevelAndBadModel(t *testing.T) {
 	requireJambonzNc(t)
@@ -84,19 +92,35 @@ func TestVerb_NoiseIsolation_Jambonz_LevelAndBadModel(t *testing.T) {
 	l50 := forkNoisyPrompt(t, ctx, "level50", noisy, map[string]any{"enable": true, "vendor": "jambonz", "level": 50})
 	bad := forkNoisyPrompt(t, ctx, "badmodel", noisy, map[string]any{"enable": true, "vendor": "jambonz", "model": "no-such-model.onnx"})
 
+	s := Step(t, "assert-level-orders-suppression")
+	if share := leadLoudShare(s, "control", control.msgs, control.sent, np); share < minLoudUnfiltered {
+		s.Fatalf("control lead only %.0f%% loud: the fork lost the noise, nothing to compare", 100*share)
+	}
+	leadLoudShare(s, "level100", l100.msgs, l100.sent, np) // fails the step when the lead window is missing
+	leadLoudShare(s, "level50", l50.msgs, l50.sent, np)
 	cRMS := leadRMS(control.msgs, control.sent, np)
+	if cRMS == 0 {
+		s.Fatalf("control lead RMS is 0: the control fork carried no lead audio")
+	}
 	r100 := leadRMS(l100.msgs, l100.sent, np) / cRMS
 	r50 := leadRMS(l50.msgs, l50.sent, np) / cRMS
-	s := Step(t, "assert-level-orders-suppression")
 	s.Logf("lead RMS ratio level100=%.2f level50=%.2f", r100, r50)
-	if cRMS == 0 || !(r100 < r50 && r50 < 0.95) {
-		s.Errorf("want level100 < level50 < 0.95, got %.2f / %.2f", r100, r50)
+	if !(r100 < r50*0.9 && r50 < 0.95) {
+		s.Errorf("want level100 < 0.9 x level50 < 0.95, got %.2f / %.2f", r100, r50)
 	}
+	s.Done()
+
+	// a muted call would also order the levels; level 100 must still carry the words
+	s = Step(t, "assert-level100-speech-kept")
+	assertSpeechKept(s, ctx, t, "level100", l100)
 	s.Done()
 
 	s = Step(t, "assert-bad-model-passes-audio")
 	if share := leadLoudShare(s, "badmodel", bad.msgs, bad.sent, np); share < minLoudUnfiltered {
 		s.Errorf("bad model lead only %.0f%% loud: want unfiltered audio, the call must not go silent", 100*share)
+	}
+	if r := leadRMS(bad.msgs, bad.sent, np) / cRMS; r < minBadModelRMSRatio {
+		s.Errorf("bad model lead RMS ratio %.2f (want >= %.2f): the audio was filtered, not passed through", r, minBadModelRMSRatio)
 	}
 	s.Done()
 }
